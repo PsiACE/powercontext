@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: PowerContext
-description: PowerContext turns human-agent work into handoff-ready context.
+description: Project-scoped context storage for humans and agents.
 hide:
   - navigation
   - toc

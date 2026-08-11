@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: PowerContext
-description: PowerContext 将人类与智能体协作过程转化为可交接的上下文。
+description: 面向人和 Agent 的项目级上下文存储。
 hide:
   - navigation
   - toc

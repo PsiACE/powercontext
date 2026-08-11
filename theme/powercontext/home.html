@@ -3,13 +3,13 @@
 {% set canonical = page.canonical_url | string %}
 {% set is_zh = "/zh/" in canonical %}
 {% if is_zh %}
-  {% set hero_title = "让上下文经得起交接。" %}
-  {% set hero_lead = "PowerContext 为 Source、Artifact 和 Trigger 定义清晰契约，让后来的人或 Agent 能够检查、接手并继续一段工作。" %}
+  {% set hero_title = "面向人和 Agent 的项目上下文。" %}
+  {% set hero_lead = "PowerContext 保存项目级 Memory，并通过 Codex、Python、HTTP 和 MCP 提供访问。" %}
   {% set primary_label = "阅读文档" %}
   {% set secondary_label = "查看 API 参考" %}
 {% else %}
-  {% set hero_title = "Context that survives the handoff." %}
-  {% set hero_lead = "PowerContext defines explicit Source, Artifact, and Trigger contracts so later humans and agents can inspect, take over, and continue a piece of work." %}
+  {% set hero_title = "Project context for humans and agents." %}
+  {% set hero_lead = "PowerContext stores project-scoped Memory and provides access through Codex, Python, HTTP, and MCP." %}
   {% set primary_label = "Read the documentation" %}
   {% set secondary_label = "View the API reference" %}
 {% endif %}

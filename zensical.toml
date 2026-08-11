@@ -2,7 +2,7 @@
 site_name = "PowerContext"
 repo_url = "https://github.com/oceanbase/powercontext"
 site_url = "https://oceanbase.github.io/powercontext"
-site_description = "PowerContext turns human-agent work into handoff-ready context."
+site_description = "Project-scoped context storage for humans and agents."
 site_author = "PowerContext Team"
 edit_uri = "edit/master/docs/"
 repo_name = "oceanbase/powercontext"
@@ -13,27 +13,39 @@ nav = [
         { "Home" = "en/index.md" },
         { "Docs" = [
             { "Overview" = "en/docs/index.md" },
-            { "Codex quickstart" = "en/docs/tutorials/codex-quickstart.md" },
-            { "Install and run" = "en/docs/how-to/install-and-run.md" },
-            { "Configure Codex" = "en/docs/how-to/configure-codex.md" },
-            { "Troubleshoot" = "en/docs/how-to/troubleshoot.md" },
-            { "Interfaces" = "en/docs/reference/interfaces.md" },
-            { "Configuration" = "en/docs/reference/configuration.md" },
+            { "Get started" = [
+                { "Codex quickstart" = "en/docs/tutorials/codex-quickstart.md" },
+            ] },
+            { "How-to guides" = [
+                { "Install and run" = "en/docs/how-to/install-and-run.md" },
+                { "Configure Codex" = "en/docs/how-to/configure-codex.md" },
+                { "Troubleshoot" = "en/docs/how-to/troubleshoot.md" },
+            ] },
+            { "Concepts" = [
+                { "Artifact lifecycle" = "en/docs/explanation/artifact-lifecycle.md" },
+            ] },
+            { "Reference" = [
+                { "Interfaces" = "en/docs/reference/interfaces.md" },
+                { "CLI" = "en/docs/reference/cli.md" },
+                { "Python Client SDK" = "en/docs/reference/python-client.md" },
+                { "HTTP and MCP" = "en/docs/reference/http-and-mcp.md" },
+                { "Configuration" = "en/docs/reference/configuration.md" },
+                { "Python API" = "en/modules.md" },
+            ] },
         ] },
         { "Development" = [
+            { "Overview" = "en/development/index.md" },
             { "Core Protocol" = "en/development/core-protocol.md" },
             { "Memory Layer" = "en/development/memory-layer.md" },
             { "Pydantic AI Inference" = "en/development/pydantic-ai-inference.md" },
             { "Remote Access Implementation" = "en/development/remote-access-implementation.md" },
             { "Server Web UI" = "en/development/server-web-ui.md" },
-            { "API Reference" = "en/modules.md" },
         ] },
         { "Blog" = "en/blog/index.md" },
         { "Changelog" = "en/changelog/index.md" },
         { "RFCs" = [
             { "Overview" = "en/rfcs/README.md" },
             { "RFC Template" = "en/rfcs/0000_example.md" },
-            { "0050 Artifact Candidate and Review Inbox" = "en/rfcs/0050_artifact_candidate_review_inbox.md" },
             { "0001 Product Definition and Vision" = "en/rfcs/0001_product_definition_and_vision.md" },
             { "0002 Core SDK Product Model" = "en/rfcs/0002_core_sdk_product_model.md" },
             { "0011 Remote Access Architecture" = "en/rfcs/0011_remote_access_architecture.md" },
@@ -42,38 +54,53 @@ nav = [
             { "0019 Local Source-to-Memory Runtime" = "en/rfcs/0019_local_source_memory_runtime.md" },
             { "0020 Runtime-backed Memory Remote Access" = "en/rfcs/0020_runtime_backed_memory_remote_access.md" },
             { "0028 Context Pack" = "en/rfcs/0028_context_pack.md" },
+            { "0046 Observability Foundations" = "en/rfcs/0046_observability_foundations.md" },
             { "0048 Handoff Artifact" = "en/rfcs/0048_handoff_artifact.md" },
+            { "0050 Artifact Candidate and Review Inbox" = "en/rfcs/0050_artifact_candidate_review_inbox.md" },
             { "0051 Experience and Skill Artifact Families" = "en/rfcs/0051_experience_skill_artifact_families.md" },
+            { "0072 Scoped Statistics and Usage" = "en/rfcs/0072_scoped_statistics_and_usage.md" },
             { "0080 Memory Search Reranking" = "en/rfcs/0080_memory_search_reranking.md" },
             { "0081 End-to-end Evaluation Architecture" = "en/rfcs/0081_end_to_end_evaluation_architecture.md" },
-            { "0072 Scoped Statistics and Usage" = "en/rfcs/0072_scoped_statistics_and_usage.md" },
+            { "0082 Handoff Report" = "en/rfcs/0082_handoff_report.md" },
         ] },
     ] },
     { "中文" = [
         { "首页" = "zh/index.md" },
         { "文档" = [
             { "概览" = "zh/docs/index.md" },
-            { "Codex 快速入门" = "zh/docs/tutorials/codex-quickstart.md" },
-            { "安装和运行" = "zh/docs/how-to/install-and-run.md" },
-            { "配置 Codex" = "zh/docs/how-to/configure-codex.md" },
-            { "排查问题" = "zh/docs/how-to/troubleshoot.md" },
-            { "接口" = "zh/docs/reference/interfaces.md" },
-            { "配置" = "zh/docs/reference/configuration.md" },
+            { "快速开始" = [
+                { "Codex 快速入门" = "zh/docs/tutorials/codex-quickstart.md" },
+            ] },
+            { "操作指南" = [
+                { "安装和运行" = "zh/docs/how-to/install-and-run.md" },
+                { "配置 Codex" = "zh/docs/how-to/configure-codex.md" },
+                { "排查问题" = "zh/docs/how-to/troubleshoot.md" },
+            ] },
+            { "概念" = [
+                { "Artifact 生命周期" = "zh/docs/explanation/artifact-lifecycle.md" },
+            ] },
+            { "参考" = [
+                { "接口" = "zh/docs/reference/interfaces.md" },
+                { "CLI" = "zh/docs/reference/cli.md" },
+                { "Python Client SDK" = "zh/docs/reference/python-client.md" },
+                { "HTTP 和 MCP" = "zh/docs/reference/http-and-mcp.md" },
+                { "配置" = "zh/docs/reference/configuration.md" },
+                { "Python API" = "zh/modules.md" },
+            ] },
         ] },
         { "开发" = [
+            { "概览" = "zh/development/index.md" },
             { "Core Protocol" = "zh/development/core-protocol.md" },
             { "Memory Layer" = "zh/development/memory-layer.md" },
             { "Pydantic AI 推理" = "zh/development/pydantic-ai-inference.md" },
             { "远程访问实现" = "zh/development/remote-access-implementation.md" },
             { "Server Web UI" = "zh/development/server-web-ui.md" },
-            { "API 参考" = "zh/modules.md" },
         ] },
         { "博客" = "zh/blog/index.md" },
         { "更新日志" = "zh/changelog/index.md" },
         { "RFC" = [
             { "概览" = "zh/rfcs/README.md" },
             { "RFC 模板" = "zh/rfcs/0000_example.md" },
-            { "0050 Artifact Candidate 与 Review Inbox" = "zh/rfcs/0050_artifact_candidate_review_inbox.md" },
             { "0001 产品定义与构想" = "zh/rfcs/0001_product_definition_and_vision.md" },
             { "0002 Core SDK 产品模型" = "zh/rfcs/0002_core_sdk_product_model.md" },
             { "0011 远程访问架构" = "zh/rfcs/0011_remote_access_architecture.md" },
@@ -82,11 +109,14 @@ nav = [
             { "0019 本地 Source-to-Memory Runtime" = "zh/rfcs/0019_local_source_memory_runtime.md" },
             { "0020 基于 Runtime 的 Memory 远程访问" = "zh/rfcs/0020_runtime_backed_memory_remote_access.md" },
             { "0028 Context Pack" = "zh/rfcs/0028_context_pack.md" },
+            { "0046 可观测性基础" = "zh/rfcs/0046_observability_foundations.md" },
             { "0048 Handoff Artifact" = "zh/rfcs/0048_handoff_artifact.md" },
+            { "0050 Artifact Candidate 与 Review Inbox" = "zh/rfcs/0050_artifact_candidate_review_inbox.md" },
             { "0051 Experience 与 Skill Artifact Family" = "zh/rfcs/0051_experience_skill_artifact_families.md" },
+            { "0072 Scoped Statistics 与 Usage" = "zh/rfcs/0072_scoped_statistics_and_usage.md" },
             { "0080 Memory 搜索 Rerank" = "zh/rfcs/0080_memory_search_reranking.md" },
             { "0081 端到端评估架构" = "zh/rfcs/0081_end_to_end_evaluation_architecture.md" },
-            { "0072 Scoped Statistics 与 Usage" = "zh/rfcs/0072_scoped_statistics_and_usage.md" },
+            { "0082 Handoff Report" = "zh/rfcs/0082_handoff_report.md" },
         ] },
     ] },
 ]
