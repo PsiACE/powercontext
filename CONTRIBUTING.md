@@ -1,117 +1,98 @@
-# Contributing to `powercontext`
+# Contributing to PowerContext
 
-Contributions are welcome, and they are greatly appreciated!
-Every little bit helps, and credit will always be given.
+PowerContext accepts bug fixes, features, documentation changes, and design proposals through GitHub issues and pull
+requests.
 
-You can contribute in many ways:
+## Before you start
 
-# Types of Contributions
+- Search the [issue tracker](https://github.com/oceanbase/powercontext/issues) for existing reports or proposals.
+- Use an issue to discuss a feature when its behavior or scope is not yet clear.
+- Use the [RFC process](docs/en/rfcs/README.md) for changes to public APIs, persisted formats, compatibility guarantees,
+  integration boundaries, or core architecture.
+- Look for issues labeled `help wanted` if you want a task that maintainers have opened to contributors.
 
-## Report Bugs
+## Set up the repository
 
-Report bugs at https://github.com/oceanbase/powercontext/issues
-
-If you are reporting a bug, please include:
-
-- Your operating system name and version.
-- Any details about your local setup that might be helpful in troubleshooting.
-- Detailed steps to reproduce the bug.
-
-## Fix Bugs
-
-Look through the GitHub issues for bugs.
-Anything tagged with "bug" and "help wanted" is open to whoever wants to implement a fix for it.
-
-## Implement Features
-
-Look through the GitHub issues for features.
-Anything tagged with "enhancement" and "help wanted" is open to whoever wants to implement it.
-
-## Write Documentation
-
-powercontext could always use more documentation, whether as part of the official docs, in docstrings, or even on the web in blog posts, articles, and such.
-
-## Submit Feedback
-
-The best way to send feedback is to file an issue at https://github.com/oceanbase/powercontext/issues.
-
-If you are proposing a new feature:
-
-- Explain in detail how it would work.
-- Keep the scope as narrow as possible, to make it easier to implement.
-- Remember that this is a volunteer-driven project, and that contributions
-  are welcome :)
-
-# Get Started!
-
-Ready to contribute? Here's how to set up `powercontext` for local development.
-Please note this documentation assumes you already have `uv` and `Git` installed and ready to go.
-
-1. Fork the `powercontext` repo on GitHub.
-
-2. Clone your fork locally:
+You need Git and [uv](https://docs.astral.sh/uv/). Fork the repository, then clone your fork:
 
 ```bash
-cd <directory_in_which_repo_should_be_created>
 git clone git@github.com:YOUR_NAME/powercontext.git
-```
-
-3. Navigate into the repository:
-
-```bash
 cd powercontext
 ```
 
-Then install the development environment and Git hooks:
+Install the locked development environment and Git hooks:
 
 ```bash
 make install
 ```
 
-Recommended Codex skills are optional and are not required to build or test the project. If you have `npx`
-available, install the skills pinned in `skills-lock.json` before starting a new Codex session:
+Recommended Codex skills are optional and are not required to build or test the project. If `npx` is available, you
+can install the versions pinned in `skills-lock.json` before starting a new Codex session:
 
 ```bash
 make skills-install
 ```
 
-4. Create a branch for local development:
+Create a branch from the current `master` branch:
 
 ```bash
-git checkout -b name-of-your-bugfix-or-feature
+git switch -c <short-description>
 ```
 
-Now you can make your changes locally.
+## Make a change
 
-5. Run the checks that match the change:
+Keep each pull request focused on one problem. Add tests for new observable behavior and for defects that could recur.
+Do not add tests solely to increase coverage when they would only preserve implementation details.
+
+Update user documentation when behavior, configuration, interfaces, or compatibility changes. Keep the English and
+Chinese documentation aligned. If you change `openapi/powercontext.yaml`, run `make api-generate`; do not edit files
+under `src/powercontext/http/_generated/` by hand.
+
+## Validate the change
+
+Run the checks that cover your change:
+
+| Command | Use it for |
+| --- | --- |
+| `make check` | Lock-file consistency, formatting, linting, and type checking |
+| `make unit-test` | Tests that do not cross the Server boundary |
+| `make e2e-test` | CLI-to-Client-to-Server acceptance behavior |
+| `make test` | The complete pytest suite with doctests |
+| `make contract-test` | OpenAPI contract and generated bindings |
+| `make docs-test` | Strict documentation build |
+| `tox` | Supported Python version matrix |
+
+Run `tox` when a change may affect supported Python versions. It requires the relevant Python interpreters to be
+installed locally; the same version matrix runs in CI.
+
+## Open a pull request
+
+Push the branch to your fork and open a pull request against `oceanbase/powercontext`:
 
 ```bash
-make check
-make unit-test
+git push -u origin <short-description>
 ```
 
-Use `make e2e-test` for cross-component behavior, `make contract-test` for OpenAPI changes, and
-`make docs-test` for documentation changes. `make test` runs the complete pytest suite.
+Use a short Conventional Commit-style pull request title. Complete every relevant section of the pull request
+template, including:
 
-Before raising a pull request you should also run tox when a change may affect supported Python versions.
-This requires you to have the relevant Python versions installed. The same version matrix runs in CI.
+- the related issue or RFC;
+- the rationale and behavior changes;
+- user-facing, compatibility, or migration impact;
+- validation commands and tests;
+- the AI usage statement.
 
-6. Commit your changes and push your branch to GitHub:
+## Report a bug
 
-```bash
-git add .
-git commit -m "Your detailed description of your changes."
-git push origin name-of-your-bugfix-or-feature
-```
+Open a [bug report][bug-report] with the steps needed to reproduce the problem, the expected and actual behavior, your
+operating system and version, and relevant local configuration. Remove credentials and other sensitive data from logs
+or examples.
 
-7. Submit a pull request through the GitHub website.
+## Propose a feature
 
-# Pull Request Guidelines
+Open a [feature request][feature-request]. Describe the problem, the proposed behavior, alternatives you considered,
+and the smallest useful scope. Maintainers may ask for an RFC before implementation if the proposal changes a
+substantial public contract.
 
-Before you submit a pull request, check that it meets these guidelines:
-
-1. Add behavior tests for new externally observable behavior. Add a regression test when a defect is likely to
-   recur. Changes that provide neither do not need tests solely for coverage.
-
-2. If the pull request adds functionality, the docs should be updated.
-   Put your new functionality into a function with a docstring, and add the feature to the list in `README.md`.
+[bug-report]: https://github.com/oceanbase/powercontext/issues/new?template=1-bug-report.yml
+[feature-request]: https://github.com/oceanbase/powercontext/issues/new?template=2-feature-request.yml

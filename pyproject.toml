@@ -1,7 +1,7 @@
 [project]
 name = "powercontext"
 version = "0.0.1"
-description = "PowerContext turns human-agent work into handoff-ready context."
+description = "Project-scoped context storage for humans and agents."
 authors = [{ name = "PowerContext Team", email = "open_oceanbase@oceanbase.com" }]
 readme = "README.md"
 keywords = ['python']
@@ -67,7 +67,7 @@ setup = "powercontext.cli.system:setup_app"
 [project.urls]
 Homepage = "https://github.com/oceanbase/powercontext"
 Repository = "https://github.com/oceanbase/powercontext"
-Documentation = "https://github.com/oceanbase/powercontext/tree/master/docs/en/docs"
+Documentation = "https://oceanbase.github.io/powercontext/en/docs/"
 
 [dependency-groups]
 dev = [

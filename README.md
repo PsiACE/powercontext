@@ -1,88 +1,97 @@
 # PowerContext
 
-PowerContext is PowerMem 2.0, the upgraded version of [PowerMem](https://www.powermem.ai/). It gives agents durable,
-project-scoped context. A later session can recover a decision, outcome, current state, or next step without relying
-on chat history. PowerContext includes a local Server, SQLite storage, an async Python client, a Core SDK, a CLI, and
-a Codex plugin.
+PowerContext is the 2.0 continuation of [PowerMem](https://www.powermem.ai/). It stores project-scoped context so a
+later agent session can recover decisions, outcomes, current state, and next steps without relying on chat history.
 
-PowerContext can be installed directly from its Git URL. Users need read access to that URL, but they do not need to
-clone the repository or run commands from its working tree.
+The repository contains a local Server with SQLite storage, an asynchronous Python client, a Core SDK, a CLI, and a
+Codex plugin. Start with the [documentation](https://oceanbase.github.io/powercontext/en/docs/) or read it in
+[Chinese](https://oceanbase.github.io/powercontext/zh/docs/).
 
-## Install for Codex
+## Quickstart with Codex
 
-Prerequisites:
+You need macOS or Linux, [uv](https://docs.astral.sh/uv/getting-started/installation/), Codex CLI, and read access to
+`oceanbase/powercontext`.
 
-- macOS or Linux;
-- [uv](https://docs.astral.sh/uv/getting-started/installation/);
-- Codex CLI;
-- read access to `oceanbase/powercontext`.
-
-Install the tool and configure the Codex plugin:
+Install PowerContext and configure the Codex plugin:
 
 ```bash
 uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
 powercontext setup codex --source oceanbase/powercontext --ref master
 ```
 
-You do not need to create or manage a repository checkout. Start the local service in a terminal:
+Start the local Server:
 
 ```bash
 powercontext server run
 ```
 
-In another terminal, verify the package, plugin, Server, and database:
+In another terminal, check the package, plugin, Server, and database:
 
 ```bash
 powercontext doctor
 ```
 
-Start a new Codex session after installation. Open `/hooks` once and approve the PowerContext hook if Codex asks for
-trust. The default database is persistent and requires no configuration.
+Start a new Codex session after installation. If Codex asks you to trust the PowerContext hook, open `/hooks` and
+approve it. PowerContext uses a persistent local database by default.
 
-See the [Codex quickstart](docs/en/docs/tutorials/codex-quickstart.md) for a first cross-session workflow.
+The [Codex quickstart](docs/en/docs/tutorials/codex-quickstart.md) walks through saving and restoring context across
+sessions. See [Install and run](docs/en/docs/how-to/install-and-run.md) for updates, alternate Git refs, and Python
+package installation.
 
-## Choose an interface
+## Interfaces
 
 | Interface | Use it for |
 | --- | --- |
-| Codex plugin | Restore relevant project memory and explicitly remember, revise, or retire entries while coding |
-| CLI | Install the plugin, run or connect to the Server, inspect content, and diagnose an installation |
-| Python client | Call the Server's Source and Memory API from an application |
-| Core SDK | Embed PowerContext contracts or supply custom adapters in a Python system |
-| HTTP and MCP | Integrate a non-Python process or an agent host with the running Server |
+| Codex plugin | Recall project context and explicitly remember, revise, or retire Memory while coding |
+| CLI | Configure the plugin, run or connect to the Server, inspect content, and diagnose an installation |
+| Python Client SDK | Make typed asynchronous calls to a running Server |
+| Core SDK | Embed the PowerContext contracts or provide custom adapters in a Python application |
+| HTTP | Integrate a service or a non-Python application |
+| MCP | Expose selected Memory and Candidate Review operations to an agent host |
 
-The [interface reference](docs/en/docs/reference/interfaces.md) explains the ownership boundary between these
-surfaces. Installation, configuration, and troubleshooting live under [`docs/en/docs/`](docs/en/docs/index.md).
+The [interface guide](docs/en/docs/reference/interfaces.md) describes these boundaries and links to the detailed
+reference for each surface.
 
-## Python projects
+## Python installation
 
-Add only the role the project imports:
+Install only the role that the application imports. For example, add the Client SDK with:
 
 ```bash
 uv add "powercontext[client] @ git+https://github.com/oceanbase/powercontext.git@master"
 ```
 
-Available extras are `builtin`, `client`, `server`, and `cli`. The CLI always includes Server-backed content commands;
-installing the `server` role also makes local Server process management available.
+Available extras are `builtin`, `client`, `server`, and `cli`. The `cli` extra includes Server-backed content
+commands. Install the `server` extra when the local process also needs to run the Server.
+
+## Documentation
+
+- [Codex quickstart](docs/en/docs/tutorials/codex-quickstart.md) is a guided cross-session workflow.
+- [How-to guides](docs/en/docs/index.md#how-to-guides) cover installation, Codex configuration, and troubleshooting.
+- [Concepts](docs/en/docs/index.md#concepts) explain the Artifact lifecycle and interface boundaries.
+- [Reference](docs/en/docs/index.md#reference) covers configuration, commands, SDKs, HTTP, MCP, and the Python API.
+- [Development guides](docs/en/development/index.md) describe package boundaries and implementation workflows.
+- [RFCs](docs/en/rfcs/README.md) record design proposals and decisions; they are not a statement of released behavior.
 
 ## Benchmarks
 
-### [LOCOMO](https://github.com/snap-research/locomo)
+The [LoCoMo benchmark](benchmark/locomo/README.md) documents the dataset, scoring contract, commands, outputs, and
+evaluation limits. The 1,540-question run reports 90.78% answer accuracy, 1.38 s search p95 latency, and about
+1.65 k answer tokens per question. See the benchmark documentation before comparing these numbers with another run.
 
-| Metric | PowerContext | [PowerMem](https://www.powermem.ai/benchmark) | Full-context baseline |
-| --- | ---: | ---: | ---: |
-| Accuracy | **90.78%** (1,398/1,540) | 87.79% | 52.9% |
-| Search p95 latency | **1.38 s** | 1.44 s | 17.12 s |
-| Answer tokens / question | **~1.65 k** | ~0.9 k | 26 k |
+## Contributing
 
-The PowerContext results come from a full 1,540-question run across all 10 LOCOMO conversations.
+Run `make install` to create the locked development environment and install hooks. Before opening a pull request, use
+the checks that match the change:
 
-## Development
+```bash
+make test
+make check
+make docs-test
+```
 
-Repository contributors can install the locked environment and hooks with `make install`. Use `make test`,
-`make check`, and `make docs-test` before opening a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full
-workflow and [`docs/en/development/`](docs/en/development/core-protocol.md) for implementation guides.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, test groups, API generation rules, and pull
+request requirements.
 
 ## License
 
-PowerContext is licensed under the [Apache License 2.0](LICENSE).
+PowerContext is available under the [Apache License 2.0](LICENSE).
