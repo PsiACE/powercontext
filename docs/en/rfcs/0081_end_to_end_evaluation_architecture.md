@@ -1,181 +1,284 @@
-- Proposal Name: `unified_workloads_and_long_horizon_memory_evaluation`
+- Proposal Name: `end_to_end_evaluation_architecture`
 - Start Date: 2026-08-07
 - RFC PR: [oceanbase/powercontext#81](https://github.com/oceanbase/powercontext/pull/81)
+- Related RFCs: [RFC 0014](0014_memory_layer_design.md),
+  [RFC 0016](0016_pydantic_ai_inference_integration.md),
+  [RFC 0046](0046_observability_foundations.md), and
+  [RFC 0080](0080_memory_search_reranking.md)
 
 # Summary
 
-PowerContext will represent every sampled end-to-end scenario and long-horizon agent task as a workload. A workload
-selects a Harbor task, sets its execution budget, and declares how the resulting Memory is evaluated. Local scenarios,
-pinned samples, and registry datasets use the same manifest, runner, evidence, and report contracts.
+PowerContext needs an E2E suite that answers whether the product works through its public boundaries. It covers three
+kinds of evidence:
 
-All workloads follow one execution path:
+| Scope | What it proves | Oracle |
+| --- | --- | --- |
+| General E2E | PowerContext components compose into a complete business flow | Deterministic public behavior |
+| Scenario replay | A real agent can capture and recall context across independent sessions | Behavior, regression, and replay expectations |
+| Sampled scenarios | The same harness works on fixed conversation and repository cases | Materialized expectations or a source-native result |
 
-```text
-workload -> Harbor Job -> ACP -> Bub -> PowerContext -> evidence -> Memory evaluator -> report
-```
-
-The acceptance result answers whether the run captured useful, grounded, and recallable Memory. A source-native task
-reward remains diagnostic and does not decide Memory acceptance.
+The first replay harness uses Bub. It runs with SQLite and OceanBase, calls a real model, and records enough evidence to
+understand a failure or rescore the run offline. Bub is an implementation choice, not the subject of this RFC.
 
 # Motivation
 
-PowerContext has small local scenarios, a pinned LoCoMo-derived sample, and tasks obtained from registries such as
-Terminal-Bench. Their inputs and native graders differ, but those differences do not justify separate runners or report
-formats. Separate paths make results harder to compare and let behavior drift between task types.
+Focused tests remain useful, but they do not prove that the CLI, Client, Server, database, agent integration, and model
+work together. A benchmark score has the opposite problem: it can show a quality change without showing which part of
+the path failed. The E2E suite sits between them. It runs a complete path and keeps the input, intermediate state, and
+result together.
 
-A long-horizon task is useful even when the agent does not solve it. The run can still show whether PowerContext
-captured the investigation, preserved source provenance, created Memory during the task, and recalled that Memory
-afterward. Task completion and Memory quality are related observations, not the same outcome.
+Tests must pay for their maintenance. A short script whose correctness is clear from reading it may need no test. A
+test that checks a private buffer size, call order, module layout, or every normalized internal error adds work without
+protecting a user.
+
+Only two kinds of cases belong in this suite:
+
+- A behavior test protects an interface or experience that a user can observe. It should survive an internal rewrite.
+- A regression test records a defect that is likely to recur. It reproduces the externally wrong result, not the
+  implementation mistake that caused it.
 
 # Guide-level explanation
 
-## One workload model
+## Harness-driven development
 
-The workload manifest is the catalog entry and execution contract:
+Harness-driven development treats an executable scenario as the acceptance boundary for a change. The developer or
+development agent produces the commit. A separate evaluation agent exercises that commit through the same interfaces
+available to a user:
 
-```yaml
-schema: powercontext.e2e-task/v1
-id: terminal-bench-db-wal-recovery
-categories:
-  - long-horizon
-  - terminal-bench
-dataset:
-  name: terminal-bench
-  version: "2.0"
-  task_id: db-wal-recovery
-  checksum: <task-checksum>
-agent:
-  model_source: codex-oauth
-  max_steps: 50
-evaluation:
-  capture_events: true
-  checkpoint_every_events: 5
-  probes:
-    - id: investigation
-      query: What records and SQLite table were found in /app/main.db?
+```text
+development agent -> commit under test
+
+scenario -> harness -> evaluation agent -> system under evaluation
+                |                              |
+                +<------ recorded evidence <---+
+                             |
+                             v
+                       oracle and report
 ```
 
-`dataset` can identify a local Harbor task or a versioned registry task. The remaining workload fields keep the same
-meaning in both cases. Pydantic validates manifests and runtime settings before execution.
+The evaluation agent uses a separate session, workspace, and PowerContext scope. It receives the scenario and allowed
+repository state, but not the development conversation or unstated implementation rationale. It may use the same model
+as the development agent. Independence comes from context and state isolation, not from requiring another model vendor.
 
-Workloads have stable IDs. One command can run one ID, several IDs, or every workload in a category. Categories are
-selection metadata and do not select a different runner.
+This separation keeps evaluation out of the development agent's history and working state. It can run locally or in CI
+without disturbing the development loop. It also gives the result an independent perspective: the evaluation agent
+must discover and use the feature from committed behavior instead of relying on knowledge acquired while building it.
+This catches missing instructions, hidden setup, and accidental dependence on a dirty workspace. It is not a substitute
+for human review or an unbiased external audit.
 
-LoCoMo input in this catalog is a pinned built-in sample. It checks the workload flow against fixed conversation data
-but does not claim a LoCoMo benchmark result.
+The working loop is short: state the observable behavior, implement the change, replay the scenario with the evaluation
+agent, inspect the evidence, and use that result for the next change. The scenario remains stable while implementations
+can be replaced.
 
-## One execution flow
+Harness-driven development does not require a new case for every change:
 
-The harness creates an isolated PowerContext scope and records its initial Memory. Harbor resolves the dataset, creates
-the task environment, and runs the task through its ACP agent support. Bub receives the task instructions and uses the
-PowerContext integration while it works. The integration captures eligible events and advances Memory checkpoints.
+| Change | Evaluation action |
+| --- | --- |
+| Existing behavior changes internally | Run the relevant existing cases |
+| A user-visible contract is added | Add or extend a behavior case |
+| A recurring defect is fixed | Add a regression case |
+| Only private implementation changes | Add no E2E case unless the risk crosses a public boundary |
 
-After Harbor finishes, the harness records native ACP evidence, final Memory, and the result of each recall probe. The
-same evaluator then produces machine-readable and reviewer-readable reports. A failed workload still writes the
-evidence collected before the failure.
+## Evaluation target and evidence mode
 
-There is no direct Bub runner beside Harbor. Local and registry tasks both enter through `Job.run`.
+The evaluation target states what the run claims to verify: a PowerContext flow, an agent journey, or a sampled
+workload. The evidence mode states how the claim is checked:
 
-## Instruction boundary
+| Evidence mode | Execution | Use |
+| --- | --- | --- |
+| Deterministic acceptance | Public interfaces with deterministic capabilities | Per-commit behavior and regression checks |
+| Live replay | Independent evaluation agent with a real provider | Complete agent and model path |
+| Offline rescore | A recorded replay without rerunning the system | Evaluator changes and result comparison |
 
-The Harbor task owns agent-visible instructions:
-
-- A local task stores them in its Harbor task directory, including step instructions for a multi-step task.
-- A registry task obtains them from the pinned dataset entry.
-
-The workload manifest does not copy those instructions. Duplicating them would create two sources of truth and could
-silently change the task being evaluated. The evidence records the resolved instruction identity and content, subject
-to redaction, so a reviewer can see what the agent received.
-
-Evaluation probes are separate. The harness submits them to PowerContext after task execution to test the resulting
-Memory. They are not agent hints and do not enter the task environment during execution.
-
-## Memory acceptance
-
-Memory acceptance checks observable evidence from the completed collection path:
-
-- the expected Harbor task and ACP artifacts were recorded;
-- enough eligible agent events were captured;
-- the run created Memory and completed any required checkpoints;
-- created Memory cites captured sources; and
-- the declared recall probes receive usable prepared context.
-
-A deterministic built-in sample may also declare expected Memory content. A long-horizon task normally evaluates
-coverage, grounding, and recall instead of requiring a fixed answer.
-
-The Harbor reward, verifier result, duration, and model usage remain labels, scores, or metrics. They become blocking
-only if a workload explicitly defines them as an external budget. In particular, a task may fail its native grader and
-still pass Memory acceptance.
+Every result names both. A deterministic run cannot support a provider claim. An offline rescore cannot prove that the
+current commit still executes. A live replay is evidence for its recorded model, budget, database, and scenario, not a
+universal correctness claim.
 
 # Reference-level explanation
 
-## Workload and dependency contracts
+## Architecture boundaries
 
-The manifest is the only harness-level task abstraction. Dataset adapters resolve Harbor tasks but do not define a
-second workload schema. Agent configuration and PowerContext evaluation settings belong to the same validated
-manifest, while secrets and machine-local paths remain in validated runtime settings.
+The scenario defines the goal, ordered inputs, observable expectations, and budget. The harness owns environment setup,
+agent lifecycle, isolation, and evidence capture. The evaluation agent operates the product. The system under
+evaluation is the tested PowerContext commit together with its integration, model configuration, workspace, and
+database. The oracle interprets recorded evidence and produces the report.
 
-Dependencies flow in one direction:
+The development agent is not part of the evaluated execution path. The harness does not infer intent from development
+logs, and the evaluator does not inspect private implementation details to decide whether the scenario passed.
+
+## General E2E
+
+General E2E lives under `tests/e2e/` and runs through `make e2e-test`. It enters through a supported CLI, Client, HTTP,
+MCP, or Runtime boundary and observes the result through another supported boundary. Cases cover complete flows such
+as Source capture, Memory processing and recall, Handoff, reviewed Artifacts, authentication, statistics, restart, and
+observability.
+
+These tests are deterministic. They may inject a deterministic generation or embedding capability when the provider
+is not the subject of the case. That proves product composition, not provider compatibility.
+
+## Scenario replay
+
+Live replay runs a real provider through an agent harness:
 
 ```text
-manifest
-  -> Harbor task and Job
-  -> ACP agent execution
-  -> Bub and PowerContext capture
-  -> replay evidence
-  -> Memory evaluation
-  -> report rendering
+scenario input
+  -> agent harness
+  -> PowerContext integration
+  -> PowerContext Server
+  -> Memory and prepared context
+  -> agent output
+  -> evaluation report
 ```
 
-The evaluator consumes replay evidence and has no control over Harbor or Bub. Report rendering consumes the evaluation
-result and does not recalculate acceptance. No generic evaluation framework is required to own this lifecycle. A future
-integration may consume the stable evaluation result, but it must remain downstream of the workload runner.
+One replay uses one PowerContext scope. Each step uses a new agent session and cannot read earlier agent history. State
+crosses the session boundary only through PowerContext.
 
-## Evidence contract
+The harness records prepared context before each agent run, then records the final output, agent spans, and public
+Memory state. A failed step stops the sequence and still produces a partial report.
 
-Each workload produces one artifact directory containing:
+## Sample integration
 
-| Artifact | Purpose |
+Sampling is an authoring step. It turns selected source cases into committed fixtures or manifests. CI never chooses a
+new random sample while evaluating a commit.
+
+For each sample set, the repository records:
+
+- the source revision or fingerprint;
+- stable case IDs and a versioned selection policy;
+- the agent-visible input and evaluator-only reference data; and
+- the model, harness, PowerContext commit, execution budget, and attempt policy used by a result.
+
+LoCoMo conversation samples and SWE-bench Pro repository samples use the same rules. Conversation samples include the
+declared chronological input. Selecting only sessions named by gold evidence is forbidden. Repository cases use a
+fresh workspace and PowerContext scope for every attempt. Gold answers, evidence annotations, hidden tests, reference
+patches, and grading results never enter agent or PowerContext input.
+
+A source-native result remains authoritative when one exists. Memory, prepared context, spans, latency, and usage help
+explain the run but cannot replace that result. A small committed set provides fast feedback. It does not support a
+claim about the complete source distribution.
+
+## Built-in task manifest
+
+Built-in e2e samples use one Pydantic manifest. The stable task ID supports direct selection, categories support batch
+selection, and the dataset field selects either a local or registry-backed Harbor task:
+
+```yaml
+schema: powercontext.e2e-task/v1
+id: project-database-decision
+categories:
+  - acceptance
+  - sample
+dataset:
+  path: e2e/bub/harbor-tasks
+  task_id: project-database-decision
+  checksum: <harbor-task-checksum>
+agent:
+  model_source: none
+  bub_version: 0.4.2
+  acp_server_version: 0.0.2
+evaluation:
+  expected_memory:
+    - durable project decision
+  probes:
+    - id: decision
+      query: What durable project decision was recorded?
+```
+
+Expectations describe meaning visible through a public boundary. They do not snapshot prompts, SQL, database IDs,
+complete model text, private trace shape, or tool order.
+
+LoCoMo-derived input is a pinned built-in sample, not a benchmark claim. Both local multi-step samples and
+source-native benchmark tasks use the same manifest, Harbor Job, ACP runner, Bub ACP server, Memory evaluator, and
+evidence contract.
+
+A sample-derived fixture may also contain source identity, source revision, selection policy, and stable case IDs.
+These fields form one provenance block. Loading fails when the source revision or an ID does not match.
+
+## Evidence
+
+Each selected task produces three artifacts below `<output>/<task-id>/`:
+
+| Artifact | Contents |
 | --- | --- |
-| `replay.json` | Validated workload, resolved run identity, captured events, Memory snapshots, probes, and native evidence |
-| `eval-report.json` | Assertions, scores, labels, metrics, and reasons |
-| `report.md` | A compact human-readable projection of the same evaluation result |
+| `replay.json` | Scenario, non-secret run identity, outputs, prepared context, Memory snapshots, and agent span tree |
+| `eval-report.json` | Assertions, labels, scores, metrics, and reasons |
+| `report.md` | A short report for a reviewer or CI summary |
 
-The replay is sufficient for offline rescoring. It records the dataset checksum, model identity, database, instruction
-evidence, and PowerContext scope state needed to interpret the result. Secrets are removed before artifacts are written.
+`replay.json` is self-contained so offline scoring does not need to join separate input, trace, Memory, and output
+files. It distinguishes setup or execution failure from a completed result with low quality.
 
-# Drawbacks
+The bundle contains user-visible text and receives stricter handling than normal telemetry. Credentials, authorization
+headers, database URLs, and provider secrets are removed. Live runs require trusted events and bounded artifact
+retention.
 
-Harbor becomes a required dependency for agent workload execution. Long-horizon workloads also take more time and may
-use paid model capacity. Their evidence can contain user-visible task content, so retention and redaction must be
-treated as part of the workload contract.
+## Runner and model configuration
 
-# Rationale and alternatives
+Harbor owns the task, container, ACP, and agent lifecycle. Local multi-step tasks create an independent ACP session for
+each step while retaining one task environment and one PowerContext scope. Registry tasks use the same Harbor Job
+entrypoint. The harness does not maintain a second direct Bub runner.
 
-A separate direct Bub runner would duplicate lifecycle and evidence behavior. Keeping Harbor as the only runner lets
-local samples and registry tasks exercise the same path.
+A run identifies these model roles separately:
 
-Using the source-native reward as the acceptance result would answer whether the agent solved the task, not whether
-PowerContext collected useful Memory. The native result is preserved without replacing the Memory evaluator.
+- the agent model;
+- PowerContext generation;
+- PowerContext embedding; and
+- the evaluation judge.
 
-Copying registry instructions into manifests would make workloads easier to read in isolation but would allow the copy
-to diverge from the pinned task. Recording the resolved instruction in replay evidence provides inspectability without
-creating another authoritative input.
+The initial Bub harness reads its agent model from `BUB_MODEL`, `BUB_API_KEY`, optional `BUB_API_BASE`, and bounded
+`BUB_CLIENT_ARGS`. It may pass that configuration to PowerContext generation and the judge only when the mapping is
+explicit and lossless. Explicit PowerContext settings take precedence. Embedding always requires its own profile.
+
+## Evaluation
+
+The Pydantic Memory evaluator receives the complete replay observation. These failures block acceptance:
+
+- setup or agent execution did not complete;
+- a declared session did not run;
+- expected Memory is absent after a step; or
+- expected prepared context is absent before the dependent step.
+
+Answer quality is diagnostic by default because live model output can vary. A trusted configuration may make it
+blocking after the case has shown enough stability. Duration, token use, span count, and Memory additions are metrics,
+not assertions, unless a scenario declares an external budget.
+
+## Database matrix
+
+Behavior and replay scenarios run with SQLite and OceanBase. The input and expectations stay the same. The matrix
+checks public behavior across both deployments, not identical latency, SQL, or physical plans.
+
+# CI
+
+Pull requests and main branch commits run general E2E plus deterministic scenario acceptance for both databases. Live
+replay runs only on trusted events that have provider credentials. The committed sampled set runs on its declared
+trusted or scheduled cadence.
+
+The matrix does not fail fast. Each database uploads its own evidence even when the other one fails. Long term reports
+compare only runs with the same sample set, model configuration, execution budget, and attempt policy.
 
 # Non-goals
 
-This RFC does not define a benchmark leaderboard, a general dataset registry, a new agent protocol, or an evaluation
-platform. It does not replace source-native graders. It also does not require tests for private runner details that a
-user cannot observe.
+This RFC does not define a general evaluation platform, dataset registry, agent protocol, or harness plugin system. It
+does not replace source-native grading. It does not test private implementation details for coverage.
+
+The implementation stays close to Harbor, ACP, Bub, and PowerContext. It does not introduce a second agent runner or
+a second dataset abstraction.
 
 # Acceptance criteria
 
-The proposal is complete when:
+The design is complete when:
 
-- local tasks and registry tasks use the same manifest, Harbor entrypoint, ACP agent, evaluator, and artifact schemas;
-- one command selects workloads by one or more IDs and by category;
-- the LoCoMo-derived case remains a pinned built-in sample in the common catalog;
-- replay evidence identifies the instructions that the agent received;
-- long-horizon acceptance measures captured, grounded, and recallable Memory independently of the native task reward;
-  and
-- the same replay can be scored online or offline without rerunning the task.
+- general E2E covers complete public PowerContext flows;
+- independent agent sessions share durable state only through PowerContext;
+- the same behavior and replay scenarios run with SQLite and OceanBase;
+- live replay uses a real provider and records model identity;
+- one replay bundle contains input, output, Memory, prepared context, and agent spans;
+- the same Pydantic evaluation model can score that bundle online or offline;
+- sampled inputs are fixed, reviewable, isolated, and free of reference leakage;
+- CI separates infrastructure failure, blocking acceptance, and diagnostic quality; and
+- every test protects observable behavior or a concrete regression.
+
+# Open questions
+
+- Which model and embedding profiles are stable and affordable enough for trusted CI?
+- Which cases and budgets define the first committed sample set?
+- Which non-sensitive fields should be retained for long term trend reports?
