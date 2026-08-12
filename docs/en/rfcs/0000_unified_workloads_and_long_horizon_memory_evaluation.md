@@ -5,192 +5,280 @@
 
 # Summary
 
-PowerContext will represent every sampled end-to-end scenario and long-horizon agent task as a workload. A workload
-selects a Harbor task, sets its execution budget, and declares how the resulting Memory is evaluated. Local scenarios,
-pinned samples, and registry datasets use the same manifest, runner, evidence, and report contracts.
+PowerContext represents built-in end-to-end samples and long-horizon benchmark tasks as workloads. Each workload
+selects a pinned task, chooses one execution profile, sets a budget, and declares how to evaluate the Memory produced
+during the run.
 
-All workloads follow one execution path:
+The supported execution profiles are:
 
-```text
-workload -> public PowerContext setup -> Harbor Job -> ACP -> Bub -> PowerContext -> evidence -> Memory evaluator -> report
-```
+| Profile | Purpose |
+| --- | --- |
+| `basic` | Runs a controlled benchmark flow through public PowerContext interfaces without a general-purpose agent. |
+| `bub` | Runs a white-box agent whose model, tools, context injection, capture, and checkpoints can be inspected or replaced. |
+| `codex` | Runs the native Codex agent for production-shaped software engineering tasks. |
 
-The acceptance result answers whether the run captured useful, grounded, and recallable Memory. A source-native task
-reward remains diagnostic and does not decide Memory acceptance.
+The profiles share the workload catalog, setup, evidence envelope, Memory evaluator, and report format. They do not
+share an agent implementation. A source task reward remains diagnostic and does not decide Memory acceptance.
 
 # Motivation
 
-RFC 0081 defines the broader end-to-end evaluation architecture, but it does not settle how local samples and
-registry-backed long-horizon tasks share one workload contract. Without that contract, each task source can introduce
-its own runner, command, or report shape.
+RFC 0081 defines the broader end-to-end evaluation architecture, but leaves two gaps. It does not define how local
+samples and long-horizon tasks share one workload contract, and it treats Bub as the initial implementation rather
+than one execution option among several.
 
-Long-horizon evaluation also needs a distinct success definition. The run remains useful when the agent does not solve
-the source task. It can still show whether PowerContext captured the investigation, preserved source provenance,
-created Memory during the task, and recalled that Memory afterward. Task completion and Memory quality are related
-observations, not the same outcome.
+No single runtime gives useful evidence for every question:
+
+- A controlled LoCoMo run needs stable ingestion, retrieval, answering, and scoring boundaries. A general-purpose
+  agent adds variables without improving that measurement.
+- Bub is useful when an experiment needs to inspect or replace each part of the agent loop. It is the white-box
+  runtime for capture policy, checkpoint cadence, context injection, and failure analysis.
+- SWE-Pro and Terminal-Bench need a production-shaped coding agent. Running native Codex avoids attributing Bub
+  behavior to Codex.
+
+Long-horizon evaluation also needs a success definition independent of task completion. An unsuccessful task can
+still show whether PowerContext captured the investigation, preserved source provenance, created Memory, and recalled
+that Memory afterward.
 
 # Guide-level explanation
 
-## One workload model
+## Workload manifest
 
-The workload manifest is the catalog entry and execution contract:
+The workload manifest is the catalog entry and execution contract. Pydantic validates the manifest and runtime
+settings before execution. `execution.type` is the discriminator for a closed union of profile-specific settings.
+
+A Codex workload can be declared as follows:
 
 ```yaml
 schema: powercontext.e2e-task/v1
-id: terminal-bench-db-wal-recovery
+id: swe-pro-example-codex
 categories:
   - long-horizon
-  - terminal-bench
+  - swe-pro
 dataset:
-  name: terminal-bench
-  version: "2.0"
-  task_id: db-wal-recovery
+  path: e2e/benchmarks/swe-pro/tasks
+  task_id: scaleai/swe-bench-pro__example
   checksum: <task-checksum>
-agent:
+execution:
+  type: codex
   model_source: codex-oauth
-  max_steps: 50
+  model: gpt-5.6-sol
+  reasoning_effort: medium
+  timeout_seconds: 7200
 evaluation:
   capture_events: true
-  checkpoint_every_events: 5
   probes:
     - id: investigation
-      query: What records and SQLite table were found in /app/main.db?
+      query: What did the agent learn while investigating the failure?
 ```
 
-`dataset` can identify a local Harbor task or a versioned registry task. The remaining workload fields keep the same
-meaning in both cases. Pydantic validates manifests and runtime settings before execution.
+A Bub workload can expose a larger step budget and capture cadence:
 
-A workload may declare public PowerContext state that must exist before Harbor starts. For example, an Experience
-recall workload declares approved Experiences in `setup`. The common runner creates this state through the public
-Client in the workload scope and records the resulting Source and Artifact references. It flushes pending setup
-Sources before recording the pre-execution Memory baseline. Setup does not select another agent or runner.
+```yaml
+execution:
+  type: bub
+  model_source: codex-oauth
+  model: gpt-5.6-sol
+  bub_version: 0.4.2
+  acp_server_version: 0.0.2
+  max_steps: 200
+  max_tokens: 16384
+  checkpoint_every_events: 5
+```
+
+A basic workload needs no agent configuration:
+
+```yaml
+execution:
+  type: basic
+```
+
+`dataset` may identify a repository-maintained task or a versioned registry task. Repository-maintained adapters can
+pin upstream data and verifier revisions without publishing to a registry. All generated tasks use the same standard
+layout. Registry publication is a distribution option, not an execution dependency.
+
+A workload may declare public PowerContext state that must exist before execution. For example, an Experience recall
+workload can declare approved Experiences in `setup`. The harness creates this state through the public Client,
+flushes pending setup Sources, and records a pre-execution Memory baseline. Setup never selects another profile.
 
 Workloads have stable IDs. One command can run one ID, several IDs, or every workload in a category. Categories are
-selection metadata and do not select a different runner.
+selection metadata. A workload ID identifies one complete execution contract, including its profile. Two workloads
+may use the same source task with different profiles, but their results remain distinct.
 
-LoCoMo input in this catalog is a pinned built-in sample. It checks the workload flow against fixed conversation data
-but does not claim a LoCoMo benchmark result.
+## Execution profiles
 
-## One execution flow
+### Basic
 
-The harness creates an isolated PowerContext scope and records its initial Memory. It applies declared setup through
-the public Client, flushes setup Sources, and records a pre-execution Memory baseline. Harbor resolves the dataset,
-creates the task environment, and runs the task through its ACP agent support. Bub receives the task instructions and
-uses the PowerContext integration while it works. The integration captures eligible events and advances Memory
-checkpoints.
+The `basic` profile runs a bounded benchmark driver through public PowerContext interfaces. It has no general-purpose
+agent and does not emulate one. The driver owns benchmark operations such as ordered session ingestion, retrieval,
+answer generation, and source-native scoring.
 
-After Harbor finishes, the harness records native ACP evidence, final Memory, and the result of each recall probe. The
-same evaluator produces machine-readable and reviewer-readable reports. A failed workload still writes the evidence
-collected before the failure.
+Complete LoCoMo evaluation belongs here because the driver can keep transcript ingestion, gold data, retrieval input,
+and answer scoring at explicit boundaries. A built-in LoCoMo sample remains a sample unless its manifest selects the
+complete pinned benchmark contract.
 
-There is no direct Bub runner beside Harbor. Local and registry tasks both enter through `Job.run`.
+### Bub
 
-## Instruction boundary
+The `bub` profile is the white-box agent runtime. Harbor owns the task environment and ACP lifecycle. Bub runs through
+its supported installation path and uses the PowerContext integration while it works.
 
-The Harbor task owns agent-visible instructions. A local task stores them in its task directory, while a registry task
-obtains them from the pinned dataset entry. The workload manifest does not copy those instructions because doing so
-would create two sources of truth.
+This profile records the evidence needed to inspect model requests, tool results, prepared context, captured events,
+and checkpoints. Tests and experiments may replace or configure these parts without changing the common workload or
+report contracts. Built-in agent samples and Memory-policy experiments should normally use this profile.
 
-Replay evidence records the resolved instruction identity and content, subject to redaction. A reviewer can therefore
-confirm what the agent received without making the manifest authoritative for task content.
+### Codex
 
-Evaluation probes are separate. The harness submits them to PowerContext after task execution to test the resulting
-Memory. They are not agent hints and do not enter the task environment during execution.
+The `codex` profile uses Harbor's native Codex agent and the existing PowerContext Codex integration. It uses the
+operator's configured Codex OAuth source without routing Codex through Bub or defining another agent.
+
+SWE-Pro and Terminal-Bench should normally use this profile. Their repository-maintained Harbor adapters keep the
+source task, environment, and verifier semantics. The harness adds Memory collection and evaluation around the native
+task rather than replacing its grader.
+
+## Shared execution flow
+
+The fixed harness performs the common work before and after profile execution:
+
+```text
+manifest
+  -> validated setup and isolated PowerContext scope
+  -> basic | bub | codex executor
+  -> normalized replay evidence
+  -> Memory evaluation
+  -> report rendering
+```
+
+The harness records initial Memory, applies declared setup, flushes setup Sources, and records the pre-execution
+baseline. It then invokes the selected profile. Bub and Codex tasks enter through Harbor `Job.run`; the basic profile
+uses the benchmark driver without creating an agent session.
+
+After execution, the harness records final Memory and runs the declared recall probes. A failed workload still writes
+the evidence collected before the failure.
+
+## Input and instruction boundary
+
+The pinned task or benchmark adapter owns execution input. Harbor tasks own agent-visible instructions for Bub and
+Codex. A basic adapter owns its ordered input records and questions. The workload manifest references these inputs but
+does not copy them.
+
+Replay evidence records resolved input identities and, where safe, their content. Evaluation probes remain separate
+from execution input. They run after the task and cannot provide hints to an agent or benchmark answerer.
 
 ## Memory acceptance
 
-Memory acceptance checks observable evidence from the collection path:
+Memory acceptance uses evidence that is observable across implementations:
 
-- the expected Harbor task, instructions, and ACP artifacts were recorded;
-- enough eligible agent events were captured;
-- the run created Memory and completed any required checkpoints;
-- created Memory cites declared setup Sources or Sources captured from the agent trajectory; and
-- the declared recall probes receive usable prepared context.
+- the resolved task and execution profile match the manifest;
+- required native evidence for the selected profile was recorded;
+- the run captured eligible events or declared input records;
+- the run created Memory and completed required checkpoints or flushes;
+- created Memory cites declared setup Sources or Sources captured during execution;
+- declared recall probes receive usable prepared context.
 
-A deterministic built-in sample may also declare expected Memory content. A long-horizon task normally evaluates
-coverage, grounding, and recall instead of requiring a fixed answer.
+A deterministic workload may require expected Memory content. A long-horizon task normally measures coverage,
+grounding, and recall instead of requiring a fixed final answer.
 
-The Harbor reward, verifier result, duration, and model usage remain labels, scores, or metrics. A task may fail its
+Native task rewards, verifier results, duration, and model usage remain labels, scores, or metrics. A task may fail its
 native grader and still pass Memory acceptance.
 
 # Reference-level explanation
 
-## Workload and dependency contracts
+## Workload and executor contracts
 
-The manifest is the only harness-level task abstraction. Dataset adapters resolve Harbor tasks but do not define a
-second workload schema. Agent configuration and PowerContext evaluation settings belong to the validated manifest.
+The manifest is the only harness-level workload abstraction. `execution` is a Pydantic discriminated union. Each
+profile accepts only its own settings, so Bub versions and step budgets cannot leak into Codex or basic workloads.
 Secrets and machine-local paths remain in validated runtime settings.
 
-Agent-driven approved Experience recall is a live workload in the same catalog. Deterministic Experience and Skill
-lifecycle behavior remains in `tests/e2e/`, where it is exercised through public product interfaces without a model.
+Dataset adapters produce the standard task layout and pin upstream provenance. They do not run workloads, choose a
+profile, evaluate Memory, or render reports.
 
 Dependencies flow in one direction:
 
 ```text
-manifest
-  -> Harbor task and Job
-  -> ACP agent execution
-  -> Bub and PowerContext capture
+manifest and task provenance
+  -> profile executor
   -> replay evidence
   -> Memory evaluation
   -> report rendering
 ```
 
-The evaluator consumes replay evidence and has no control over Harbor or Bub. Report rendering consumes the evaluation
-result and does not recalculate acceptance. A future evaluation integration may consume this result, but it remains
-downstream of the workload runner.
+The evaluator reads replay evidence and cannot control an executor. Report rendering reads the evaluation result and
+does not recalculate acceptance.
 
 ## Evidence contract
 
-Each workload produces one artifact directory:
+Every workload writes one artifact directory:
 
 | Artifact | Purpose |
 | --- | --- |
-| `replay.json` | Workload, run identity, setup results, resolved instructions, captured events, initial and pre-execution Memory snapshots, probes, and native evidence |
-| `eval-report.json` | Assertions, scores, labels, metrics, and reasons |
-| `report.md` | A compact human-readable projection of the same evaluation result |
+| `replay.json` | Workload identity, profile, task provenance, setup, runtime observations, Memory snapshots, probes, and native evidence references. |
+| `eval-report.json` | Assertions, scores, labels, metrics, and reasons. |
+| `report.md` | A human-readable projection of the evaluation result. |
 
-The replay is sufficient for offline rescoring. It records the dataset checksum, model identity, database, instruction
-evidence, and PowerContext scope state needed to interpret the result. Secrets are removed before artifacts are written.
+The common replay envelope supports offline rescoring. Profile-specific evidence remains typed within that envelope:
+
+| Profile | Native evidence |
+| --- | --- |
+| `basic` | Input progress, ingestion and flush results, retrieval observations, answers, and source-native scores. |
+| `bub` | ACP summaries, captured events, checkpoints, tool observations, and trajectory artifacts. |
+| `codex` | Codex trajectory, plugin capture observations, Harbor task result, and verifier artifacts. |
+
+The replay records dataset checksums, model identity, database identity, resolved inputs, and PowerContext scope state.
+Final artifact sinks remove configured secrets. Native task artifacts may contain task content and require review
+before publication.
+
+## Benchmark placement
+
+- Complete LoCoMo uses `basic` as its benchmark profile.
+- LoCoMo-derived built-in samples may use `basic` or `bub`, but do not claim a LoCoMo benchmark result.
+- SWE-Pro and Terminal-Bench use `codex` for production-shaped runs.
+- A Bub variant of a coding task may be added for white-box analysis. It has a separate workload ID and report.
+
+Results from different profiles are not merged into one benchmark score. A comparison must pin the same task,
+PowerContext revision, model identity, budget, and acceptance policy, and must identify the profile as a treatment
+variable.
 
 ## Compatibility
 
-Existing local samples keep their Harbor task layout and task IDs. Registry tasks retain their source-native task and
-verifier. LoCoMo remains a pinned sample rather than a benchmark claim. These workloads differ only in dataset source
-and declared acceptance thresholds.
+Existing Bub workloads become `execution.type: bub` without changing their source task IDs. Existing LoCoMo benchmark
+logic can move under the `basic` profile while retaining its pinned data and scoring contract. Long-horizon Codex
+workloads use Harbor's native Codex support instead of the Bub ACP adapter.
+
+The catalog and command surface remain shared. Users select workload IDs or categories rather than separate Make
+targets for LoCoMo, Bub, Codex, or a dataset family.
 
 # Drawbacks
 
-Harbor becomes a required dependency for agent workload execution. Long-horizon workloads take more time and may use
-paid model capacity. Their evidence can contain user-visible task content, so retention and redaction are part of the
-workload contract.
+The harness has three executors rather than one. The common replay schema must distinguish profile-specific evidence
+without reducing it to untyped dictionaries. Bub and Codex workloads require Harbor and an agent model, while basic
+workloads may not. Long-horizon runs can consume paid model capacity and produce large artifacts.
 
 # Rationale and alternatives
 
-A separate direct Bub runner would duplicate lifecycle and evidence behavior. Keeping Harbor as the only runner lets
-local samples and registry tasks exercise the same path.
+Using Bub for every workload would make the runtime uniform, but it would add agent behavior to controlled benchmarks
+and would not measure native Codex behavior. Removing Bub would also be a mistake because Codex does not expose the
+same white-box controls. The three profiles preserve both controlled measurement and realistic agent execution.
 
-Using the source-native reward as acceptance would answer whether the agent solved the task, not whether PowerContext
-collected useful Memory. The native result is preserved without replacing the Memory evaluator.
+Separate harnesses for each profile would duplicate selection, setup, evidence, evaluation, and reporting. The shared
+manifest and artifact contracts keep those concerns in one place while allowing execution semantics to differ.
 
-Copying registry instructions into manifests would make workloads easier to read in isolation but would allow the copy
-to diverge from the pinned task. Recording the resolved instruction in replay evidence provides inspectability without
-creating another authoritative input.
+Using a source-native reward as Memory acceptance would answer whether the task was solved, not whether PowerContext
+collected useful Memory. The native result remains available without replacing the Memory evaluator.
 
 # Non-goals
 
-This RFC does not replace RFC 0081, define a benchmark leaderboard, introduce a general dataset registry, or create a
-new agent protocol. It does not replace source-native graders or require tests for private runner details.
+This RFC does not replace RFC 0081, define a leaderboard, require registry publication, or introduce a new agent
+protocol. It does not standardize private executor internals or replace source-native graders.
 
 # Acceptance criteria
 
 The proposal is complete when:
 
-- local tasks and registry tasks use the same manifest, Harbor entrypoint, ACP agent, evaluator, and artifact schemas;
-- agent-driven approved Experience recall uses the common workload catalog and has no direct Codex runner;
-- one command selects workloads by one or more IDs and by category;
-- the LoCoMo-derived case remains a pinned built-in sample in the common catalog;
-- replay evidence identifies the instructions that the agent received;
-- long-horizon acceptance measures captured, grounded, and recallable Memory independently of the native task reward;
-  and
-- the same replay can be scored online or offline without rerunning the task.
+- one Pydantic workload manifest supports the closed `basic`, `bub`, and `codex` execution union;
+- one command selects one or more workload IDs and categories across all profiles;
+- repository-maintained and registry tasks use the same provenance and task layout contracts;
+- Bub remains the configurable white-box runtime and records its native evidence;
+- Codex workloads use Harbor's native Codex agent with the existing PowerContext integration;
+- basic workloads run without a general-purpose agent;
+- complete LoCoMo and LoCoMo-derived samples are reported with the correct benchmark or sample scope;
+- long-horizon Memory acceptance remains independent of native task reward;
+- each replay identifies the selected profile and supports offline rescoring without rerunning the task.
