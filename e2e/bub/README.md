@@ -109,10 +109,13 @@ POWERCONTEXT_E2E_IDS=approved-experience-recall make harness-compose-run
 
 It requires Codex OAuth plus configured PowerContext generation and embedding inference. The manifest declares three
 approved Experiences. The common runner proposes and approves them through the public Client in the isolated scope,
-then starts one Harbor multi-step task. Every step uses the existing Bub ACP agent and PowerContext integration. The
-native verifiers check the coding repositories for diagnostic task outcomes. Memory acceptance instead checks that
-the Experiences reached the agent through prepared context and that the agent run produced grounded, recallable
-Memory. No separate Codex runner or Experience-specific agent participates in this path.
+flushes the setup Sources, records the pre-execution Memory baseline, then starts one Harbor multi-step task. Every
+step uses the existing Bub ACP agent and PowerContext integration. The native verifiers record a reward for each step
+without stopping later steps after a failed task assertion. Memory acceptance checks that the Experiences reached the
+agent through prepared context and that the agent run produced grounded, recallable Memory. Setup Sources and Sources
+captured from the agent trajectory are both valid provenance, while only Memory added after the pre-execution
+baseline counts as created during the run. No separate Codex runner or Experience-specific agent participates in this
+path.
 
 Each selected workload writes the same layout:
 
@@ -124,8 +127,8 @@ Each selected workload writes the same layout:
   harbor-jobs/
 ```
 
-`replay.json` is a self-contained Pydantic observation and records declared setup results plus the instructions
-resolved by Harbor's ACP runner.
+`replay.json` is a self-contained Pydantic observation. It records the scope's initial Memory, the pre-execution
+baseline after declared setup has been processed, and the instructions resolved by Harbor's ACP runner.
 `eval-report.json` uses
 `powercontext.e2e-evaluation/v1`. `report.md` is rendered from the report model with Marko. Native Harbor and ACP
 evidence remains under `harbor-jobs/`.

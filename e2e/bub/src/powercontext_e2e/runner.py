@@ -17,7 +17,9 @@ from harbor.models.trial.config import AgentConfig, EnvironmentConfig, ResourceM
 from powercontext.client import PowerContextClient
 from powercontext.http import (
     ApproveArtifactCandidateRequest,
+    CaptureContentSourceRequest,
     ExperienceProposal,
+    FlushMemoryRequest,
     ListMemoryEntriesRequest,
     PrepareContextRequest,
     ProposeExperienceRequest,
@@ -70,10 +72,12 @@ class MemoryEvaluator:
         memory_before_ids = {entry.entry_id for entry in observation.memory_before.entries}
         new_memory = [entry for entry in observation.memory_after.entries if entry.entry_id not in memory_before_ids]
         captured_source_ids = {record.source_id for record in captured_records if record.source_id is not None}
+        setup_source_ids = {experience.source_id for experience in observation.setup.approved_experiences}
+        evidence_source_ids = captured_source_ids | setup_source_ids
         grounded_memory = [
             entry
             for entry in new_memory
-            if entry.source_refs and all(source.source_id in captured_source_ids for source in entry.source_refs)
+            if entry.source_refs and all(source.source_id in evidence_source_ids for source in entry.source_refs)
         ]
         groundedness = len(grounded_memory) / len(new_memory) if new_memory else 0.0
 
@@ -89,10 +93,9 @@ class MemoryEvaluator:
         probe_coverage = len(supported_probes) / len(evaluation.probes)
         in_run_contexts = sum(
             record.event == "context"
+            and record.status == "ready"
             and record.content_bytes is not None
             and record.content_bytes > 0
-            and bool(record.captured_events)
-            and bool(record.flushed_position)
             for record in observation.capture_records
         )
         completed_checkpoints = [
@@ -190,8 +193,8 @@ class MemoryEvaluator:
                 reason=f"Observed {in_run_contexts}; required {thresholds.minimum_in_run_contexts}.",
             ),
             "scope_started_empty": EvaluationValue(
-                value=not observation.memory_before.entries,
-                reason=f"Scope started with {len(observation.memory_before.entries)} Memory entries.",
+                value=not observation.memory_initial.entries,
+                reason=f"Scope started with {len(observation.memory_initial.entries)} Memory entries.",
             ),
         }
         if evaluation.expected_memory:
@@ -259,6 +262,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
     resolved_instructions: tuple[ResolvedInstruction, ...] = ()
     setup_observation = WorkloadSetupObservation()
     harbor_observation = HarborTrialObservation()
+    memory_initial = MemorySnapshot()
     memory_before = MemorySnapshot()
     memory_after = MemorySnapshot()
     probes: tuple[RecallProbeObservation, ...] = ()
@@ -267,7 +271,10 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
     try:
         async with PowerContextClient(host_url, timeout=30) as client:
             await client.get_readiness()
+            memory_initial = await memory_snapshot(client, scope_id)
             setup_observation = await prepare_workload(client, scope_id, task)
+            if task.setup.approved_experiences:
+                await client.flush_memory(FlushMemoryRequest(scope_id=scope_id))
             memory_before = await memory_snapshot(client, scope_id)
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -319,6 +326,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
         native_artifacts=native_artifacts,
         resolved_instructions=resolved_instructions,
         setup=setup_observation,
+        memory_initial=memory_initial,
         memory_before=memory_before,
         memory_after=memory_after,
         probes=probes,
@@ -332,16 +340,25 @@ async def prepare_workload(
 ) -> WorkloadSetupObservation:
     approved_experiences: list[ApprovedExperienceObservation] = []
     for experience in task.setup.approved_experiences:
+        proposal = ExperienceProposal(
+            situation=experience.situation,
+            action=experience.action,
+            outcome=experience.outcome,
+            lesson=experience.lesson,
+        )
+        source = await client.capture_content_source(
+            CaptureContentSourceRequest(
+                scope_id=scope_id,
+                source_id=f"workload-setup:{experience.id}",
+                content=proposal.model_dump_json(),
+                metadata={"kind": "workload-setup", "experience_id": experience.id},
+            )
+        )
         candidate = await client.propose_experience(
             ProposeExperienceRequest(
                 scope_id=scope_id,
-                proposal=ExperienceProposal(
-                    situation=experience.situation,
-                    action=experience.action,
-                    outcome=experience.outcome,
-                    lesson=experience.lesson,
-                ),
-                source_refs=[],
+                proposal=proposal,
+                source_refs=[source.source],
                 artifact_refs=[],
                 reason="Prepare declared context for an isolated end-to-end workload.",
             )
@@ -359,6 +376,7 @@ async def prepare_workload(
         approved_experiences.append(
             ApprovedExperienceObservation(
                 id=experience.id,
+                source_id=source.source.source_id,
                 artifact_id=artifact.artifact_id,
                 revision=artifact.revision,
             )
@@ -536,7 +554,7 @@ def _task_outcome(harbor: HarborTrialObservation) -> str:
         return f"error:{harbor.exception_type}"
     if not harbor.rewards:
         return "unscored"
-    return "passed" if any(float(reward) > 0 for reward in harbor.rewards.values()) else "not_passed"
+    return "passed" if all(float(reward) >= 1 for reward in harbor.rewards.values()) else "not_passed"
 
 
 def write_artifacts(

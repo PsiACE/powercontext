@@ -2,3 +2,5 @@ services:
   main:
     extra_hosts:
       - host-gateway:host-gateway
+    security_opt:
+      - label=disable

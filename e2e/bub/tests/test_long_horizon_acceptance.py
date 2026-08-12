@@ -43,7 +43,7 @@ def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
             job_id="job-id",
             trial_name="trial-name",
             task_checksum=task.dataset.checksum,
-            rewards={"reward": 0},
+            rewards={"reward": 1 / 3},
         ),
         capture_records=(
             CaptureRecord(
@@ -112,5 +112,5 @@ def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
     report = MemoryEvaluator().evaluate(task, observation, experiment="behavior-test")
 
     assert report.accepted
-    assert report.cases[0].scores["harbor_reward_reward"].value == 0
+    assert report.cases[0].scores["harbor_reward_reward"].value == 1 / 3
     assert report.cases[0].labels["task_outcome"].value == "not_passed"

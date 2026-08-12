@@ -218,6 +218,7 @@ class ResolvedInstruction(EvidenceModel):
 
 class ApprovedExperienceObservation(EvidenceModel):
     id: str
+    source_id: str
     artifact_id: str
     revision: int = Field(ge=1)
 
@@ -241,6 +242,7 @@ class TaskObservation(EvidenceModel):
     native_artifacts: tuple[NativeArtifact, ...] = ()
     resolved_instructions: tuple[ResolvedInstruction, ...] = ()
     setup: WorkloadSetupObservation = Field(default_factory=WorkloadSetupObservation)
+    memory_initial: MemorySnapshot = Field(default_factory=MemorySnapshot)
     memory_before: MemorySnapshot
     memory_after: MemorySnapshot
     probes: tuple[RecallProbeObservation, ...] = ()

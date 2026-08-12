@@ -59,8 +59,9 @@ evaluation:
 与运行时配置都在执行前经过 Pydantic 校验。
 
 Workload 可以声明 Harbor 启动前必须存在的公开 PowerContext 状态。例如，Experience recall workload 在 `setup` 中声明
-approved Experience。统一 runner 使用公开 Client 在 workload scope 中创建这些状态，并记录最终 Artifact reference。
-Setup 不会选择另一种 agent 或 runner。
+approved Experience。统一 runner 使用公开 Client 在 workload scope 中创建这些状态，并记录最终 Source 与 Artifact
+reference。Runner 会先 flush 待处理的 setup Source，再记录 execution 前的 Memory baseline。Setup 不会选择另一种 agent
+或 runner。
 
 每个 workload 都有稳定 ID。一个命令可以运行单个 ID、多个 ID，或一个 category 下的全部 workload。Category 只是选择
 条件，不会切换 runner。
@@ -69,9 +70,9 @@ Catalog 中的 LoCoMo 数据是固定的内置采样。它用固定 conversation
 
 ## 一条执行链
 
-Harness 创建隔离的 PowerContext scope，通过公开 Client 应用声明的 setup，并记录初始 Memory。Harbor 解析 dataset、
-创建任务环境，再通过 ACP agent 支持运行任务。Bub 接收任务指令，并在工作过程中使用 PowerContext integration。
-Integration 捕获符合条件的事件，并推进 Memory checkpoint。
+Harness 创建隔离的 PowerContext scope，并记录其初始 Memory。随后通过公开 Client 应用声明的 setup，flush setup Source，
+再记录 execution 前的 Memory baseline。Harbor 解析 dataset、创建任务环境，再通过 ACP agent 支持运行任务。Bub 接收
+任务指令，并在工作过程中使用 PowerContext integration。Integration 捕获符合条件的事件，并推进 Memory checkpoint。
 
 Harbor 结束后，harness 记录原生 ACP evidence、最终 Memory 和每个 recall probe 的结果。统一 evaluator 生成机器可读与
 供评审阅读的 report。Workload 中途失败时，已经采集的 evidence 仍会写入 artifact。
@@ -96,7 +97,7 @@ Memory acceptance 检查采集链产生的可观察 evidence：
 - 记录了预期的 Harbor task、instruction 与 ACP artifact；
 - 足够多的 agent event 被成功采集；
 - 本次运行创建了 Memory，并完成要求的 checkpoint；
-- 新建 Memory 引用了本次采集的 source；
+- 新建 Memory 引用了声明的 setup Source 或 agent trajectory 中采集的 Source；
 - 声明的 recall probe 能获得可用的 prepared context。
 
 确定性的内置样例还可以声明预期的 Memory 内容。长程任务通常评估 coverage、grounding 与 recall，不要求固定答案。
@@ -135,7 +136,7 @@ Evaluator 只读取 replay evidence，不控制 Harbor 或 Bub。Report renderer
 
 | Artifact | 用途 |
 | --- | --- |
-| `replay.json` | Workload、运行身份、setup result、最终指令、采集事件、Memory snapshot、probe 与原生 evidence |
+| `replay.json` | Workload、运行身份、setup result、最终指令、采集事件、初始和 execution 前的 Memory snapshot、probe 与原生 evidence |
 | `eval-report.json` | Assertion、score、label、metric 与判断理由 |
 | `report.md` | 同一个 evaluation result 的简短可读表示 |
 

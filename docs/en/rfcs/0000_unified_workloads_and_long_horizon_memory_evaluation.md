@@ -62,8 +62,8 @@ meaning in both cases. Pydantic validates manifests and runtime settings before 
 
 A workload may declare public PowerContext state that must exist before Harbor starts. For example, an Experience
 recall workload declares approved Experiences in `setup`. The common runner creates this state through the public
-Client in the workload scope and records the resulting Artifact references. Setup does not select another agent or
-runner.
+Client in the workload scope and records the resulting Source and Artifact references. It flushes pending setup
+Sources before recording the pre-execution Memory baseline. Setup does not select another agent or runner.
 
 Workloads have stable IDs. One command can run one ID, several IDs, or every workload in a category. Categories are
 selection metadata and do not select a different runner.
@@ -73,10 +73,11 @@ but does not claim a LoCoMo benchmark result.
 
 ## One execution flow
 
-The harness creates an isolated PowerContext scope, applies declared setup through the public Client, and records its
-initial Memory. Harbor resolves the dataset, creates the task environment, and runs the task through its ACP agent
-support. Bub receives the task instructions and uses the PowerContext integration while it works. The integration
-captures eligible events and advances Memory checkpoints.
+The harness creates an isolated PowerContext scope and records its initial Memory. It applies declared setup through
+the public Client, flushes setup Sources, and records a pre-execution Memory baseline. Harbor resolves the dataset,
+creates the task environment, and runs the task through its ACP agent support. Bub receives the task instructions and
+uses the PowerContext integration while it works. The integration captures eligible events and advances Memory
+checkpoints.
 
 After Harbor finishes, the harness records native ACP evidence, final Memory, and the result of each recall probe. The
 same evaluator produces machine-readable and reviewer-readable reports. A failed workload still writes the evidence
@@ -103,7 +104,7 @@ Memory acceptance checks observable evidence from the collection path:
 - the expected Harbor task, instructions, and ACP artifacts were recorded;
 - enough eligible agent events were captured;
 - the run created Memory and completed any required checkpoints;
-- created Memory cites captured sources; and
+- created Memory cites declared setup Sources or Sources captured from the agent trajectory; and
 - the declared recall probes receive usable prepared context.
 
 A deterministic built-in sample may also declare expected Memory content. A long-horizon task normally evaluates
@@ -145,7 +146,7 @@ Each workload produces one artifact directory:
 
 | Artifact | Purpose |
 | --- | --- |
-| `replay.json` | Workload, run identity, setup results, resolved instructions, captured events, Memory snapshots, probes, and native evidence |
+| `replay.json` | Workload, run identity, setup results, resolved instructions, captured events, initial and pre-execution Memory snapshots, probes, and native evidence |
 | `eval-report.json` | Assertions, scores, labels, metrics, and reasons |
 | `report.md` | A compact human-readable projection of the same evaluation result |
 
