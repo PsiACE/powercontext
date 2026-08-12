@@ -8,7 +8,8 @@ dataset:
   path: e2e/bub/harbor-tasks
   task_id: project-database-decision
   checksum: a892da6ad2cdddc9f3815a66c9543d615db4aa2616777aa4c7f5e5c279ff6bb5
-agent:
+execution:
+  type: bub
   model_source: none
   bub_version: 0.4.2
   acp_server_version: 0.0.2

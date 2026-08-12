@@ -4,6 +4,9 @@ This directory contains PowerContext's end-to-end workload catalog. LoCoMo is us
 benchmark suite. The Terminal-Bench case retains its native task and verifier, while PowerContext acceptance is based
 on Memory collection, grounding, and recall rather than the native task reward.
 
+The common architecture reserves `basic`, `bub`, and `codex` execution profiles. This harness currently implements
+only `bub`; migrating the complete LoCoMo benchmark or the separate SWE-Pro evaluation is outside its scope.
+
 Every workload follows one execution path:
 
 ```text
@@ -43,7 +46,8 @@ dataset:
   path: e2e/bub/harbor-tasks
   task_id: project-database-decision
   checksum: <harbor-task-checksum>
-agent:
+execution:
+  type: bub
   model_source: none
   bub_version: 0.4.2
   acp_server_version: 0.0.2
@@ -61,8 +65,9 @@ evaluation:
         - OceanBase
 ```
 
-The dataset can be a local Harbor dataset path or a registry dataset name and version. `agent` selects Bub and ACP
-budgets. Optional `setup` entries prepare declared public PowerContext state in the isolated workload scope.
+The dataset can be a local Harbor dataset path or a registry dataset name and version. `execution` selects the
+implemented profile and its budget. Optional `setup` entries prepare declared public PowerContext state in the
+isolated workload scope.
 `evaluation` declares only externally observable Memory behavior.
 
 The built-in manifests are:
@@ -127,8 +132,9 @@ Each selected workload writes the same layout:
   harbor-jobs/
 ```
 
-`replay.json` is a self-contained Pydantic observation. It records the scope's initial Memory, the pre-execution
-baseline after declared setup has been processed, and the instructions resolved by Harbor's ACP runner.
+`replay.json` is a self-contained Pydantic observation. It identifies the `bub` execution profile and records the
+scope's initial Memory, the pre-execution baseline after declared setup has been processed, and the instructions
+resolved by Harbor's ACP runner.
 `eval-report.json` uses
 `powercontext.e2e-evaluation/v1`. `report.md` is rendered from the report model with Marko. Native Harbor and ACP
 evidence remains under `harbor-jobs/`.

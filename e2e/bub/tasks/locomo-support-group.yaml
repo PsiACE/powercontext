@@ -15,7 +15,8 @@ dataset:
   path: e2e/bub/harbor-tasks
   task_id: locomo-support-group
   checksum: 13b88f406933d47c3a826d30143a2d5404f1990a0166b3d98ec25a24bcc0069c
-agent:
+execution:
+  type: bub
   model_source: none
   bub_version: 0.4.2
   acp_server_version: 0.0.2

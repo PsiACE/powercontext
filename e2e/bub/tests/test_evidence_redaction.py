@@ -98,5 +98,9 @@ def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_sche
     replay = json.loads(artifacts["replay.json"])
     evaluation = json.loads(artifacts["eval-report.json"])
     assert replay["schema"] == "powercontext.e2e-evidence/v1"
+    assert replay["execution_profile"] == "bub"
+    assert replay["task"]["execution"]["type"] == "bub"
+    assert "agent" not in replay["task"]
     assert replay["resolved_instructions"][0]["content"] == "Use credential [REDACTED] to complete the task."
     assert evaluation["schema"] == "powercontext.e2e-evaluation/v1"
+    assert evaluation["cases"][0]["attributes"]["execution_profile"] == "bub"

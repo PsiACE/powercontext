@@ -32,7 +32,7 @@ def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
         environment=RunEnvironment(
             commit="abcdef0",
             database="sqlite",
-            agent_model=task.agent.model,
+            agent_model=task.execution.model,
             model_source="codex-oauth",
             started_at=recorded_at,
             finished_at=recorded_at,

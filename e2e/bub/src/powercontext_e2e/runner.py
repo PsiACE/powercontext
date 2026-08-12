@@ -127,6 +127,7 @@ class MemoryEvaluator:
             "commit": observation.environment.commit,
             "database": observation.environment.database,
             "dataset": task.dataset.name or str(task.dataset.path),
+            "execution_profile": observation.execution_profile,
             "harbor_task_id": task.dataset.task_id,
             "run_id": observation.run_id,
             "workload_id": task.id,
@@ -311,8 +312,8 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
         environment=RunEnvironment(
             commit=settings.commit_id(),
             database=settings.database,
-            agent_model=task.agent.model,
-            model_source=task.agent.model_source,
+            agent_model=task.execution.model,
+            model_source=task.execution.model_source,
             generation_model=settings.generation_model,
             embedding_profile=settings.embedding_profile,
             started_at=started_at,
@@ -401,7 +402,7 @@ def _job_config(
             "bind": {"create_host_path": False},
         }
     ]
-    if task.agent.model_source == "codex-oauth":
+    if task.execution.model_source == "codex-oauth":
         auth_path = settings.codex_auth_path()
         if not auth_path.is_file():
             raise CodexAuthNotFoundError(auth_path)
@@ -417,9 +418,9 @@ def _job_config(
         "BUB_API_KEY": "null",
         "BUB_FALLBACK_MODELS": "null",
         "BUB_HOME": "/installed-agent/bub-home",
-        "BUB_MAX_STEPS": str(task.agent.max_steps),
-        "BUB_MAX_TOKENS": str(task.agent.max_tokens),
-        "BUB_MODEL_TIMEOUT_SECONDS": str(task.agent.timeout_seconds),
+        "BUB_MAX_STEPS": str(task.execution.max_steps),
+        "BUB_MAX_TOKENS": str(task.execution.max_tokens),
+        "BUB_MODEL_TIMEOUT_SECONDS": str(task.execution.timeout_seconds),
         "CODEX_HOME": "/installed-agent/codex",
         "POWERCONTEXT_BUB_BASE_URL": str(task.powercontext.container_url).rstrip("/"),
         "POWERCONTEXT_BUB_CAPTURE_CHECKPOINT_EVERY": str(task.evaluation.checkpoint_every_events),
@@ -429,8 +430,8 @@ def _job_config(
         "POWERCONTEXT_BUB_SCOPE_ID": scope_id,
         "POWERCONTEXT_BUB_TIMEOUT": str(task.powercontext.timeout_seconds),
     }
-    if task.agent.model is not None:
-        agent_env["BUB_MODEL"] = task.agent.model
+    if task.execution.model is not None:
+        agent_env["BUB_MODEL"] = task.execution.model
     if settings.agent_proxy_url is not None:
         proxy_url = settings.agent_proxy_url.get_secret_value()
         agent_env.update({
@@ -459,12 +460,12 @@ def _job_config(
         agents=[
             AgentConfig(
                 import_path="powercontext_e2e.harbor_agent:PowerContextBubAcpAgent",
-                override_timeout_sec=task.agent.timeout_seconds,
-                override_setup_timeout_sec=task.agent.setup_timeout_seconds,
+                override_timeout_sec=task.execution.timeout_seconds,
+                override_setup_timeout_sec=task.execution.setup_timeout_seconds,
                 extra_allowed_hosts=["auth.openai.com", "chatgpt.com"],
                 kwargs={
-                    "bub_version": task.agent.bub_version,
-                    "acp_server_version": task.agent.acp_server_version,
+                    "bub_version": task.execution.bub_version,
+                    "acp_server_version": task.execution.acp_server_version,
                 },
                 env=agent_env,
             )

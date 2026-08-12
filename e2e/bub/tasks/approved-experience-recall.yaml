@@ -7,7 +7,8 @@ dataset:
   path: e2e/bub/harbor-tasks
   task_id: approved-experience-recall
   checksum: 5373e74e2663c1bc0290b8cbb1fd99d7b5e11ce3b25861a4b738593fbdbd16d7
-agent:
+execution:
+  type: bub
   model: openai:gpt-5.4
   model_source: codex-oauth
   bub_version: 0.4.2

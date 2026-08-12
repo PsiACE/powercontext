@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import yaml
 from harbor.models.job.config import DatasetConfig
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 class EvidenceModel(BaseModel):
@@ -44,7 +44,8 @@ class HarborDatasetSpec(EvidenceModel):
         return DatasetConfig(name=self.name, version=self.version, task_names=[self.task_id])
 
 
-class BubAcpAgentSpec(EvidenceModel):
+class BubExecutionSpec(EvidenceModel):
+    type: Literal["bub"] = "bub"
     model: str | None = None
     model_source: Literal["none", "codex-oauth"] = "none"
     bub_version: str = Field(min_length=1)
@@ -55,7 +56,7 @@ class BubAcpAgentSpec(EvidenceModel):
     setup_timeout_seconds: int = Field(default=900, ge=60)
 
     @model_validator(mode="after")
-    def require_model_for_oauth(self) -> BubAcpAgentSpec:
+    def require_model_for_oauth(self) -> BubExecutionSpec:
         if self.model_source == "codex-oauth" and self.model is None:
             raise ValueError("Codex OAuth tasks require an agent model")  # noqa: TRY003
         return self
@@ -123,7 +124,7 @@ class E2ETask(EvidenceModel):
     categories: tuple[str, ...] = Field(min_length=1)
     provenance: Provenance | None = None
     dataset: HarborDatasetSpec
-    agent: BubAcpAgentSpec
+    execution: BubExecutionSpec = Field(validation_alias=AliasChoices("execution", "agent"))
     powercontext: PowerContextEndpointSpec
     setup: WorkloadSetupSpec = Field(default_factory=WorkloadSetupSpec)
     evaluation: MemoryEvaluationSpec
@@ -233,6 +234,7 @@ class TaskObservation(EvidenceModel):
         alias="schema",
     )
     run_id: str
+    execution_profile: Literal["bub"] = "bub"
     environment: RunEnvironment
     task: E2ETask
     status: Literal["completed", "failed"]

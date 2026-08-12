@@ -10,6 +10,8 @@ def test_workloads_can_be_selected_by_multiple_ids_or_category() -> None:
     repository = Path(__file__).resolve().parents[3]
     tasks = load_tasks(repository / "e2e" / "bub" / "tasks")
 
+    assert {task.execution.type for task in tasks} == {"bub"}
+
     selected_ids = select_tasks(
         tasks,
         ids=("locomo-support-group,terminal-bench-db-wal-recovery",),
