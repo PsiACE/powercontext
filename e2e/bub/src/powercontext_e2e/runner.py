@@ -15,10 +15,17 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import JobConfig
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, ResourceMode, ServiceVolumeConfig
 from powercontext.client import PowerContextClient
-from powercontext.http import ListMemoryEntriesRequest, PrepareContextRequest
+from powercontext.http import (
+    ApproveArtifactCandidateRequest,
+    ExperienceProposal,
+    ListMemoryEntriesRequest,
+    PrepareContextRequest,
+    ProposeExperienceRequest,
+)
 
 from .evidence import load_resolved_instructions, redact, write_evaluation_report, write_evidence
 from .models import (
+    ApprovedExperienceObservation,
     CaptureRecord,
     CaseEvaluation,
     E2ETask,
@@ -34,6 +41,7 @@ from .models import (
     RunEnvironment,
     SourceReferenceSnapshot,
     TaskObservation,
+    WorkloadSetupObservation,
     fingerprint,
 )
 from .report import render_report
@@ -103,6 +111,9 @@ class MemoryEvaluator:
         }
         instruction_artifacts = {instruction.artifact for instruction in observation.resolved_instructions}
         instructions_recorded = bool(summary_artifacts) and instruction_artifacts == summary_artifacts
+        expected_experience_ids = tuple(experience.id for experience in task.setup.approved_experiences)
+        observed_experience_ids = tuple(experience.id for experience in observation.setup.approved_experiences)
+        setup_completed = expected_experience_ids == observed_experience_ids
         expected_memory_found = all(
             any(fragment.casefold() in entry.text.casefold() for entry in observation.memory_after.entries)
             for fragment in evaluation.expected_memory
@@ -123,6 +134,7 @@ class MemoryEvaluator:
             "completed_checkpoints": len(completed_checkpoints),
             "in_run_contexts": in_run_contexts,
             "resolved_instructions": len(observation.resolved_instructions),
+            "approved_experiences": len(observation.setup.approved_experiences),
             "memory_entries_after": len(observation.memory_after.entries),
             "memory_entries_created": len(new_memory),
             "recall_probes_supported": len(supported_probes),
@@ -149,6 +161,12 @@ class MemoryEvaluator:
                 value=instructions_recorded,
                 reason=(
                     f"Resolved {len(instruction_artifacts)} instructions from {len(summary_artifacts)} ACP summaries."
+                ),
+            ),
+            "workload_setup_completed": EvaluationValue(
+                value=setup_completed,
+                reason=(
+                    f"Prepared {len(observed_experience_ids)} of {len(expected_experience_ids)} declared Experiences."
                 ),
             ),
             "capture_coverage_accepted": EvaluationValue(
@@ -239,6 +257,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
     capture_records: tuple[CaptureRecord, ...] = ()
     native_artifacts: tuple[NativeArtifact, ...] = ()
     resolved_instructions: tuple[ResolvedInstruction, ...] = ()
+    setup_observation = WorkloadSetupObservation()
     harbor_observation = HarborTrialObservation()
     memory_before = MemorySnapshot()
     memory_after = MemorySnapshot()
@@ -248,6 +267,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
     try:
         async with PowerContextClient(host_url, timeout=30) as client:
             await client.get_readiness()
+            setup_observation = await prepare_workload(client, scope_id, task)
             memory_before = await memory_snapshot(client, scope_id)
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -298,10 +318,52 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
         capture_records=capture_records,
         native_artifacts=native_artifacts,
         resolved_instructions=resolved_instructions,
+        setup=setup_observation,
         memory_before=memory_before,
         memory_after=memory_after,
         probes=probes,
     )
+
+
+async def prepare_workload(
+    client: PowerContextClient,
+    scope_id: str,
+    task: E2ETask,
+) -> WorkloadSetupObservation:
+    approved_experiences: list[ApprovedExperienceObservation] = []
+    for experience in task.setup.approved_experiences:
+        candidate = await client.propose_experience(
+            ProposeExperienceRequest(
+                scope_id=scope_id,
+                proposal=ExperienceProposal(
+                    situation=experience.situation,
+                    action=experience.action,
+                    outcome=experience.outcome,
+                    lesson=experience.lesson,
+                ),
+                source_refs=[],
+                artifact_refs=[],
+                reason="Prepare declared context for an isolated end-to-end workload.",
+            )
+        )
+        approved = await client.approve_artifact_candidate(
+            ApproveArtifactCandidateRequest(
+                scope_id=scope_id,
+                candidate_id=candidate.candidate_id,
+                expected_version=candidate.version,
+            )
+        )
+        artifact = approved.result_artifact
+        if artifact is None:
+            raise RuntimeError(f"Experience approval produced no Artifact for {experience.id}")  # noqa: TRY003
+        approved_experiences.append(
+            ApprovedExperienceObservation(
+                id=experience.id,
+                artifact_id=artifact.artifact_id,
+                revision=artifact.revision,
+            )
+        )
+    return WorkloadSetupObservation(approved_experiences=tuple(approved_experiences))
 
 
 def _job_config(

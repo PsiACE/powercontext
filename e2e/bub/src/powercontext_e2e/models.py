@@ -80,6 +80,25 @@ class RecallProbeSpec(EvidenceModel):
     expected_context: tuple[str, ...] = ()
 
 
+class ApprovedExperienceSpec(EvidenceModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    situation: str = Field(min_length=1, max_length=8000)
+    action: str = Field(min_length=1, max_length=8000)
+    outcome: str = Field(min_length=1, max_length=8000)
+    lesson: str = Field(min_length=1, max_length=8000)
+
+
+class WorkloadSetupSpec(EvidenceModel):
+    approved_experiences: tuple[ApprovedExperienceSpec, ...] = ()
+
+    @model_validator(mode="after")
+    def require_unique_experience_ids(self) -> WorkloadSetupSpec:
+        experience_ids = [experience.id for experience in self.approved_experiences]
+        if len(experience_ids) != len(set(experience_ids)):
+            raise ValueError("Approved Experience IDs must be unique")  # noqa: TRY003
+        return self
+
+
 class MemoryEvaluationSpec(EvidenceModel):
     capture_events: bool = False
     checkpoint_every_events: int = Field(default=5, ge=1, le=100)
@@ -106,6 +125,7 @@ class E2ETask(EvidenceModel):
     dataset: HarborDatasetSpec
     agent: BubAcpAgentSpec
     powercontext: PowerContextEndpointSpec
+    setup: WorkloadSetupSpec = Field(default_factory=WorkloadSetupSpec)
     evaluation: MemoryEvaluationSpec
 
 
@@ -196,6 +216,16 @@ class ResolvedInstruction(EvidenceModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class ApprovedExperienceObservation(EvidenceModel):
+    id: str
+    artifact_id: str
+    revision: int = Field(ge=1)
+
+
+class WorkloadSetupObservation(EvidenceModel):
+    approved_experiences: tuple[ApprovedExperienceObservation, ...] = ()
+
+
 class TaskObservation(EvidenceModel):
     schema_: Literal["powercontext.e2e-evidence/v1"] = Field(
         default="powercontext.e2e-evidence/v1",
@@ -210,6 +240,7 @@ class TaskObservation(EvidenceModel):
     capture_records: tuple[CaptureRecord, ...] = ()
     native_artifacts: tuple[NativeArtifact, ...] = ()
     resolved_instructions: tuple[ResolvedInstruction, ...] = ()
+    setup: WorkloadSetupObservation = Field(default_factory=WorkloadSetupObservation)
     memory_before: MemorySnapshot
     memory_after: MemorySnapshot
     probes: tuple[RecallProbeObservation, ...] = ()

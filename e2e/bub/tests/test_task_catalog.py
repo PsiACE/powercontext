@@ -16,6 +16,7 @@ def test_workloads_can_be_selected_by_multiple_ids_or_category() -> None:
     )
     acceptance = select_tasks(tasks, categories=("acceptance",))
     samples = select_tasks(tasks, categories=("sample",))
+    live = select_tasks(tasks, categories=("live",))
 
     assert [task.id for task in selected_ids] == [
         "locomo-support-group",
@@ -26,3 +27,4 @@ def test_workloads_can_be_selected_by_multiple_ids_or_category() -> None:
         "project-database-decision",
     ]
     assert [task.id for task in samples] == ["locomo-support-group", "project-database-decision"]
+    assert [task.id for task in live] == ["approved-experience-recall"]

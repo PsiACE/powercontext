@@ -32,13 +32,6 @@ unit-test: ## Run tests that do not cross the Server boundary end to end.
 e2e-test: ## Run CLI to Client SDK to Server end-to-end tests.
 	@uv run python -m pytest tests/e2e
 
-.PHONY: real-e2e-test
-real-e2e-test: ## Run opt-in real Codex Experience/Skill tests; REAL_E2E_MODE defaults to all.
-	@uv run python -m pytest -s tests/e2e/real_experience_skill --run-real-e2e \
-		--real-e2e-mode="$${REAL_E2E_MODE:-all}" \
-		--real-codex-timeout="$${REAL_CODEX_TIMEOUT:-600}" \
-		--real-e2e-env-file="$${REAL_E2E_ENV_FILE:-.env}"
-
 .PHONY: harness-sync
 harness-sync: ## Install the Bub replay harness environment.
 	@uv sync --project e2e/bub
@@ -52,7 +45,7 @@ harness-check: ## Validate the Bub replay harness and committed scenarios.
 	@uv run --project e2e/bub powercontext-e2e --help >/dev/null
 
 .PHONY: harness-run
-harness-run: ## Run built-in e2e tasks by ID or category against an existing Server.
+harness-run: ## Run workloads by ID or category against an existing Server.
 	@set --; \
 	if [ -n "$${POWERCONTEXT_E2E_IDS:-}" ]; then set -- "$$@" --id "$$POWERCONTEXT_E2E_IDS"; fi; \
 	if [ -n "$${POWERCONTEXT_E2E_CATEGORIES:-}" ]; then set -- "$$@" --category "$$POWERCONTEXT_E2E_CATEGORIES"; fi; \
@@ -71,7 +64,7 @@ harness-compose-check: ## Validate the SQLite and OceanBase Compose environments
 	@POWERCONTEXT_E2E_DATABASE=oceanbase e2e/bub/run.sh check
 
 .PHONY: harness-compose-run
-harness-compose-run: ## Build and run built-in e2e tasks by ID or category in the fixed harness.
+harness-compose-run: ## Build and run workloads by ID or category in the fixed harness.
 	@e2e/bub/run.sh run
 
 .PHONY: harness-compose-down
