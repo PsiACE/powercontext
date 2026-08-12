@@ -19,7 +19,7 @@ def render_report(observation: TaskObservation, report: EvaluationReport) -> str
         _nodes(
             markdown,
             "\n".join((
-                f"- Task: `{observation.task.id}`",
+                f"- Workload: `{observation.task.id}`",
                 f"- Harbor dataset: `{observation.task.dataset.name or observation.task.dataset.path}`",
                 f"- Collection status: `{observation.status}`",
                 f"- Native task outcome: `{_task_outcome(report)}` (diagnostic only)",

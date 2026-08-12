@@ -2,17 +2,40 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
+from powercontext_e2e.evidence import load_resolved_instructions
 from powercontext_e2e.models import (
     HarborTrialObservation,
     MemoryEntrySnapshot,
     MemorySnapshot,
+    ResolvedInstruction,
     RunEnvironment,
     TaskObservation,
     load_tasks,
 )
 from powercontext_e2e.runner import MemoryEvaluator, write_artifacts
+
+
+def test_resolved_instruction_evidence_matches_harbor_acp_summaries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    sensitive_value = "instruction-secret-sentinel"
+    monkeypatch.setenv("BUB_API_KEY", sensitive_value)
+    summary_path = tmp_path / "steps" / "capture" / "agent" / "acp-summary.json"
+    summary_path.parent.mkdir(parents=True)
+    instruction = f"Inspect the database with {sensitive_value}."
+    summary_path.write_text(json.dumps({"instruction": instruction}), encoding="utf-8")
+
+    resolved = load_resolved_instructions(tmp_path)
+
+    assert len(resolved) == 1
+    assert resolved[0].step == "capture"
+    assert resolved[0].artifact == "steps/capture/agent/acp-summary.json"
+    assert resolved[0].content == "Inspect the database with [REDACTED]."
+    assert resolved[0].sha256 == sha256(instruction.encode()).hexdigest()
 
 
 def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_schema(
@@ -43,6 +66,13 @@ def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_sche
             exception_type="ProviderError",
             exception_message=f"Provider returned {sensitive_value}",
         ),
+        resolved_instructions=(
+            ResolvedInstruction(
+                artifact="acp-summary.json",
+                content=f"Use credential {sensitive_value} to complete the task.",
+                sha256="a" * 64,
+            ),
+        ),
         memory_before=MemorySnapshot(),
         memory_after=MemorySnapshot(
             entries=(
@@ -68,4 +98,5 @@ def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_sche
     replay = json.loads(artifacts["replay.json"])
     evaluation = json.loads(artifacts["eval-report.json"])
     assert replay["schema"] == "powercontext.e2e-evidence/v1"
+    assert replay["resolved_instructions"][0]["content"] == "Use credential [REDACTED] to complete the task."
     assert evaluation["schema"] == "powercontext.e2e-evaluation/v1"

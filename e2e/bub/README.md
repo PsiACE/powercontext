@@ -1,10 +1,10 @@
-# Bub end-to-end harness
+# End-to-end workload harness
 
-This directory contains PowerContext's built-in e2e samples. LoCoMo is used as a pinned input sample, not as a
+This directory contains PowerContext's end-to-end workload catalog. LoCoMo is used as a pinned input sample, not as a
 benchmark suite. The Terminal-Bench case retains its native task and verifier, while PowerContext acceptance is based
 on Memory collection, grounding, and recall rather than the native task reward.
 
-Every task follows one execution path:
+Every workload follows one execution path:
 
 ```text
 Pydantic manifest and settings
@@ -98,17 +98,18 @@ POWERCONTEXT_E2E_IDS=locomo-support-group,project-database-decision \
 make harness-compose-run
 ```
 
-Each selected task writes the same layout:
+Each selected workload writes the same layout:
 
 ```text
-<output>/<task-id>/
+<output>/<workload-id>/
   replay.json
   eval-report.json
   report.md
   harbor-jobs/
 ```
 
-`replay.json` is a self-contained Pydantic observation. `eval-report.json` uses
+`replay.json` is a self-contained Pydantic observation and records the instructions resolved by Harbor's ACP runner.
+`eval-report.json` uses
 `powercontext.e2e-evaluation/v1`. `report.md` is rendered from the report model with Marko. Native Harbor and ACP
 evidence remains under `harbor-jobs/`.
 
@@ -160,7 +161,7 @@ may complete only at the final checkpoint. Harbor rewards are diagnostic scores 
 
 ## Rescore evidence
 
-Every task uses the same offline command:
+Every workload uses the same offline command:
 
 ```bash
 REPLAY=.powercontext-e2e/bub/sqlite/run/terminal-bench-db-wal-recovery/replay.json \

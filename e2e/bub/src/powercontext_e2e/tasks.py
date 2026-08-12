@@ -1,4 +1,4 @@
-"""Selection and sequential execution for built-in e2e tasks."""
+"""Selection and sequential execution for end-to-end workloads."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class TaskSelectionError(ValueError):
     """Report unknown IDs or categories at the manifest boundary."""
 
     def __init__(self, selector: str, values: set[str]) -> None:
-        super().__init__(f"Unknown built-in e2e task {selector}: {sorted(values)!r}")
+        super().__init__(f"Unknown e2e workload {selector}: {sorted(values)!r}")
 
 
 def select_tasks(

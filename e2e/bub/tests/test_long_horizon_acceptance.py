@@ -11,6 +11,7 @@ from powercontext_e2e.models import (
     NativeArtifact,
     PreparedContextSnapshot,
     RecallProbeObservation,
+    ResolvedInstruction,
     RunEnvironment,
     SourceReferenceSnapshot,
     TaskObservation,
@@ -76,6 +77,13 @@ def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
         native_artifacts=tuple(
             NativeArtifact(name=name, sha256="a" * 64, bytes=1)
             for name in ("acp-summary.json", "acp-events.jsonl", "trajectory.json")
+        ),
+        resolved_instructions=(
+            ResolvedInstruction(
+                artifact="acp-summary.json",
+                content="Recover the database and write /app/recovered.json.",
+                sha256="b" * 64,
+            ),
         ),
         memory_before=MemorySnapshot(),
         memory_after=MemorySnapshot(

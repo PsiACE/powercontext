@@ -1,4 +1,4 @@
-"""Run every built-in e2e task through Harbor, ACP, and Bub."""
+"""Run every end-to-end workload through Harbor, ACP, and Bub."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from harbor.models.trial.config import AgentConfig, EnvironmentConfig, ResourceM
 from powercontext.client import PowerContextClient
 from powercontext.http import ListMemoryEntriesRequest, PrepareContextRequest
 
-from .evidence import redact, write_evaluation_report, write_evidence
+from .evidence import load_resolved_instructions, redact, write_evaluation_report, write_evidence
 from .models import (
     CaptureRecord,
     CaseEvaluation,
@@ -30,6 +30,7 @@ from .models import (
     NativeArtifact,
     PreparedContextSnapshot,
     RecallProbeObservation,
+    ResolvedInstruction,
     RunEnvironment,
     SourceReferenceSnapshot,
     TaskObservation,
@@ -45,12 +46,12 @@ class CodexAuthNotFoundError(RuntimeError):
     """Report missing local Codex OAuth credentials."""
 
     def __init__(self, path: Path) -> None:
-        super().__init__(f"The selected e2e task requires Codex OAuth credentials at {path}")
+        super().__init__(f"The selected e2e workload requires Codex OAuth credentials at {path}")
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryEvaluator:
-    """Evaluate one Harbor task through a common Memory acceptance contract."""
+    """Evaluate one workload through the common Memory acceptance contract."""
 
     def evaluate(self, task: E2ETask, observation: TaskObservation, *, experiment: str) -> EvaluationReport:
         evaluation = task.evaluation
@@ -97,6 +98,11 @@ class MemoryEvaluator:
         ]
         native_names = {Path(artifact.name).name for artifact in observation.native_artifacts}
         missing_native_artifacts = sorted(set(evaluation.required_native_artifacts) - native_names)
+        summary_artifacts = {
+            artifact.name for artifact in observation.native_artifacts if Path(artifact.name).name == "acp-summary.json"
+        }
+        instruction_artifacts = {instruction.artifact for instruction in observation.resolved_instructions}
+        instructions_recorded = bool(summary_artifacts) and instruction_artifacts == summary_artifacts
         expected_memory_found = all(
             any(fragment.casefold() in entry.text.casefold() for entry in observation.memory_after.entries)
             for fragment in evaluation.expected_memory
@@ -107,14 +113,16 @@ class MemoryEvaluator:
             "commit": observation.environment.commit,
             "database": observation.environment.database,
             "dataset": task.dataset.name or str(task.dataset.path),
+            "harbor_task_id": task.dataset.task_id,
             "run_id": observation.run_id,
-            "task_id": task.id,
+            "workload_id": task.id,
         }
         metrics = {
             "capture_events": len(eligible_records),
             "captured_sources": len(captured_records),
             "completed_checkpoints": len(completed_checkpoints),
             "in_run_contexts": in_run_contexts,
+            "resolved_instructions": len(observation.resolved_instructions),
             "memory_entries_after": len(observation.memory_after.entries),
             "memory_entries_created": len(new_memory),
             "recall_probes_supported": len(supported_probes),
@@ -135,6 +143,12 @@ class MemoryEvaluator:
                     "All required native ACP artifacts were recorded."
                     if not missing_native_artifacts
                     else f"Missing native ACP artifacts: {missing_native_artifacts!r}."
+                ),
+            ),
+            "resolved_instructions_recorded": EvaluationValue(
+                value=instructions_recorded,
+                reason=(
+                    f"Resolved {len(instruction_artifacts)} instructions from {len(summary_artifacts)} ACP summaries."
                 ),
             ),
             "capture_coverage_accepted": EvaluationValue(
@@ -224,6 +238,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
     errors: list[str] = []
     capture_records: tuple[CaptureRecord, ...] = ()
     native_artifacts: tuple[NativeArtifact, ...] = ()
+    resolved_instructions: tuple[ResolvedInstruction, ...] = ()
     harbor_observation = HarborTrialObservation()
     memory_before = MemorySnapshot()
     memory_after = MemorySnapshot()
@@ -244,6 +259,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
         if trial_dir is not None:
             capture_records = _load_capture_records(trial_dir)
             native_artifacts = _native_artifacts(trial_dir)
+            resolved_instructions = load_resolved_instructions(trial_dir, settings)
 
         async with PowerContextClient(host_url, timeout=30) as client:
             memory_after = await memory_snapshot(client, scope_id)
@@ -281,6 +297,7 @@ async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings
         harbor=harbor_observation,
         capture_records=capture_records,
         native_artifacts=native_artifacts,
+        resolved_instructions=resolved_instructions,
         memory_before=memory_before,
         memory_after=memory_after,
         probes=probes,

@@ -1,4 +1,4 @@
-"""Manifest and evidence contracts for built-in end-to-end tasks."""
+"""Manifest and evidence contracts for end-to-end workloads."""
 
 from __future__ import annotations
 
@@ -189,6 +189,13 @@ class NativeArtifact(EvidenceModel):
     bytes: int = Field(ge=0)
 
 
+class ResolvedInstruction(EvidenceModel):
+    step: str | None = None
+    artifact: str
+    content: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class TaskObservation(EvidenceModel):
     schema_: Literal["powercontext.e2e-evidence/v1"] = Field(
         default="powercontext.e2e-evidence/v1",
@@ -202,6 +209,7 @@ class TaskObservation(EvidenceModel):
     harbor: HarborTrialObservation
     capture_records: tuple[CaptureRecord, ...] = ()
     native_artifacts: tuple[NativeArtifact, ...] = ()
+    resolved_instructions: tuple[ResolvedInstruction, ...] = ()
     memory_before: MemorySnapshot
     memory_after: MemorySnapshot
     probes: tuple[RecallProbeObservation, ...] = ()
@@ -256,9 +264,9 @@ def load_tasks(path: Path) -> tuple[E2ETask, ...]:
     tasks = tuple(E2ETask.model_validate(yaml.safe_load(item.read_text(encoding="utf-8"))) for item in task_paths)
     ids = [task.id for task in tasks]
     if not tasks:
-        raise ValueError(f"No built-in e2e task manifests found at {path}")  # noqa: TRY003
+        raise ValueError(f"No e2e workload manifests found at {path}")  # noqa: TRY003
     if len(ids) != len(set(ids)):
-        raise ValueError("Built-in e2e task IDs must be unique")  # noqa: TRY003
+        raise ValueError("E2E workload IDs must be unique")  # noqa: TRY003
     for task in tasks:
         _validate_provenance(task)
     return tasks

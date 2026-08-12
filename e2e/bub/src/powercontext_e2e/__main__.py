@@ -1,4 +1,4 @@
-"""Command-line entry point for built-in e2e tasks and offline scoring."""
+"""Command-line entry point for end-to-end workloads and offline scoring."""
 
 from __future__ import annotations
 
