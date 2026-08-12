@@ -143,31 +143,31 @@ Gold answer、evidence annotation、hidden test、reference patch 和 grading re
 Source-native result 存在时保持权威。Memory、prepared context、span、latency 和 usage 用于解释运行，不能替代该结果。
 已提交的小型 sample set 用于快速反馈，不能据此外推完整 source distribution。
 
-## Scenario fixture
+## 内置任务 manifest
 
-首个 replay contract 使用严格 YAML：
+内置 E2E 样本使用同一种 Pydantic manifest。稳定任务 ID 用于直接选择，category 用于批量选择，dataset 字段选择本地
+或 registry-backed Harbor task：
 
 ```yaml
-schema: powercontext.session-replay/v1
+schema: powercontext.e2e-task/v1
 id: project-database-decision
-sessions:
-  - id: capture
-    input: >-
-      Store this durable project decision in PowerContext: the project selected OceanBase because it needs
-      MySQL-compatible, multi-node persistent storage for shared agent context.
-    expected_memory:
-      - OceanBase
-      - MySQL-compatible
-      - multi-node persistent storage
-  - id: recall
-    input: What database did this project select, and why?
-    expected_context:
-      - OceanBase
-      - MySQL-compatible
-      - multi-node persistent storage
-    expected_answer: >-
-      The project selected OceanBase because it needs MySQL-compatible, multi-node persistent storage for
-      shared agent context.
+categories:
+  - acceptance
+  - sample
+dataset:
+  path: e2e/bub/harbor-tasks
+  task_id: project-database-decision
+  checksum: <harbor-task-checksum>
+agent:
+  model_source: none
+  bub_version: 0.4.2
+  acp_server_version: 0.0.2
+evaluation:
+  expected_memory:
+    - durable project decision
+  probes:
+    - id: decision
+      query: What durable project decision was recorded?
 ```
 
 Expectation 描述通过公开边界可见的含义。它不保存 prompt、SQL、数据库 ID、完整模型文本、私有 trace shape 或 tool
@@ -176,9 +176,12 @@ order 的 snapshot。
 Sample-derived fixture 还可以包含 source identity、source revision、selection policy 和稳定 case ID。这些字段组成一个
 完整 provenance block。Source revision 或 ID 不匹配时，加载失败。
 
+LoCoMo-derived input 是固定的内置样本，不代表 benchmark 结论。本地 multi-step sample 与 source-native benchmark
+task 使用相同的 manifest、Harbor Job、ACP runner、Bub ACP server、Memory evaluator 与 evidence contract。
+
 ## 证据
 
-每次 live run 生成三种 artifact：
+每个被选中的任务都在 `<output>/<task-id>/` 下生成三种 artifact：
 
 | Artifact | 内容 |
 | --- | --- |
@@ -192,10 +195,11 @@ failure 与已经完成但质量较低的结果。
 Bundle 包含用户可见文本，因此比普通 telemetry 更敏感。Credential、authorization header、database URL 和 provider
 secret 不得写入 artifact。Live run 只允许可信事件，并使用有界 retention。
 
-## Trace 与模型配置
+## Runner 与模型配置
 
-Evaluator 持有 OpenTelemetry tracer provider。Harness 通过该 provider 发出 agent 与 model span，Pydantic Evals 直接
-评估原生 span tree。Harness 不增加 OTLP receiver、protobuf decoder、通用 attribute converter 或第二套 span model。
+Harbor 管理 task、container、ACP 与 agent lifecycle。本地 multi-step task 的每一步创建独立 ACP session，同时复用同一个
+task environment 与 PowerContext scope。Registry task 通过相同的 Harbor Job 入口执行。Harness 不维护第二套直接 Bub
+runner。
 
 每次运行分别记录以下模型角色：
 
@@ -210,7 +214,7 @@ Evaluator 持有 OpenTelemetry tracer provider。Harness 通过该 provider 发�
 
 ## 评估
 
-Pydantic Evals 接收完整 replay observation。以下情况阻断 acceptance：
+Pydantic Memory evaluator 接收完整 replay observation。以下情况阻断 acceptance：
 
 - setup 或 agent execution 没有完成；
 - 声明的 session 没有运行；
@@ -238,6 +242,8 @@ execution budget 和 attempt policy 相同的运行。
 本 RFC 不定义通用 evaluation platform、dataset registry、agent protocol 或 harness plugin system，也不替换
 source-native grading。它不会为 coverage 测试私有实现细节。
 
+实现保持贴近 Harbor、ACP、Bub 与 PowerContext，不引入第二套 agent runner 或第二套 dataset abstraction。
+
 首个实现贴近 Bub 与 PowerContext。只有第二个可工作的 harness 出现并完成单独设计评审后，才提取共享抽象。
 
 # Acceptance criteria
@@ -249,7 +255,7 @@ source-native grading。它不会为 coverage 测试私有实现细节。
 - SQLite 与 OceanBase 运行相同的 behavior 与 replay scenario；
 - live replay 使用真实 provider，并记录 model identity；
 - 一个 replay bundle 包含 input、output、Memory、prepared context 和 agent span；
-- Pydantic Evals 可以在线或离线评估 bundle，不需要自定义 OTLP receiver；
+- 相同的 Pydantic evaluation model 可以在线或离线评估 bundle；
 - sampled input 固定、可评审、相互隔离，并且没有 reference leakage；
 - CI 分开报告 infrastructure failure、阻断性 acceptance 和诊断性 quality；
 - 每个测试都保护可观察行为或具体 regression。

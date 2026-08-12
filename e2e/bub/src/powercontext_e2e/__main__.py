@@ -1,19 +1,18 @@
-"""Command-line entry point for session replay and offline scoring."""
+"""Command-line entry point for built-in e2e tasks and offline scoring."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
 from loguru import logger
 
-from .long_horizon_models import load_long_horizon_scenario
-from .long_horizon_runner import evaluate_long_horizon_scenario, rescore_long_horizon
-from .models import load_scenario
-from .runner import evaluate_scenario, rescore_replay
+from .models import load_tasks
+from .runner import rescore_replay
+from .settings import HarnessSettings
+from .tasks import run_tasks, select_tasks
 
 
 def main() -> None:
@@ -23,35 +22,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="powercontext-e2e")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("acceptance", "live"):
-        run_parser = subparsers.add_parser(command)
-        run_parser.add_argument("scenario", type=Path, nargs="+")
-        run_parser.add_argument("--output", type=Path, required=True)
-
-    long_horizon_parser = subparsers.add_parser("long-horizon")
-    long_horizon_parser.add_argument("scenario", type=Path)
-    long_horizon_parser.add_argument("--output", type=Path, required=True)
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--manifest", type=Path, default=Path("e2e/bub/tasks"))
+    run_parser.add_argument("--id", action="append", default=[])
+    run_parser.add_argument("--category", action="append", default=[])
+    run_parser.add_argument("--output", type=Path, required=True)
 
     rescore_parser = subparsers.add_parser("rescore")
     rescore_parser.add_argument("replay", type=Path)
     rescore_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    settings = HarnessSettings()
 
     if args.command == "rescore":
-        replay_payload = json.loads(args.replay.read_text(encoding="utf-8"))
-        if replay_payload.get("schema") == "powercontext.long-horizon-evidence/v1":
-            passed = asyncio.run(rescore_long_horizon(args.replay, args.output))
-        else:
-            passed = asyncio.run(rescore_replay(args.replay, args.output))
-    elif args.command == "long-horizon":
-        scenario = load_long_horizon_scenario(args.scenario)
-        passed = asyncio.run(evaluate_long_horizon_scenario(scenario, output_dir=args.output))
+        passed = asyncio.run(rescore_replay(args.replay, args.output, settings))
     else:
-        passed = True
-        for scenario_path in args.scenario:
-            scenario = load_scenario(scenario_path)
-            output_dir = args.output if len(args.scenario) == 1 else args.output / scenario.id
-            passed = asyncio.run(evaluate_scenario(scenario, mode=args.command, output_dir=output_dir)) and passed
+        tasks = load_tasks(args.manifest)
+        selected = select_tasks(tasks, ids=tuple(args.id), categories=tuple(args.category))
+        passed = asyncio.run(
+            run_tasks(
+                selected,
+                output_dir=args.output,
+                settings=settings,
+            )
+        )
     raise SystemExit(0 if passed else 1)
 
 

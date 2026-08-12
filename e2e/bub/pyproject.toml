@@ -7,18 +7,15 @@ dependencies = [
     "bub>=0.4.0,<0.5.0",
     "harbor>=0.16,<0.17",
     "loguru>=0.7,<1",
-    "opentelemetry-sdk>=1.30,<2",
+    "marko>=2.2,<3",
     "powercontext[client]",
     "powercontext-bub",
-    "pydantic-evals>=2.14,<3",
+    "pydantic-settings>=2.7,<3",
     "pyyaml>=6,<7",
 ]
 
 [project.scripts]
 powercontext-e2e = "powercontext_e2e.__main__:main"
-
-[project.entry-points."bub"]
-powercontext_e2e_tracing = "powercontext_e2e.tracing:BubTracingPlugin"
 
 [dependency-groups]
 dev = ["pytest>=9,<10"]

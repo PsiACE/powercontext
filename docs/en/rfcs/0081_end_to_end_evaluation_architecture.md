@@ -157,42 +157,46 @@ A source-native result remains authoritative when one exists. Memory, prepared c
 explain the run but cannot replace that result. A small committed set provides fast feedback. It does not support a
 claim about the complete source distribution.
 
-## Scenario fixture
+## Built-in task manifest
 
-The initial replay contract is strict YAML:
+Built-in e2e samples use one Pydantic manifest. The stable task ID supports direct selection, categories support batch
+selection, and the dataset field selects either a local or registry-backed Harbor task:
 
 ```yaml
-schema: powercontext.session-replay/v1
+schema: powercontext.e2e-task/v1
 id: project-database-decision
-sessions:
-  - id: capture
-    input: >-
-      Store this durable project decision in PowerContext: the project selected OceanBase because it needs
-      MySQL-compatible, multi-node persistent storage for shared agent context.
-    expected_memory:
-      - OceanBase
-      - MySQL-compatible
-      - multi-node persistent storage
-  - id: recall
-    input: What database did this project select, and why?
-    expected_context:
-      - OceanBase
-      - MySQL-compatible
-      - multi-node persistent storage
-    expected_answer: >-
-      The project selected OceanBase because it needs MySQL-compatible, multi-node persistent storage for
-      shared agent context.
+categories:
+  - acceptance
+  - sample
+dataset:
+  path: e2e/bub/harbor-tasks
+  task_id: project-database-decision
+  checksum: <harbor-task-checksum>
+agent:
+  model_source: none
+  bub_version: 0.4.2
+  acp_server_version: 0.0.2
+evaluation:
+  expected_memory:
+    - durable project decision
+  probes:
+    - id: decision
+      query: What durable project decision was recorded?
 ```
 
 Expectations describe meaning visible through a public boundary. They do not snapshot prompts, SQL, database IDs,
 complete model text, private trace shape, or tool order.
+
+LoCoMo-derived input is a pinned built-in sample, not a benchmark claim. Both local multi-step samples and
+source-native benchmark tasks use the same manifest, Harbor Job, ACP runner, Bub ACP server, Memory evaluator, and
+evidence contract.
 
 A sample-derived fixture may also contain source identity, source revision, selection policy, and stable case IDs.
 These fields form one provenance block. Loading fails when the source revision or an ID does not match.
 
 ## Evidence
 
-Each live run produces three artifacts:
+Each selected task produces three artifacts below `<output>/<task-id>/`:
 
 | Artifact | Contents |
 | --- | --- |
@@ -207,11 +211,11 @@ The bundle contains user-visible text and receives stricter handling than normal
 headers, database URLs, and provider secrets are removed. Live runs require trusted events and bounded artifact
 retention.
 
-## Trace and model configuration
+## Runner and model configuration
 
-The evaluator owns the OpenTelemetry tracer provider. The harness emits agent and model spans through that provider,
-and Pydantic Evals evaluates its native span tree. The harness does not add an OTLP receiver, protobuf decoder, generic
-attribute converter, or second span model.
+Harbor owns the task, container, ACP, and agent lifecycle. Local multi-step tasks create an independent ACP session for
+each step while retaining one task environment and one PowerContext scope. Registry tasks use the same Harbor Job
+entrypoint. The harness does not maintain a second direct Bub runner.
 
 A run identifies these model roles separately:
 
@@ -226,7 +230,7 @@ explicit and lossless. Explicit PowerContext settings take precedence. Embedding
 
 ## Evaluation
 
-Pydantic Evals receives the complete replay observation. These failures block acceptance:
+The Pydantic Memory evaluator receives the complete replay observation. These failures block acceptance:
 
 - setup or agent execution did not complete;
 - a declared session did not run;
@@ -256,8 +260,8 @@ compare only runs with the same sample set, model configuration, execution budge
 This RFC does not define a general evaluation platform, dataset registry, agent protocol, or harness plugin system. It
 does not replace source-native grading. It does not test private implementation details for coverage.
 
-The first implementation stays close to Bub and PowerContext. Shared abstractions require a second working harness and
-a separate design review.
+The implementation stays close to Harbor, ACP, Bub, and PowerContext. It does not introduce a second agent runner or
+a second dataset abstraction.
 
 # Acceptance criteria
 
@@ -268,7 +272,7 @@ The design is complete when:
 - the same behavior and replay scenarios run with SQLite and OceanBase;
 - live replay uses a real provider and records model identity;
 - one replay bundle contains input, output, Memory, prepared context, and agent spans;
-- Pydantic Evals can score that bundle online or offline without a custom OTLP receiver;
+- the same Pydantic evaluation model can score that bundle online or offline;
 - sampled inputs are fixed, reviewable, isolated, and free of reference leakage;
 - CI separates infrastructure failure, blocking acceptance, and diagnostic quality; and
 - every test protects observable behavior or a concrete regression.

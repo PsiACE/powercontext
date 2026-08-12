@@ -189,7 +189,7 @@ esac
         "POWERCONTEXT_E2E_OUTPUT": str(tmp_path / "evidence"),
     })
     result = subprocess.run(  # noqa: S603 - executes the repository script with an isolated fake Docker binary.
-        ["/bin/sh", str(_RUN_SCRIPT), "acceptance"],
+        ["/bin/sh", str(_RUN_SCRIPT), "run"],
         cwd=_REPOSITORY_ROOT,
         env=environment,
         check=False,

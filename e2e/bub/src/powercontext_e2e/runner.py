@@ -1,315 +1,379 @@
-"""Run and evaluate complete Bub session replays."""
+"""Run every built-in e2e task through Harbor, ACP, and Bub."""
 
 from __future__ import annotations
 
-import json
-import os
-import shlex
-import shutil
-import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from bub import BubFramework
-from bub.channels.message import ChannelMessage
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
+from harbor.job import Job
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.job.config import JobConfig
+from harbor.models.trial.config import AgentConfig, EnvironmentConfig, ResourceMode, ServiceVolumeConfig
 from powercontext.client import PowerContextClient
 from powercontext.http import ListMemoryEntriesRequest, PrepareContextRequest
-from pydantic_ai.exceptions import AgentRunError
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_evals import Case, Dataset
-from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
-from pydantic_evals.evaluators.llm_as_a_judge import judge_input_output
-from pydantic_evals.reporting import EvaluationReport
 
+from .evidence import redact, write_evaluation_report, write_evidence
 from .models import (
+    CaptureRecord,
+    CaseEvaluation,
+    E2ETask,
+    EvaluationReport,
+    EvaluationValue,
+    HarborTrialObservation,
     MemoryEntrySnapshot,
     MemorySnapshot,
+    NativeArtifact,
     PreparedContextSnapshot,
-    ReplayObservation,
+    RecallProbeObservation,
     RunEnvironment,
-    ScenarioSpec,
-    SessionObservation,
     SourceReferenceSnapshot,
+    TaskObservation,
+    fingerprint,
 )
+from .report import render_report
+from .settings import HarnessSettings
 
-Mode = Literal["acceptance", "live", "offline-rescore"]
-Report = EvaluationReport[ScenarioSpec, ReplayObservation, dict[str, str]]
-Context = EvaluatorContext[ScenarioSpec, ReplayObservation, dict[str, str]]
-_EVIDENCE_SECRET_ENVIRONMENT_NAMES = (
-    "ANTHROPIC_API_KEY",
-    "BUB_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "POWERCONTEXT_CLIENT_API_TOKEN",
-    "POWERCONTEXT_SERVER_AUTH_TOKEN",
-    "POWERCONTEXT_SERVER_DATABASE_URL",
-)
-_REDACTED = "[REDACTED]"
+CAPTURE_EVENTS = frozenset({"user_prompt", "llm_result", "tool_result"})
 
 
-@dataclass
-class ReplayEvaluator(Evaluator[ScenarioSpec, ReplayObservation, dict[str, str]]):
-    """Score public behavior and attach Pydantic Evals' native span tree."""
+class CodexAuthNotFoundError(RuntimeError):
+    """Report missing local Codex OAuth credentials."""
 
-    judge_model: OpenAIChatModel | str | None = None
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"The selected e2e task requires Codex OAuth credentials at {path}")
 
-    async def evaluate(self, ctx: Context) -> dict[str, bool | float | str | EvaluationReason]:
-        if not ctx.output.spans:
-            ctx.output.spans = tuple(span for span in ctx.span_tree if span.name.startswith("bub."))
 
-        ctx.attributes.update({
-            "commit": ctx.output.environment.commit,
-            "database": ctx.output.environment.database,
-            "mode": ctx.output.environment.mode,
-            "run_id": ctx.output.run_id,
-        })
-        ctx.metrics.update({
-            "memory_entries_after": len(ctx.output.memory_after.entries),
-            "model_calls": sum(span.name == "bub.model" for span in ctx.output.spans),
-            "sessions_completed": sum(session.status == "completed" for session in ctx.output.sessions),
-            "span_count": len(ctx.output.spans),
-        })
+@dataclass(frozen=True, slots=True)
+class MemoryEvaluator:
+    """Evaluate one Harbor task through a common Memory acceptance contract."""
 
-        observed_by_id = {session.id: session for session in ctx.output.sessions}
-        expected_ids = [session.id for session in ctx.inputs.sessions]
-        observed_ids = [session.id for session in ctx.output.sessions]
-        results: dict[str, bool | float | str | EvaluationReason] = {
-            "run_completed": EvaluationReason(
-                value=ctx.output.status == "completed",
-                reason=None if ctx.output.status == "completed" else "; ".join(ctx.output.errors),
+    def evaluate(self, task: E2ETask, observation: TaskObservation, *, experiment: str) -> EvaluationReport:
+        evaluation = task.evaluation
+        eligible_records = [record for record in observation.capture_records if record.event in CAPTURE_EVENTS]
+        captured_records = [record for record in eligible_records if record.status == "captured"]
+        capture_coverage = len(captured_records) / len(eligible_records) if eligible_records else 0.0
+
+        memory_before_ids = {entry.entry_id for entry in observation.memory_before.entries}
+        new_memory = [entry for entry in observation.memory_after.entries if entry.entry_id not in memory_before_ids]
+        captured_source_ids = {record.source_id for record in captured_records if record.source_id is not None}
+        grounded_memory = [
+            entry
+            for entry in new_memory
+            if entry.source_refs and all(source.source_id in captured_source_ids for source in entry.source_refs)
+        ]
+        groundedness = len(grounded_memory) / len(new_memory) if new_memory else 0.0
+
+        probes_by_id = {probe.id: probe for probe in observation.probes}
+        supported_probes = [
+            probe_spec
+            for probe_spec in evaluation.probes
+            if (probe := probes_by_id.get(probe_spec.id)) is not None
+            and probe.prepared_context.status == "ready"
+            and bool(probe.prepared_context.content.strip())
+            and _contains_fragments(probe.prepared_context.content, probe_spec.expected_context)
+        ]
+        probe_coverage = len(supported_probes) / len(evaluation.probes)
+        in_run_contexts = sum(
+            record.event == "context"
+            and record.content_bytes is not None
+            and record.content_bytes > 0
+            and bool(record.captured_events)
+            and bool(record.flushed_position)
+            for record in observation.capture_records
+        )
+        completed_checkpoints = [
+            record
+            for record in observation.capture_records
+            if record.event == "checkpoint"
+            and record.status != "failed"
+            and record.current_cursor is not None
+            and record.target_position is not None
+            and record.current_cursor >= record.target_position
+        ]
+        native_names = {Path(artifact.name).name for artifact in observation.native_artifacts}
+        missing_native_artifacts = sorted(set(evaluation.required_native_artifacts) - native_names)
+        expected_memory_found = all(
+            any(fragment.casefold() in entry.text.casefold() for entry in observation.memory_after.entries)
+            for fragment in evaluation.expected_memory
+        )
+        thresholds = evaluation.thresholds
+
+        attributes = {
+            "commit": observation.environment.commit,
+            "database": observation.environment.database,
+            "dataset": task.dataset.name or str(task.dataset.path),
+            "run_id": observation.run_id,
+            "task_id": task.id,
+        }
+        metrics = {
+            "capture_events": len(eligible_records),
+            "captured_sources": len(captured_records),
+            "completed_checkpoints": len(completed_checkpoints),
+            "in_run_contexts": in_run_contexts,
+            "memory_entries_after": len(observation.memory_after.entries),
+            "memory_entries_created": len(new_memory),
+            "recall_probes_supported": len(supported_probes),
+        }
+
+        assertions = {
+            "collection_completed": EvaluationValue(
+                value=observation.status == "completed",
+                reason=None if observation.status == "completed" else "; ".join(observation.errors),
             ),
-            "sessions_completed": EvaluationReason(
-                value=observed_ids == expected_ids,
-                reason=None
-                if observed_ids == expected_ids
-                else f"Expected {expected_ids!r}, observed {observed_ids!r}.",
+            "task_provenance_matches": EvaluationValue(
+                value=observation.harbor.task_checksum == task.dataset.checksum,
+                reason=f"Expected {task.dataset.checksum!r}; observed {observation.harbor.task_checksum!r}.",
+            ),
+            "native_acp_evidence_recorded": EvaluationValue(
+                value=not missing_native_artifacts,
+                reason=(
+                    "All required native ACP artifacts were recorded."
+                    if not missing_native_artifacts
+                    else f"Missing native ACP artifacts: {missing_native_artifacts!r}."
+                ),
+            ),
+            "capture_coverage_accepted": EvaluationValue(
+                value=capture_coverage >= thresholds.capture_coverage,
+                reason=f"Observed {capture_coverage:.3f}; required {thresholds.capture_coverage:.3f}.",
+            ),
+            "memory_created_during_run": EvaluationValue(
+                value=bool(new_memory) and (not evaluation.require_checkpoint or bool(completed_checkpoints)),
+                reason=f"Created {len(new_memory)} Memory entries and completed {len(completed_checkpoints)} checkpoints.",
+            ),
+            "memory_grounded": EvaluationValue(
+                value=groundedness >= thresholds.groundedness,
+                reason=f"Observed {groundedness:.3f}; required {thresholds.groundedness:.3f}.",
+            ),
+            "recall_probes_supported": EvaluationValue(
+                value=probe_coverage >= thresholds.probe_coverage,
+                reason=f"Observed {probe_coverage:.3f}; required {thresholds.probe_coverage:.3f}.",
+            ),
+            "memory_recalled_during_run": EvaluationValue(
+                value=in_run_contexts >= thresholds.minimum_in_run_contexts,
+                reason=f"Observed {in_run_contexts}; required {thresholds.minimum_in_run_contexts}.",
+            ),
+            "scope_started_empty": EvaluationValue(
+                value=not observation.memory_before.entries,
+                reason=f"Scope started with {len(observation.memory_before.entries)} Memory entries.",
             ),
         }
-        if ctx.output.environment.mode == "live":
-            results["agent_trace_recorded"] = any(span.name == "bub.agent" for span in ctx.output.spans)
-            results["model_trace_recorded"] = any(span.name == "bub.model" for span in ctx.output.spans)
-
-        for session_spec in ctx.inputs.sessions:
-            observed = observed_by_id.get(session_spec.id)
-            if observed is None:
-                continue
-            results[f"{session_spec.id}_completed"] = EvaluationReason(
-                value=observed.status == "completed",
-                reason=observed.error,
+        if evaluation.expected_memory:
+            assertions["expected_memory_recorded"] = EvaluationValue(
+                value=expected_memory_found,
+                reason=f"Expected Memory fragments: {list(evaluation.expected_memory)!r}.",
             )
-            if session_spec.expected_memory:
-                results[f"{session_spec.id}_memory"] = _contains_fragments(
-                    [entry.text for entry in observed.memory_after.entries],
-                    session_spec.expected_memory,
-                    "Memory",
-                )
-            if session_spec.expected_context:
-                results[f"{session_spec.id}_context"] = _contains_fragments(
-                    [observed.prepared_context.content],
-                    session_spec.expected_context,
-                    "Prepared context",
-                )
-            if session_spec.expected_answer and ctx.output.environment.mode == "live":
-                results.update(await self._answer_quality(session_spec.input, session_spec.expected_answer, observed))
-        return results
-
-    async def _answer_quality(
-        self,
-        question: str,
-        expected_answer: str,
-        observed: SessionObservation,
-    ) -> dict[str, float | str | EvaluationReason]:
-        prefix = f"{observed.id}_answer"
-        lexical_score = _token_recall(expected_answer, observed.output)
-        results: dict[str, float | str | EvaluationReason] = {f"{prefix}_token_recall": lexical_score}
-        if self.judge_model is None:
-            results[f"{prefix}_judge"] = EvaluationReason(
-                value="not_configured",
-                reason="Set POWERCONTEXT_E2E_JUDGE_MODEL or use an OpenAI-compatible BUB_MODEL.",
-            )
-            return results
-
-        try:
-            grading = await judge_input_output(
-                {"question": question, "expected_answer": expected_answer},
-                {"answer": observed.output},
-                "Judge whether the answer conveys the expected fact without requiring matching wording.",
-                model=self.judge_model,
-            )
-        except AgentRunError as exc:
-            results[f"{prefix}_judge"] = EvaluationReason(value="unavailable", reason=f"{type(exc).__name__}: {exc}")
-            return results
-        results[f"{prefix}_judge"] = EvaluationReason(
-            value="pass" if grading.pass_ else "fail",
-            reason=grading.reason,
+        scores = {
+            "capture_coverage": EvaluationValue(value=capture_coverage),
+            "groundedness": EvaluationValue(value=groundedness),
+            "probe_coverage": EvaluationValue(value=probe_coverage),
+            **{
+                f"harbor_reward_{name}": EvaluationValue(value=float(reward))
+                for name, reward in sorted(observation.harbor.rewards.items())
+            },
+        }
+        labels = {"task_outcome": EvaluationValue(value=_task_outcome(observation.harbor))}
+        return EvaluationReport(
+            experiment=experiment,
+            cases=(
+                CaseEvaluation(
+                    name=task.id,
+                    assertions=assertions,
+                    scores=scores,
+                    labels=labels,
+                    metrics=metrics,
+                    attributes=attributes,
+                ),
+            ),
         )
-        results[f"{prefix}_judge_score"] = EvaluationReason(value=grading.score, reason=grading.reason)
-        return results
 
 
-async def evaluate_scenario(
-    scenario: ScenarioSpec,
+async def evaluate_task(
+    task: E2ETask,
     *,
-    mode: Literal["acceptance", "live"],
     output_dir: Path,
+    settings: HarnessSettings | None = None,
 ) -> bool:
-    _configure_tracing()
-    judge = _judge_model() if mode == "live" else None
-    evaluator = ReplayEvaluator(judge_model=judge)
-    dataset = Dataset[ScenarioSpec, ReplayObservation, dict[str, str]](
-        name="powercontext-session-replay",
-        cases=[Case(name=scenario.id, inputs=scenario, metadata={"mode": mode})],
-        evaluators=[evaluator],
-    )
-
-    async def run(inputs: ScenarioSpec) -> ReplayObservation:
-        return await _run_replay(inputs, mode=mode, judge_model=_judge_model_name(judge))
-
-    report = await dataset.evaluate(run, name=f"{mode}:{scenario.id}", max_concurrency=1, progress=False)
-    observation = report.cases[0].output
-    write_artifacts(observation, report, output_dir)
-    return not report.failures and all(result.value for result in report.cases[0].assertions.values())
+    settings = settings or HarnessSettings()
+    observation = await run_task(task, output_dir=output_dir, settings=settings)
+    report = MemoryEvaluator().evaluate(task, observation, experiment=f"e2e:{task.id}")
+    write_artifacts(observation, report, output_dir, settings=settings)
+    return report.accepted
 
 
-async def rescore_replay(replay_path: Path, output_dir: Path) -> bool:
-    _configure_tracing()
-    observation = ReplayObservation.model_validate_json(replay_path.read_text(encoding="utf-8"))
-    environment = observation.environment.model_copy(update={"mode": "offline-rescore"})
-    observation = observation.model_copy(update={"environment": environment})
-    evaluator = ReplayEvaluator(judge_model=_judge_model())
-    dataset = Dataset[ScenarioSpec, ReplayObservation, dict[str, str]](
-        name="powercontext-session-replay",
-        cases=[Case(name=observation.scenario.id, inputs=observation.scenario, metadata={"mode": "offline-rescore"})],
-        evaluators=[evaluator],
-    )
-
-    async def recorded(_: ScenarioSpec) -> ReplayObservation:
-        return observation
-
-    report = await dataset.evaluate(recorded, name=f"offline:{observation.scenario.id}", progress=False)
-    write_artifacts(report.cases[0].output, report, output_dir)
-    return not report.failures and all(result.value for result in report.cases[0].assertions.values())
+async def rescore_replay(
+    replay_path: Path,
+    output_dir: Path,
+    settings: HarnessSettings | None = None,
+) -> bool:
+    settings = settings or HarnessSettings()
+    observation = TaskObservation.model_validate_json(replay_path.read_text(encoding="utf-8"))
+    report = MemoryEvaluator().evaluate(observation.task, observation, experiment=f"offline:{observation.task.id}")
+    write_artifacts(observation, report, output_dir, settings=settings)
+    return report.accepted
 
 
-async def _run_replay(
-    scenario: ScenarioSpec,
-    *,
-    mode: Literal["acceptance", "live"],
-    judge_model: str | None,
-) -> ReplayObservation:
-    run_id = f"{scenario.id}-{uuid4().hex[:12]}"
+async def run_task(task: E2ETask, *, output_dir: Path, settings: HarnessSettings) -> TaskObservation:
+    started_at = datetime.now(UTC)
+    run_id = f"{task.id}-{uuid4().hex[:12]}"
     scope_id = f"e2e:{run_id}"
-    base_url = os.getenv("POWERCONTEXT_BUB_BASE_URL", "http://127.0.0.1:8000")
-    workspace = Path(os.getenv("POWERCONTEXT_E2E_WORKSPACE", ".powercontext/e2e-workspace")) / run_id
-    workspace.mkdir(parents=True, exist_ok=True)
-    os.environ["POWERCONTEXT_BUB_SCOPE_ID"] = scope_id
-
     errors: list[str] = []
-    observations: list[SessionObservation] = []
+    capture_records: tuple[CaptureRecord, ...] = ()
+    native_artifacts: tuple[NativeArtifact, ...] = ()
+    harbor_observation = HarborTrialObservation()
     memory_before = MemorySnapshot()
+    memory_after = MemorySnapshot()
+    probes: tuple[RecallProbeObservation, ...] = ()
+    host_url = settings.server_url(str(task.powercontext.host_url))
+
     try:
-        async with PowerContextClient(base_url, timeout=20) as client:
+        async with PowerContextClient(host_url, timeout=30) as client:
             await client.get_readiness()
             memory_before = await memory_snapshot(client, scope_id)
 
-            for index, session in enumerate(scenario.sessions):
-                prepared = await prepared_context(client, scope_id, session.input)
-                agent_session_id = f"e2e:{run_id}:{index}:{session.id}"
-                try:
-                    output = await _run_bub_session(
-                        session.input,
-                        agent_session_id=agent_session_id,
-                        mode=mode,
-                        remember=bool(session.expected_memory),
-                        workspace=workspace,
-                    )
-                    status = "completed"
-                    error = None
-                except Exception as exc:
-                    output = ""
-                    status = "failed"
-                    error = f"{type(exc).__name__}: {exc}"
-                    errors.append(f"Session {session.id}: {error}")
-                memory_after_session = await memory_snapshot(client, scope_id)
-                observations.append(
-                    SessionObservation(
-                        id=session.id,
-                        agent_session_id=agent_session_id,
-                        status=status,
-                        error=error,
-                        prepared_context=prepared,
-                        output=output,
-                        memory_after=memory_after_session,
+        output_dir.mkdir(parents=True, exist_ok=True)
+        job = await Job.create(_job_config(task, run_id, scope_id, output_dir, settings))
+        result = await job.run()
+        harbor_observation, trial_dir = _harbor_observation(result, settings)
+        if harbor_observation.exception_type is not None:
+            errors.append(f"{harbor_observation.exception_type}: {harbor_observation.exception_message or ''}".strip())
+        if trial_dir is not None:
+            capture_records = _load_capture_records(trial_dir)
+            native_artifacts = _native_artifacts(trial_dir)
+
+        async with PowerContextClient(host_url, timeout=30) as client:
+            memory_after = await memory_snapshot(client, scope_id)
+            probe_observations: list[RecallProbeObservation] = []
+            for probe in task.evaluation.probes:
+                probe_observations.append(
+                    RecallProbeObservation(
+                        id=probe.id,
+                        query=probe.query,
+                        prepared_context=await prepared_context(client, scope_id, probe.query),
                     )
                 )
-                if status == "failed":
-                    break
-            memory_after = await memory_snapshot(client, scope_id)
+            probes = tuple(probe_observations)
     except Exception as exc:
-        errors.append(f"{type(exc).__name__}: {exc}")
-        memory_after = observations[-1].memory_after if observations else memory_before
+        errors.append(redact(f"{type(exc).__name__}: {exc}", settings))
+        async with PowerContextClient(host_url, timeout=30) as client:
+            with suppress(Exception):
+                memory_after = await memory_snapshot(client, scope_id)
 
-    return ReplayObservation(
+    return TaskObservation(
         run_id=run_id,
         environment=RunEnvironment(
-            mode=mode,
-            commit=current_commit(),
-            database=os.getenv("POWERCONTEXT_E2E_DATABASE", "unknown"),
-            agent_model=os.getenv("BUB_MODEL") if mode == "live" else None,
-            generation_model=os.getenv("POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL"),
-            embedding_profile=os.getenv("POWERCONTEXT_SERVER_INFERENCE_EMBEDDING_PROFILE_ID"),
-            judge_model=judge_model,
-            started_at=datetime.now(UTC),
+            commit=settings.commit_id(),
+            database=settings.database,
+            agent_model=task.agent.model,
+            model_source=task.agent.model_source,
+            generation_model=settings.generation_model,
+            embedding_profile=settings.embedding_profile,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
         ),
-        scenario=scenario,
-        status="completed" if len(observations) == len(scenario.sessions) and not errors else "failed",
+        task=task,
+        status="completed" if not errors else "failed",
         errors=tuple(errors),
+        harbor=harbor_observation,
+        capture_records=capture_records,
+        native_artifacts=native_artifacts,
         memory_before=memory_before,
         memory_after=memory_after,
-        sessions=tuple(observations),
+        probes=probes,
     )
 
 
-async def _run_bub_session(
-    user_input: str,
-    *,
-    agent_session_id: str,
-    mode: Literal["acceptance", "live"],
-    remember: bool,
-    workspace: Path,
-) -> str:
-    framework = BubFramework(config_file=workspace / "bub.yml")
-    framework.workspace = workspace
-    framework.load_hooks()
+def _job_config(
+    task: E2ETask,
+    run_id: str,
+    scope_id: str,
+    output_dir: Path,
+    settings: HarnessSettings,
+) -> JobConfig:
+    repository = settings.repository_path()
+    mounts: list[ServiceVolumeConfig] = [
+        {
+            "type": "bind",
+            "source": str(repository),
+            "target": "/opt/powercontext/source",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        }
+    ]
+    if task.agent.model_source == "codex-oauth":
+        auth_path = settings.codex_auth_path()
+        if not auth_path.is_file():
+            raise CodexAuthNotFoundError(auth_path)
+        mounts.append({
+            "type": "bind",
+            "source": str(auth_path),
+            "target": "/run/powercontext/codex-auth.json",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        })
 
-    if mode == "acceptance":
-        tool_name = "powercontext.remember" if remember else "powercontext.context"
-        argument_name = "text" if remember else "query"
-        user_input = f",{tool_name} {argument_name}={shlex.quote(user_input)}"
+    agent_env = {
+        "BUB_API_KEY": "null",
+        "BUB_FALLBACK_MODELS": "null",
+        "BUB_HOME": "/installed-agent/bub-home",
+        "BUB_MAX_STEPS": str(task.agent.max_steps),
+        "BUB_MAX_TOKENS": str(task.agent.max_tokens),
+        "BUB_MODEL_TIMEOUT_SECONDS": str(task.agent.timeout_seconds),
+        "CODEX_HOME": "/installed-agent/codex",
+        "POWERCONTEXT_BUB_BASE_URL": str(task.powercontext.container_url).rstrip("/"),
+        "POWERCONTEXT_BUB_CAPTURE_CHECKPOINT_EVERY": str(task.evaluation.checkpoint_every_events),
+        "POWERCONTEXT_BUB_CAPTURE_EVENTS": str(task.evaluation.capture_events).lower(),
+        "POWERCONTEXT_BUB_CAPTURE_LOG": "/logs/agent/powercontext-capture.jsonl",
+        "POWERCONTEXT_BUB_CAPTURE_MAX_BYTES": str(task.evaluation.max_event_bytes),
+        "POWERCONTEXT_BUB_SCOPE_ID": scope_id,
+        "POWERCONTEXT_BUB_TIMEOUT": str(task.powercontext.timeout_seconds),
+    }
+    if task.agent.model is not None:
+        agent_env["BUB_MODEL"] = task.agent.model
+    if settings.agent_proxy_url is not None:
+        proxy_url = settings.agent_proxy_url.get_secret_value()
+        agent_env.update({
+            "HTTP_PROXY": proxy_url,
+            "HTTPS_PROXY": proxy_url,
+            "NO_PROXY": "127.0.0.1,localhost,host-gateway,powercontext",
+            "http_proxy": proxy_url,
+            "https_proxy": proxy_url,
+            "no_proxy": "127.0.0.1,localhost,host-gateway,powercontext",
+        })
 
-    tracer = trace.get_tracer("powercontext.e2e")
-    with tracer.start_as_current_span("bub.agent") as span:
-        span.set_attribute("gen_ai.operation.name", "invoke_agent")
-        span.set_attribute("input.value", user_input)
-        span.set_attribute("bub.session_id", agent_session_id)
-        async with framework.running():
-            result = await framework.process_inbound(
-                ChannelMessage(
-                    channel="cli",
-                    chat_id=agent_session_id,
-                    session_id=agent_session_id,
-                    content=user_input,
-                )
+    return JobConfig(
+        job_name=run_id,
+        jobs_dir=output_dir / "harbor-jobs",
+        n_attempts=1,
+        n_concurrent_trials=1,
+        quiet=True,
+        environment=EnvironmentConfig(
+            type=EnvironmentType.DOCKER,
+            delete=True,
+            cpu_enforcement_policy=ResourceMode.IGNORE,
+            memory_enforcement_policy=ResourceMode.IGNORE,
+            extra_docker_compose=[repository / "e2e" / "bub" / "harbor-task-overlay.yaml"],
+            mounts=mounts,
+        ),
+        agents=[
+            AgentConfig(
+                import_path="powercontext_e2e.harbor_agent:PowerContextBubAcpAgent",
+                override_timeout_sec=task.agent.timeout_seconds,
+                override_setup_timeout_sec=task.agent.setup_timeout_seconds,
+                extra_allowed_hosts=["auth.openai.com", "chatgpt.com"],
+                kwargs={
+                    "bub_version": task.agent.bub_version,
+                    "acp_server_version": task.agent.acp_server_version,
+                },
+                env=agent_env,
             )
-        span.set_attribute("output.value", result.model_output)
-    return result.model_output
+        ],
+        datasets=[task.dataset.to_config(repository)],
+    )
 
 
 async def memory_snapshot(client: PowerContextClient, scope_id: str) -> MemorySnapshot:
@@ -338,144 +402,81 @@ async def prepared_context(client: PowerContextClient, scope_id: str, query: str
     return PreparedContextSnapshot(status=prepared.status.value, content=prepared.content or "")
 
 
-def _contains_fragments(values: list[str], expected: tuple[str, ...], label: str) -> EvaluationReason:
-    folded_values = [value.casefold() for value in values]
-    missing = [fragment for fragment in expected if not any(fragment.casefold() in value for value in folded_values)]
-    return EvaluationReason(
-        value=not missing,
-        reason=None if not missing else f"{label} did not contain {missing!r}.",
+def _harbor_observation(result: Any, settings: HarnessSettings) -> tuple[HarborTrialObservation, Path | None]:
+    if not result.trial_results:
+        return HarborTrialObservation(job_id=str(result.id)), None
+    trial = result.trial_results[0]
+    rewards = trial.verifier_result.rewards if trial.verifier_result is not None else {}
+    exception = trial.exception_info
+    return (
+        HarborTrialObservation(
+            job_id=str(result.id),
+            trial_name=trial.trial_name,
+            trial_uri=trial.trial_uri,
+            task_checksum=trial.task_checksum,
+            rewards=rewards or {},
+            exception_type=None if exception is None else exception.exception_type,
+            exception_message=None if exception is None else redact(exception.exception_message, settings),
+            started_at=trial.started_at,
+            finished_at=trial.finished_at,
+        ),
+        _trial_dir(trial.trial_uri),
     )
 
 
-def _token_recall(expected: str, actual: str) -> float:
-    expected_tokens = set(expected.casefold().split())
-    actual_tokens = set(actual.casefold().split())
-    return 1.0 if not expected_tokens else len(expected_tokens & actual_tokens) / len(expected_tokens)
+def _trial_dir(trial_uri: str) -> Path | None:
+    parsed = urlparse(trial_uri)
+    return Path(unquote(parsed.path)) if parsed.scheme == "file" else None
 
 
-def _judge_model() -> OpenAIChatModel | str | None:
-    configured = os.getenv("POWERCONTEXT_E2E_JUDGE_MODEL")
-    model = configured or os.getenv("BUB_MODEL")
-    if not model:
-        return None
-    if configured and configured != os.getenv("BUB_MODEL"):
-        return configured
-    provider, separator, model_name = model.partition(":")
-    if separator and provider == "openai" and os.getenv("BUB_API_KEY"):
-        return OpenAIChatModel(
-            model_name,
-            provider=OpenAIProvider(
-                api_key=os.environ["BUB_API_KEY"],
-                base_url=os.getenv("BUB_API_BASE"),
-            ),
+def _load_capture_records(trial_dir: Path) -> tuple[CaptureRecord, ...]:
+    records: list[CaptureRecord] = []
+    for path in sorted(trial_dir.rglob("powercontext-capture.jsonl")):
+        records.extend(
+            CaptureRecord.model_validate_json(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
         )
-    if separator and provider == "deepseek" and os.getenv("BUB_API_KEY"):
-        os.environ.setdefault("DEEPSEEK_API_KEY", os.environ["BUB_API_KEY"])
-        return model
-    return None
+    return tuple(records)
 
 
-def _judge_model_name(model: OpenAIChatModel | str | None) -> str | None:
-    if model is None:
-        return None
-    if isinstance(model, str):
-        return model
-    return f"openai:{model.model_name}"
-
-
-def _configure_tracing() -> None:
-    provider = trace.get_tracer_provider()
-    if not hasattr(provider, "add_span_processor"):
-        trace.set_tracer_provider(TracerProvider())
-
-
-def current_commit() -> str:
-    configured = os.getenv("GITHUB_SHA")
-    if configured:
-        return configured
-    git = shutil.which("git")
-    if git is None:
-        return "unknown"
-    completed = subprocess.run(  # noqa: S603 - executable is resolved by shutil.which
-        [git, "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
+def _native_artifacts(trial_dir: Path) -> tuple[NativeArtifact, ...]:
+    names = {"acp-summary.json", "acp-events.jsonl", "trajectory.json"}
+    return tuple(
+        fingerprint(path, relative_to=trial_dir) for path in sorted(trial_dir.rglob("*")) if path.name in names
     )
-    return completed.stdout.strip() if completed.returncode == 0 else "unknown"
 
 
-def redact(value: str) -> str:
-    """Redact known runtime secrets from diagnostic text."""
-
-    for secret in _runtime_secrets():
-        value = value.replace(secret, _REDACTED)
-        value = value.replace(json.dumps(secret, ensure_ascii=False)[1:-1], _REDACTED)
-    return value
+def _contains_fragments(value: str, expected: tuple[str, ...]) -> bool:
+    folded = value.casefold()
+    return all(fragment.casefold() in folded for fragment in expected)
 
 
-def write_artifacts(observation: ReplayObservation, report: Report, output_dir: Path) -> None:
-    secrets = _runtime_secrets()
+def _task_outcome(harbor: HarborTrialObservation) -> str:
+    if harbor.exception_type is not None:
+        return f"error:{harbor.exception_type}"
+    if not harbor.rewards:
+        return "unscored"
+    return "passed" if any(float(reward) > 0 for reward in harbor.rewards.values()) else "not_passed"
+
+
+def write_artifacts(
+    observation: TaskObservation,
+    report: EvaluationReport,
+    output_dir: Path,
+    *,
+    settings: HarnessSettings | None = None,
+) -> None:
+    settings = settings or HarnessSettings()
     output_dir.mkdir(parents=True, exist_ok=True)
-    replay_payload = observation.model_dump(mode="json", by_alias=True)
-    _write_evidence(
-        output_dir / "replay.json",
-        json.dumps(replay_payload, indent=2, ensure_ascii=False) + "\n",
-        secrets,
-    )
-
-    cases = [
-        {
-            "name": case.name,
-            "assertions": {
-                name: {"value": result.value, "reason": result.reason}
-                for name, result in sorted(case.assertions.items())
-            },
-            "scores": {
-                name: {"value": result.value, "reason": result.reason} for name, result in sorted(case.scores.items())
-            },
-            "labels": {
-                name: {"value": result.value, "reason": result.reason} for name, result in sorted(case.labels.items())
-            },
-            "metrics": dict(sorted(case.metrics.items())),
-            "attributes": case.attributes,
-            "task_duration": case.task_duration,
-            "total_duration": case.total_duration,
-        }
-        for case in report.cases
-    ]
-    report_payload: dict[str, Any] = {
-        "schema": "powercontext.session-replay-evaluation/v1",
-        "experiment": report.name,
-        "cases": cases,
-        "failures": [{"name": failure.name, "error": failure.error_message} for failure in report.failures],
-    }
-    _write_evidence(
+    write_evidence(output_dir / "replay.json", observation.model_dump_json(by_alias=True, indent=2) + "\n", settings)
+    write_evaluation_report(
         output_dir / "eval-report.json",
-        json.dumps(report_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        secrets,
+        report=report,
+        settings=settings,
     )
-    _write_evidence(
+    write_evidence(
         output_dir / "report.md",
-        "# PowerContext session replay\n\n"
-        f"- Scenario: `{observation.scenario.id}`\n"
-        f"- Mode: `{observation.environment.mode}`\n"
-        f"- Database: `{observation.environment.database}`\n"
-        f"- Status: `{observation.status}`\n\n"
-        "## Evaluation\n\n"
-        f"```text\n{report.render(include_reasons=True)}\n```\n",
-        secrets,
+        render_report(observation, report),
+        settings,
     )
-
-
-def _runtime_secrets() -> tuple[str, ...]:
-    secrets = {value for name in _EVIDENCE_SECRET_ENVIRONMENT_NAMES if (value := os.getenv(name))}
-    return tuple(sorted(secrets, key=lambda value: (-len(value), value)))
-
-
-def _write_evidence(path: Path, content: str, secrets: tuple[str, ...]) -> None:
-    for secret in secrets:
-        content = content.replace(secret, _REDACTED)
-        content = content.replace(json.dumps(secret, ensure_ascii=False)[1:-1], _REDACTED)
-    path.write_text(content, encoding="utf-8")

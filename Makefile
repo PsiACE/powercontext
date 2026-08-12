@@ -51,20 +51,13 @@ harness-check: ## Validate the Bub replay harness and committed scenarios.
 	@uv run --project e2e/bub python -m pytest e2e/bub/tests
 	@uv run --project e2e/bub powercontext-e2e --help >/dev/null
 
-.PHONY: harness-acceptance
-harness-acceptance: ## Run all deterministic Bub session replay scenarios against a Server.
-	@uv run --project e2e/bub powercontext-e2e acceptance e2e/bub/scenarios/*.yaml \
+.PHONY: harness-run
+harness-run: ## Run built-in e2e tasks by ID or category against an existing Server.
+	@set --; \
+	if [ -n "$${POWERCONTEXT_E2E_IDS:-}" ]; then set -- "$$@" --id "$$POWERCONTEXT_E2E_IDS"; fi; \
+	if [ -n "$${POWERCONTEXT_E2E_CATEGORIES:-}" ]; then set -- "$$@" --category "$$POWERCONTEXT_E2E_CATEGORIES"; fi; \
+	uv run --project e2e/bub powercontext-e2e run "$$@" \
 		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results}"
-
-.PHONY: harness-live
-harness-live: ## Run one real-model Bub session replay scenario against a Server.
-	@uv run --project e2e/bub powercontext-e2e live \
-		"$${POWERCONTEXT_E2E_SCENARIO:-e2e/bub/scenarios/project-database-decision.yaml}" \
-		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results/live}"
-
-.PHONY: harness-long-horizon
-harness-long-horizon: ## Run the Harbor long-horizon Memory evaluation in the harness container.
-	@e2e/bub/run.sh long-horizon
 
 .PHONY: harness-rescore
 harness-rescore: ## Rescore REPLAY without rerunning Bub or PowerContext.
@@ -77,13 +70,9 @@ harness-compose-check: ## Validate the SQLite and OceanBase Compose environments
 	@POWERCONTEXT_E2E_DATABASE=sqlite e2e/bub/run.sh check
 	@POWERCONTEXT_E2E_DATABASE=oceanbase e2e/bub/run.sh check
 
-.PHONY: harness-compose-acceptance
-harness-compose-acceptance: ## Build and run deterministic replay scenarios in containers.
-	@e2e/bub/run.sh acceptance
-
-.PHONY: harness-compose-live
-harness-compose-live: ## Build and run one real-model replay in containers.
-	@e2e/bub/run.sh live
+.PHONY: harness-compose-run
+harness-compose-run: ## Build and run built-in e2e tasks by ID or category in the fixed harness.
+	@e2e/bub/run.sh run
 
 .PHONY: harness-compose-down
 harness-compose-down: ## Stop both isolated harness environments and remove their volumes.

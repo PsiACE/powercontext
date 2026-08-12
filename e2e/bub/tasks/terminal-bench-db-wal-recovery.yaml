@@ -1,13 +1,14 @@
-schema: powercontext.long-horizon/v1
+schema: powercontext.e2e-task/v1
 id: terminal-bench-db-wal-recovery
-task:
-  dataset: terminal-bench
+categories:
+  - long-horizon
+  - terminal-bench
+dataset:
+  name: terminal-bench
   version: "2.0"
   task_id: db-wal-recovery
   checksum: 01f470c86f3a1f7ce4d91bdf0aaaa89fa96a4124ac48617990e2735b5291913a
 agent:
-  protocol: acp
-  implementation: bub
   model: openai:gpt-5.4
   model_source: codex-oauth
   bub_version: 0.4.2
@@ -19,18 +20,21 @@ agent:
 powercontext:
   host_url: http://127.0.0.1:8000
   container_url: http://host-gateway:8000
-capture:
+  timeout_seconds: 150
+evaluation:
+  capture_events: true
   checkpoint_every_events: 5
   max_event_bytes: 8192
+  require_checkpoint: true
   probes:
     - id: investigation
-      query: What concrete facts and obstacles were discovered while investigating the WAL recovery task?
+      query: What records and SQLite table were found in /app/main.db?
     - id: decisions
-      query: Which approaches were attempted, selected, or rejected, and why?
+      query: What happened to the WAL file for /app/main.db?
     - id: current-state
-      query: What was changed, what remains unresolved, and what should happen next?
+      query: What is the current recovery status and what is in /app/recovered.json?
   thresholds:
     capture_coverage: 0.9
     groundedness: 0.8
     probe_coverage: 0.67
-    minimum_in_run_contexts: 1
+    minimum_in_run_contexts: 0

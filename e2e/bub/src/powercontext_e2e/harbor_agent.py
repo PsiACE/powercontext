@@ -11,6 +11,7 @@ from harbor.environments.base import BaseEnvironment
 
 AGENT_ID = "powercontext-bub-acp"
 REMOTE_BIN_DIR = "/installed-agent/bin"
+REMOTE_BUB_HOME = "/installed-agent/bub-home"
 REMOTE_BUB_PROJECT = "/installed-agent/bub-project"
 REMOTE_CODEX_AUTH = "/run/powercontext/codex-auth.json"
 REMOTE_CODEX_HOME = "/installed-agent/codex"
@@ -44,12 +45,14 @@ class PowerContextBubAcpAgent(harbor_acp.AcpAgent):
             command=self._build_dependencies_command("uvx"),
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
-        await self.exec_as_root(environment, command=_install_command(self._bub_version, self._acp_server_version))
+        await self.exec_as_root(environment, command=_install_bub_command(self._bub_version))
+        await self.exec_as_root(environment, command=_install_acp_server_command(self._acp_server_version))
         agent_user = shlex.quote(str(environment.default_user or "root"))
         await self.exec_as_root(
             environment,
             command=(
-                f"chown -R {agent_user} {REMOTE_BIN_DIR} {REMOTE_BUB_PROJECT} {REMOTE_CODEX_HOME} {REMOTE_TOOL_DIR}"
+                f"chown -R {agent_user} {REMOTE_BIN_DIR} {REMOTE_BUB_HOME} {REMOTE_BUB_PROJECT} "
+                f"{REMOTE_CODEX_HOME} {REMOTE_TOOL_DIR}"
             ),
         )
 
@@ -71,18 +74,31 @@ class PowerContextBubAcpAgent(harbor_acp.AcpAgent):
         self._selected_distribution_kind = "uvx"
 
 
-def _install_command(bub_version: str, acp_server_version: str) -> str:
+def _tool_environment() -> str:
+    return f"UV_TOOL_BIN_DIR={shlex.quote(REMOTE_BIN_DIR)} UV_TOOL_DIR={shlex.quote(REMOTE_TOOL_DIR)}"
+
+
+def _install_bub_command(bub_version: str) -> str:
     uv = f"{harbor_acp.AcpAgent._RUNNER_VENV_PATH}/bin/uv"
-    tool_environment = f"UV_TOOL_BIN_DIR={shlex.quote(REMOTE_BIN_DIR)} UV_TOOL_DIR={shlex.quote(REMOTE_TOOL_DIR)}"
     return (
         "set -eu; "
-        f"mkdir -p {REMOTE_BIN_DIR} {REMOTE_BUB_PROJECT} {REMOTE_CODEX_HOME}; "
+        f"mkdir -p {REMOTE_BIN_DIR} {REMOTE_BUB_HOME} {REMOTE_BUB_PROJECT} {REMOTE_CODEX_HOME}; "
+        f"if [ -f {REMOTE_CODEX_AUTH} ]; then "
         f"cp {REMOTE_CODEX_AUTH} {REMOTE_CODEX_HOME}/auth.json; "
         f"chmod 600 {REMOTE_CODEX_HOME}/auth.json; "
-        f"{tool_environment} {uv} tool install --force "
+        "fi; "
+        f"{_tool_environment()} {uv} tool install --force "
         f"--with {REMOTE_SOURCE} --with {REMOTE_SOURCE}/integrations/bub "
-        f"{shlex.quote(f'bub=={bub_version}')}; "
-        f"CODEX_HOME={REMOTE_CODEX_HOME} BUB_PROJECT={REMOTE_BUB_PROJECT} "
-        f"{tool_environment} {REMOTE_BIN_DIR}/bub install "
+        f"{shlex.quote(f'bub=={bub_version}')}"
+    )
+
+
+def _install_acp_server_command(acp_server_version: str) -> str:
+    runner_bin = f"{harbor_acp.AcpAgent._RUNNER_VENV_PATH}/bin"
+    return (
+        "set -eu; "
+        f"PATH={runner_bin}:$PATH BUB_HOME={REMOTE_BUB_HOME} CODEX_HOME={REMOTE_CODEX_HOME} "
+        f"BUB_PROJECT={REMOTE_BUB_PROJECT} "
+        f"{_tool_environment()} {REMOTE_BIN_DIR}/bub install "
         f"{shlex.quote(f'bub-acp-server=={acp_server_version}')}"
     )
