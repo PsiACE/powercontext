@@ -46,7 +46,7 @@ always uses its own PowerContext profile.
 
 ## Run the complete environment
 
-Docker Compose starts PowerContext and runs the same committed scenarios used in CI. SQLite is the default:
+Docker Compose starts PowerContext and the fixed harness used by every mode. SQLite is the default:
 
 ```bash
 make harness-compose-acceptance
@@ -88,11 +88,19 @@ export POWERCONTEXT_SERVER_INFERENCE_EMBEDDING_DIMENSION=2560
 make harness-long-horizon
 ```
 
-The harness container is the Harbor control plane. It starts an isolated Docker daemon and creates the actual
-Terminal-Bench task container inside it. Bub and the PowerContext integration are installed in that task container and
-run through Harbor's official ACP runner. A TCP proxy exposes the Compose PowerContext service only to the nested task
-network. The task therefore retains its original image, setup, verifier, and isolation boundary while the host only
-needs to run the harness.
+Every executing Compose mode uses the same harness image, entrypoint, mounts, nested Docker daemon, PowerContext
+readiness check, evidence directory, and teardown flow. Acceptance, live replay, and long-horizon evaluation differ
+only in the command passed to that harness. This keeps a single environment contract instead of maintaining a special
+Harbor harness variant. Offline rescoring remains a host-side operation because it reads committed evidence and does
+not start Bub, PowerContext, Harbor, or a task environment.
+
+For a long-horizon run, the harness is the Harbor control plane and creates the actual Terminal-Bench task container
+inside its Docker daemon. The task receives the repository and Codex credential as declared read-only Harbor mounts.
+Agent setup uses Bub's supported installation path: `uv tool install` installs Bub with the local PowerContext plugin,
+then `bub install bub-acp-server` adds the ACP server to the same Bub environment. Harbor's ACP runner retains ownership
+of execution and native trajectory generation. A fixed Compose overlay supplies `host-gateway`, and the harness proxies
+the PowerContext service to that gateway. The task therefore retains its original image, setup, verifier, and isolation
+boundary.
 
 The acceptance result requires all of the following observable outcomes:
 
@@ -117,8 +125,9 @@ Use the same offline scoring command as other scenarios:
 REPLAY=.powercontext-e2e/bub/sqlite/long-horizon/replay.json make harness-rescore
 ```
 
-The Codex OAuth document is mounted read-only into the Harbor harness and copied with mode `0600` into the ephemeral
-task container. It is not included in capture logs or reports. The long-horizon Compose teardown removes the nested
-Docker data volume, including that ephemeral copy. Run only committed, reviewed manifests in the privileged harness.
+The Codex OAuth document occupies the same read-only harness mount in every mode; modes that do not use it mount an
+empty device at that location. For long-horizon execution it is copied with mode `0600` into the ephemeral task
+container. It is not included in capture logs or reports. Compose teardown removes the nested Docker data volume,
+including that ephemeral copy. Run only committed, reviewed manifests in the privileged harness.
 Native ACP artifacts can contain arbitrary task command output; review them before sharing, and do not retain or
 publish raw container storage.

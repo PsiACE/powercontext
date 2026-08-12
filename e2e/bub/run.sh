@@ -27,10 +27,6 @@ compose_files="-f e2e/bub/compose.yaml"
 if [ "$database" = oceanbase ]; then
     compose_files="$compose_files -f e2e/bub/compose.oceanbase.yaml"
 fi
-if [ "$mode" = long-horizon ]; then
-    compose_files="$compose_files -f e2e/bub/compose.harbor.yaml"
-fi
-
 export COMPOSE_PROJECT_NAME="powercontext-e2e-$database"
 output=${POWERCONTEXT_E2E_OUTPUT:-"$root/.powercontext-e2e/bub/$database/$mode"}
 mkdir -p "$output"
@@ -46,6 +42,9 @@ if [ "$mode" = long-horizon ]; then
     fi
     auth_directory=$(CDPATH= cd -- "$(dirname "$auth_path")" && pwd)
     POWERCONTEXT_E2E_CODEX_AUTH="$auth_directory/$(basename "$auth_path")"
+    export POWERCONTEXT_E2E_CODEX_AUTH
+else
+    POWERCONTEXT_E2E_CODEX_AUTH=/dev/null
     export POWERCONTEXT_E2E_CODEX_AUTH
 fi
 

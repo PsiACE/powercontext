@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -41,13 +38,6 @@ Report = EvaluationReport[LongHorizonScenario, LongHorizonObservation, dict[str,
 Context = EvaluatorContext[LongHorizonScenario, LongHorizonObservation, dict[str, str]]
 CAPTURE_EVENTS = frozenset({"user_prompt", "llm_result", "tool_result"})
 NATIVE_ARTIFACT_NAMES = ("acp-summary.json", "acp-events.jsonl", "trajectory.json")
-
-
-class UvNotFoundError(RuntimeError):
-    """Report a missing uv executable."""
-
-    def __init__(self) -> None:
-        super().__init__("Long-horizon evaluation requires uv to build the Harbor agent wheels")
 
 
 class CodexAuthNotFoundError(RuntimeError):
@@ -225,15 +215,12 @@ async def run_long_horizon(scenario: LongHorizonScenario, *, output_dir: Path) -
             memory_before = await memory_snapshot(client, scope_id)
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="powercontext-harbor-wheels-") as temporary_directory:
-            wheel_dir = Path(temporary_directory)
-            _build_agent_wheels(wheel_dir)
-            job = await Job.create(_job_config(scenario, run_id, scope_id, output_dir, wheel_dir))
-            result = await job.run()
-            harbor_observation, trial_dir = _harbor_observation(result)
-            if trial_dir is not None:
-                capture_records = _load_capture_records(trial_dir / "agent" / "powercontext-capture.jsonl")
-                native_artifacts = _native_artifacts(trial_dir)
+        job = await Job.create(_job_config(scenario, run_id, scope_id, output_dir))
+        result = await job.run()
+        harbor_observation, trial_dir = _harbor_observation(result)
+        if trial_dir is not None:
+            capture_records = _load_capture_records(trial_dir / "agent" / "powercontext-capture.jsonl")
+            native_artifacts = _native_artifacts(trial_dir)
 
         async with PowerContextClient(_host_url(scenario), timeout=30) as client:
             memory_after = await memory_snapshot(client, scope_id)
@@ -284,9 +271,9 @@ def _job_config(
     run_id: str,
     scope_id: str,
     output_dir: Path,
-    wheel_dir: Path,
 ) -> JobConfig:
     auth_path = _codex_auth_path()
+    repository = _repository()
     agent = scenario.agent
     return JobConfig(
         job_name=run_id,
@@ -294,7 +281,27 @@ def _job_config(
         n_attempts=1,
         n_concurrent_trials=1,
         quiet=True,
-        environment=EnvironmentConfig(type=EnvironmentType.DOCKER, delete=True),
+        environment=EnvironmentConfig(
+            type=EnvironmentType.DOCKER,
+            delete=True,
+            extra_docker_compose=[repository / "e2e" / "bub" / "harbor-task-overlay.yaml"],
+            mounts=[
+                {
+                    "type": "bind",
+                    "source": str(repository),
+                    "target": "/opt/powercontext/source",
+                    "read_only": True,
+                    "bind": {"create_host_path": False},
+                },
+                {
+                    "type": "bind",
+                    "source": str(auth_path),
+                    "target": "/run/powercontext/codex-auth.json",
+                    "read_only": True,
+                    "bind": {"create_host_path": False},
+                },
+            ],
+        ),
         agents=[
             AgentConfig(
                 import_path="powercontext_e2e.harbor_agent:PowerContextBubAcpAgent",
@@ -303,8 +310,6 @@ def _job_config(
                 override_setup_timeout_sec=agent.setup_timeout_seconds,
                 extra_allowed_hosts=["auth.openai.com", "chatgpt.com"],
                 kwargs={
-                    "wheel_dir": str(wheel_dir),
-                    "codex_auth_path": str(auth_path),
                     "bub_version": agent.bub_version,
                     "acp_server_version": agent.acp_server_version,
                 },
@@ -337,18 +342,8 @@ def _job_config(
     )
 
 
-def _build_agent_wheels(wheel_dir: Path) -> None:
-    repository = Path(os.getenv("POWERCONTEXT_E2E_REPOSITORY", str(Path(__file__).resolve().parents[4]))).resolve()
-    uv = shutil.which("uv")
-    if uv is None:
-        raise UvNotFoundError
-    for package in (repository, repository / "integrations" / "bub"):
-        subprocess.run(  # noqa: S603 - uv is resolved with shutil.which.
-            [uv, "build", "--wheel", "--out-dir", str(wheel_dir), str(package)],
-            check=True,
-            cwd=repository,
-            timeout=300,
-        )
+def _repository() -> Path:
+    return Path(os.getenv("POWERCONTEXT_E2E_REPOSITORY", str(Path(__file__).resolve().parents[4]))).resolve()
 
 
 def _codex_auth_path() -> Path:
