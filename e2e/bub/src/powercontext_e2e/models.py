@@ -56,6 +56,11 @@ class RunEnvironment(EvidenceModel):
     started_at: datetime
 
 
+class SourceReferenceSnapshot(EvidenceModel):
+    name: str
+    source_id: str
+
+
 class MemoryEntrySnapshot(EvidenceModel):
     entry_id: str
     entry_version_id: str
@@ -63,6 +68,7 @@ class MemoryEntrySnapshot(EvidenceModel):
     kind: str
     text: str
     state: str
+    source_refs: tuple[SourceReferenceSnapshot, ...] = ()
 
 
 class MemorySnapshot(EvidenceModel):

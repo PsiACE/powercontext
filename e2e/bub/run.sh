@@ -16,9 +16,9 @@ case "$database" in
 esac
 
 case "$mode" in
-    acceptance | live | check | down) ;;
+    acceptance | live | long-horizon | check | down) ;;
     *)
-        echo "mode must be acceptance, live, check, or down" >&2
+        echo "mode must be acceptance, live, long-horizon, check, or down" >&2
         exit 2
         ;;
 esac
@@ -27,6 +27,9 @@ compose_files="-f e2e/bub/compose.yaml"
 if [ "$database" = oceanbase ]; then
     compose_files="$compose_files -f e2e/bub/compose.oceanbase.yaml"
 fi
+if [ "$mode" = long-horizon ]; then
+    compose_files="$compose_files -f e2e/bub/compose.harbor.yaml"
+fi
 
 export COMPOSE_PROJECT_NAME="powercontext-e2e-$database"
 output=${POWERCONTEXT_E2E_OUTPUT:-"$root/.powercontext-e2e/bub/$database/$mode"}
@@ -34,6 +37,17 @@ mkdir -p "$output"
 POWERCONTEXT_E2E_OUTPUT=$(CDPATH= cd -- "$output" && pwd)
 export POWERCONTEXT_E2E_OUTPUT
 export POWERCONTEXT_E2E_DATABASE=$database
+
+if [ "$mode" = long-horizon ]; then
+    auth_path=${POWERCONTEXT_E2E_CODEX_AUTH:-${CODEX_HOME:-$HOME/.codex}/auth.json}
+    if [ ! -f "$auth_path" ]; then
+        echo "Codex OAuth credentials were not found at $auth_path" >&2
+        exit 2
+    fi
+    auth_directory=$(CDPATH= cd -- "$(dirname "$auth_path")" && pwd)
+    POWERCONTEXT_E2E_CODEX_AUTH="$auth_directory/$(basename "$auth_path")"
+    export POWERCONTEXT_E2E_CODEX_AUTH
+fi
 
 if [ "$mode" = check ]; then
     docker compose $compose_files config --quiet
@@ -134,7 +148,10 @@ if [ "$mode" = acceptance ]; then
         e2e/bub/scenarios/locomo-support-group.yaml \
         e2e/bub/scenarios/project-database-decision.yaml \
         --output /evidence
-else
+elif [ "$mode" = live ]; then
     scenario=${POWERCONTEXT_E2E_SCENARIO:-e2e/bub/scenarios/project-database-decision.yaml}
     docker compose $compose_files run --rm harness live "$scenario" --output /evidence
+else
+    scenario=${POWERCONTEXT_E2E_SCENARIO:-e2e/bub/manifests/terminal-bench-db-wal-recovery.yaml}
+    docker compose $compose_files run --rm harness long-horizon "$scenario" --output /evidence
 fi

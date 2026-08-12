@@ -35,6 +35,7 @@ from .models import (
     RunEnvironment,
     ScenarioSpec,
     SessionObservation,
+    SourceReferenceSnapshot,
 )
 
 Mode = Literal["acceptance", "live", "offline-rescore"]
@@ -216,10 +217,10 @@ async def _run_replay(
     try:
         async with PowerContextClient(base_url, timeout=20) as client:
             await client.get_readiness()
-            memory_before = await _memory_snapshot(client, scope_id)
+            memory_before = await memory_snapshot(client, scope_id)
 
             for index, session in enumerate(scenario.sessions):
-                prepared = await _prepared_context(client, scope_id, session.input)
+                prepared = await prepared_context(client, scope_id, session.input)
                 agent_session_id = f"e2e:{run_id}:{index}:{session.id}"
                 try:
                     output = await _run_bub_session(
@@ -236,7 +237,7 @@ async def _run_replay(
                     status = "failed"
                     error = f"{type(exc).__name__}: {exc}"
                     errors.append(f"Session {session.id}: {error}")
-                memory_after_session = await _memory_snapshot(client, scope_id)
+                memory_after_session = await memory_snapshot(client, scope_id)
                 observations.append(
                     SessionObservation(
                         id=session.id,
@@ -250,7 +251,7 @@ async def _run_replay(
                 )
                 if status == "failed":
                     break
-            memory_after = await _memory_snapshot(client, scope_id)
+            memory_after = await memory_snapshot(client, scope_id)
     except Exception as exc:
         errors.append(f"{type(exc).__name__}: {exc}")
         memory_after = observations[-1].memory_after if observations else memory_before
@@ -259,7 +260,7 @@ async def _run_replay(
         run_id=run_id,
         environment=RunEnvironment(
             mode=mode,
-            commit=_commit(),
+            commit=current_commit(),
             database=os.getenv("POWERCONTEXT_E2E_DATABASE", "unknown"),
             agent_model=os.getenv("BUB_MODEL") if mode == "live" else None,
             generation_model=os.getenv("POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL"),
@@ -311,7 +312,7 @@ async def _run_bub_session(
     return result.model_output
 
 
-async def _memory_snapshot(client: PowerContextClient, scope_id: str) -> MemorySnapshot:
+async def memory_snapshot(client: PowerContextClient, scope_id: str) -> MemorySnapshot:
     response = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope_id))
     return MemorySnapshot(
         entries=tuple(
@@ -322,13 +323,17 @@ async def _memory_snapshot(client: PowerContextClient, scope_id: str) -> MemoryS
                 kind=entry.kind,
                 text=entry.text,
                 state=entry.state.value,
+                source_refs=tuple(
+                    SourceReferenceSnapshot(name=source.name, source_id=source.source_id)
+                    for source in entry.source_refs
+                ),
             )
             for entry in response.entries
         )
     )
 
 
-async def _prepared_context(client: PowerContextClient, scope_id: str, query: str) -> PreparedContextSnapshot:
+async def prepared_context(client: PowerContextClient, scope_id: str, query: str) -> PreparedContextSnapshot:
     prepared = await client.prepare_context(PrepareContextRequest(scope_id=scope_id, query=query))
     return PreparedContextSnapshot(status=prepared.status.value, content=prepared.content or "")
 
@@ -384,7 +389,7 @@ def _configure_tracing() -> None:
         trace.set_tracer_provider(TracerProvider())
 
 
-def _commit() -> str:
+def current_commit() -> str:
     configured = os.getenv("GITHUB_SHA")
     if configured:
         return configured
@@ -399,6 +404,15 @@ def _commit() -> str:
         timeout=10,
     )
     return completed.stdout.strip() if completed.returncode == 0 else "unknown"
+
+
+def redact(value: str) -> str:
+    """Redact known runtime secrets from diagnostic text."""
+
+    for secret in _runtime_secrets():
+        value = value.replace(secret, _REDACTED)
+        value = value.replace(json.dumps(secret, ensure_ascii=False)[1:-1], _REDACTED)
+    return value
 
 
 def write_artifacts(observation: ReplayObservation, report: Report, output_dir: Path) -> None:

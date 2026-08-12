@@ -1,0 +1,15 @@
+services:
+  harness:
+    build:
+      target: harbor
+    privileged: true
+    environment:
+      - CODEX_HOME=/codex
+      - POWERCONTEXT_E2E_DOCKER_STORAGE_DRIVER=${POWERCONTEXT_E2E_DOCKER_STORAGE_DRIVER:-vfs}
+      - POWERCONTEXT_E2E_SERVER_ADDRESS=powercontext:8000
+    volumes:
+      - ${POWERCONTEXT_E2E_CODEX_AUTH}:/codex/auth.json:ro
+      - harbor-docker-data:/var/lib/docker
+
+volumes:
+  harbor-docker-data:

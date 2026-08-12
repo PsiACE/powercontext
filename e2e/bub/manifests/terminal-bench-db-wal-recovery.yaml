@@ -1,0 +1,36 @@
+schema: powercontext.long-horizon/v1
+id: terminal-bench-db-wal-recovery
+task:
+  dataset: terminal-bench
+  version: "2.0"
+  task_id: db-wal-recovery
+  checksum: 01f470c86f3a1f7ce4d91bdf0aaaa89fa96a4124ac48617990e2735b5291913a
+agent:
+  protocol: acp
+  implementation: bub
+  model: openai:gpt-5.4
+  model_source: codex-oauth
+  bub_version: 0.4.2
+  acp_server_version: 0.1.0
+  max_steps: 50
+  max_tokens: 16384
+  timeout_seconds: 3600
+  setup_timeout_seconds: 900
+powercontext:
+  host_url: http://127.0.0.1:8000
+  container_url: http://host-gateway:8000
+capture:
+  checkpoint_every_events: 5
+  max_event_bytes: 8192
+  probes:
+    - id: investigation
+      query: What concrete facts and obstacles were discovered while investigating the WAL recovery task?
+    - id: decisions
+      query: Which approaches were attempted, selected, or rejected, and why?
+    - id: current-state
+      query: What was changed, what remains unresolved, and what should happen next?
+  thresholds:
+    capture_coverage: 0.9
+    groundedness: 0.8
+    probe_coverage: 0.67
+    minimum_in_run_contexts: 1

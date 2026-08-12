@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 from loguru import logger
 
+from .long_horizon_models import load_long_horizon_scenario
+from .long_horizon_runner import evaluate_long_horizon_scenario, rescore_long_horizon
 from .models import load_scenario
 from .runner import evaluate_scenario, rescore_replay
 
@@ -25,13 +28,24 @@ def main() -> None:
         run_parser.add_argument("scenario", type=Path, nargs="+")
         run_parser.add_argument("--output", type=Path, required=True)
 
+    long_horizon_parser = subparsers.add_parser("long-horizon")
+    long_horizon_parser.add_argument("scenario", type=Path)
+    long_horizon_parser.add_argument("--output", type=Path, required=True)
+
     rescore_parser = subparsers.add_parser("rescore")
     rescore_parser.add_argument("replay", type=Path)
     rescore_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
     if args.command == "rescore":
-        passed = asyncio.run(rescore_replay(args.replay, args.output))
+        replay_payload = json.loads(args.replay.read_text(encoding="utf-8"))
+        if replay_payload.get("schema") == "powercontext.long-horizon-evidence/v1":
+            passed = asyncio.run(rescore_long_horizon(args.replay, args.output))
+        else:
+            passed = asyncio.run(rescore_replay(args.replay, args.output))
+    elif args.command == "long-horizon":
+        scenario = load_long_horizon_scenario(args.scenario)
+        passed = asyncio.run(evaluate_long_horizon_scenario(scenario, output_dir=args.output))
     else:
         passed = True
         for scenario_path in args.scenario:

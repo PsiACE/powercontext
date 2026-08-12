@@ -62,6 +62,10 @@ harness-live: ## Run one real-model Bub session replay scenario against a Server
 		"$${POWERCONTEXT_E2E_SCENARIO:-e2e/bub/scenarios/project-database-decision.yaml}" \
 		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results/live}"
 
+.PHONY: harness-long-horizon
+harness-long-horizon: ## Run the Harbor long-horizon Memory evaluation in the harness container.
+	@e2e/bub/run.sh long-horizon
+
 .PHONY: harness-rescore
 harness-rescore: ## Rescore REPLAY without rerunning Bub or PowerContext.
 	@test -n "$${REPLAY:-}" || { echo "REPLAY is required" >&2; exit 2; }
