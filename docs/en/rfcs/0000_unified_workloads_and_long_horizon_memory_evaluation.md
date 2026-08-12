@@ -20,6 +20,10 @@ The supported execution profiles are:
 The profiles share the workload catalog, setup, evidence envelope, Memory evaluator, and report format. They do not
 share an agent implementation. A source task reward remains diagnostic and does not decide Memory acceptance.
 
+This RFC defines the common architecture and applies it to the existing Bub workloads. It does not migrate the
+current LoCoMo benchmark or the SWE-Pro evaluation branch. The `basic` and `codex` profiles define where those
+benchmarks can fit later without creating separate workload or report contracts.
+
 # Motivation
 
 RFC 0081 defines the broader end-to-end evaluation architecture, but leaves two gaps. It does not define how local
@@ -38,6 +42,22 @@ No single runtime gives useful evidence for every question:
 Long-horizon evaluation also needs a success definition independent of task completion. An unsuccessful task can
 still show whether PowerContext captured the investigation, preserved source provenance, created Memory, and recalled
 that Memory afterward.
+
+## Scope
+
+The deliverable covered by this RFC is the shared workload architecture and the Bub-backed built-in workload catalog.
+It includes the common manifest, selection by ID or category, Harbor execution for Bub workloads, normalized evidence,
+Memory acceptance, and report rendering.
+
+The following work is intentionally deferred:
+
+- moving the current LoCoMo benchmark runner to the `basic` profile;
+- moving any SWE-Pro evaluation branch or result set to the `codex` profile;
+- changing the inputs, scoring contract, published results, or operational tooling of either benchmark;
+- claiming parity between an existing benchmark and a future profile implementation.
+
+The sections for `basic` and `codex` specify architectural boundaries. They are not migration plans or implementation
+commitments in this RFC.
 
 # Guide-level explanation
 
@@ -112,9 +132,10 @@ The `basic` profile runs a bounded benchmark driver through public PowerContext 
 agent and does not emulate one. The driver owns benchmark operations such as ordered session ingestion, retrieval,
 answer generation, and source-native scoring.
 
-Complete LoCoMo evaluation belongs here because the driver can keep transcript ingestion, gold data, retrieval input,
-and answer scoring at explicit boundaries. A built-in LoCoMo sample remains a sample unless its manifest selects the
-complete pinned benchmark contract.
+A future migration of complete LoCoMo evaluation would use this profile because the driver can keep transcript
+ingestion, gold data, retrieval input, and answer scoring at explicit boundaries. This RFC does not perform that
+migration. The current benchmark runner and its result contract remain unchanged. A built-in LoCoMo sample remains a
+sample and does not claim a LoCoMo benchmark result.
 
 ### Bub
 
@@ -130,9 +151,9 @@ report contracts. Built-in agent samples and Memory-policy experiments should no
 The `codex` profile uses Harbor's native Codex agent and the existing PowerContext Codex integration. It uses the
 operator's configured Codex OAuth source without routing Codex through Bub or defining another agent.
 
-SWE-Pro and Terminal-Bench should normally use this profile. Their repository-maintained Harbor adapters keep the
-source task, environment, and verifier semantics. The harness adds Memory collection and evaluation around the native
-task rather than replacing its grader.
+A future SWE-Pro or Terminal-Bench migration would normally use this profile. A repository-maintained Harbor adapter
+would keep the source task, environment, and verifier semantics while the harness adds Memory collection around the
+native task. This RFC does not migrate the current SWE-Pro evaluation branch or its results.
 
 ## Shared execution flow
 
@@ -226,11 +247,11 @@ The replay records dataset checksums, model identity, database identity, resolve
 Final artifact sinks remove configured secrets. Native task artifacts may contain task content and require review
 before publication.
 
-## Benchmark placement
+## Architectural benchmark placement
 
-- Complete LoCoMo uses `basic` as its benchmark profile.
+- Complete LoCoMo would use `basic` if it is migrated to this architecture.
 - LoCoMo-derived built-in samples may use `basic` or `bub`, but do not claim a LoCoMo benchmark result.
-- SWE-Pro and Terminal-Bench use `codex` for production-shaped runs.
+- SWE-Pro and Terminal-Bench would use `codex` for production-shaped runs if they are migrated.
 - A Bub variant of a coding task may be added for white-box analysis. It has a separate workload ID and report.
 
 Results from different profiles are not merged into one benchmark score. A comparison must pin the same task,
@@ -239,18 +260,20 @@ variable.
 
 ## Compatibility
 
-Existing Bub workloads become `execution.type: bub` without changing their source task IDs. Existing LoCoMo benchmark
-logic can move under the `basic` profile while retaining its pinned data and scoring contract. Long-horizon Codex
-workloads use Harbor's native Codex support instead of the Bub ACP adapter.
+Existing Bub workloads become `execution.type: bub` without changing their source task IDs. The current LoCoMo
+benchmark and SWE-Pro evaluation branch remain outside the workload catalog and keep their existing commands,
+artifacts, and result contracts. A later migration requires separate scope and validation against the relevant
+benchmark contract.
 
 The catalog and command surface remain shared. Users select workload IDs or categories rather than separate Make
 targets for LoCoMo, Bub, Codex, or a dataset family.
 
 # Drawbacks
 
-The harness has three executors rather than one. The common replay schema must distinguish profile-specific evidence
-without reducing it to untyped dictionaries. Bub and Codex workloads require Harbor and an agent model, while basic
-workloads may not. Long-horizon runs can consume paid model capacity and produce large artifacts.
+The architecture has three executor contracts rather than one. As profiles are implemented, the common replay schema
+must distinguish profile-specific evidence without reducing it to untyped dictionaries. Bub and Codex workloads
+require Harbor and an agent model, while basic workloads may not. Long-horizon runs can consume paid model capacity
+and produce large artifacts.
 
 # Rationale and alternatives
 
@@ -267,18 +290,20 @@ collected useful Memory. The native result remains available without replacing t
 # Non-goals
 
 This RFC does not replace RFC 0081, define a leaderboard, require registry publication, or introduce a new agent
-protocol. It does not standardize private executor internals or replace source-native graders.
+protocol. It does not standardize private executor internals or replace source-native graders. It does not migrate,
+rewrite, or retire the current LoCoMo benchmark or SWE-Pro evaluation branch. Implementing `basic` or `codex` for
+those benchmarks requires separately reviewed work.
 
 # Acceptance criteria
 
 The proposal is complete when:
 
-- one Pydantic workload manifest supports the closed `basic`, `bub`, and `codex` execution union;
-- one command selects one or more workload IDs and categories across all profiles;
-- repository-maintained and registry tasks use the same provenance and task layout contracts;
-- Bub remains the configurable white-box runtime and records its native evidence;
-- Codex workloads use Harbor's native Codex agent with the existing PowerContext integration;
-- basic workloads run without a general-purpose agent;
-- complete LoCoMo and LoCoMo-derived samples are reported with the correct benchmark or sample scope;
+- the RFC defines the closed `basic`, `bub`, and `codex` execution architecture and their evidence boundaries;
+- existing built-in workloads use the Pydantic manifest with `execution.type: bub`;
+- one command selects one or more implemented workload IDs and categories;
+- repository-maintained and registry-backed Bub tasks use the same provenance and task layout contracts;
+- Bub remains the configurable white-box runtime and records its native evidence through Harbor;
+- the LoCoMo-derived built-in case remains a sample and does not claim a LoCoMo benchmark result;
 - long-horizon Memory acceptance remains independent of native task reward;
-- each replay identifies the selected profile and supports offline rescoring without rerunning the task.
+- each implemented workload replay identifies its profile and supports offline rescoring without rerunning the task;
+- the current LoCoMo benchmark and SWE-Pro evaluation branch remain unchanged.

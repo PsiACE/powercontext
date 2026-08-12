@@ -19,6 +19,9 @@ execution profile、设置预算，并声明如何评估本次运行产生的 Me
 三种 profile 共用 workload catalog、setup、evidence envelope、Memory evaluator 与 report 格式，但不共用 agent 实现。
 任务原生 reward 只用于诊断，不决定 Memory acceptance。
 
+本 RFC 定义统一架构，并将它用于现有 Bub workload。当前 LoCoMo benchmark 与 SWE-Pro evaluation branch 不在迁移范围内。
+`basic` 和 `codex` profile 只说明这些 benchmark 以后可以如何接入，避免再次引入独立的 workload 或 report contract。
+
 # 动机
 
 RFC 0081 定义了更广泛的端到端评估架构，但仍有两个缺口。它没有确定本地样例与长程任务如何共享一套 workload
@@ -34,6 +37,20 @@ contract，也把 Bub 当作首个实现，而不是多种执行方式中的一�
 
 长程评估还需要与任务完成情况分开的成功定义。即使任务没有完成，一次运行仍然可以说明 PowerContext 是否采集了调查
 过程、保留了 source provenance、创建了 Memory，以及这些 Memory 能否在任务结束后被召回。
+
+## 范围
+
+本 RFC 的交付范围是共享 workload 架构和基于 Bub 的内置 workload catalog，包括公共 manifest、按 ID 或 category 选择、
+Bub workload 的 Harbor execution、标准化 evidence、Memory acceptance 与 report rendering。
+
+以下工作明确延后：
+
+- 将当前 LoCoMo benchmark runner 迁移到 `basic` profile；
+- 将任何 SWE-Pro evaluation branch 或 result set 迁移到 `codex` profile；
+- 改变这两类 benchmark 的输入、scoring contract、已发布结果或运行工具；
+- 声明现有 benchmark 与未来 profile 实现之间的 parity。
+
+`basic` 与 `codex` 章节只定义架构边界，不是本 RFC 的迁移计划或实现承诺。
 
 # 使用方式
 
@@ -107,8 +124,9 @@ Memory baseline。Setup 不会选择另一种 profile。
 `basic` profile 通过 PowerContext 公开接口运行有界的 benchmark driver。它不使用通用 agent，也不模拟 agent。Driver
 负责 ordered session ingestion、retrieval、answer generation 与 source-native scoring 等 benchmark operation。
 
-完整 LoCoMo 评估属于这一类，因为 driver 可以明确隔离 transcript ingestion、gold data、retrieval input 与 answer
-scoring。内置的 LoCoMo sample 仍然只是 sample，除非它的 manifest 选择完整且固定的 benchmark contract。
+如果以后迁移完整 LoCoMo 评估，应使用该 profile，因为 driver 可以明确隔离 transcript ingestion、gold data、retrieval
+input 与 answer scoring。本 RFC 不执行这项迁移。当前 benchmark runner 与 result contract 保持不变。内置 LoCoMo case
+仍然只是 sample，不代表 LoCoMo benchmark 结果。
 
 ### Bub
 
@@ -124,8 +142,9 @@ scoring。内置的 LoCoMo sample 仍然只是 sample，除非它的 manifest �
 `codex` profile 使用 Harbor 原生 Codex agent 与现有 PowerContext Codex integration。它使用 operator 配置的 Codex OAuth
 source，不经过 Bub，也不定义另一个 agent。
 
-SWE-Pro 与 Terminal-Bench 通常应使用该 profile。仓库自行维护的 Harbor adapter 保留 source task、environment 与
-verifier 语义。Harness 在原生任务外围增加 Memory collection 与 evaluation，不替换原生 grader。
+如果以后迁移 SWE-Pro 或 Terminal-Bench，通常应使用该 profile。仓库自行维护的 Harbor adapter 应保留 source task、
+environment 与 verifier 语义，harness 只在原生任务外围增加 Memory collection。本 RFC 不迁移当前 SWE-Pro evaluation
+branch 或其结果。
 
 ## 共享执行流程
 
@@ -213,11 +232,11 @@ Evaluator 只读取 replay evidence，不能控制 executor。Report renderer �
 Replay 记录 dataset checksum、model identity、database identity、最终输入与 PowerContext scope state。最终 artifact sink 会移除
 已配置的 secret。原生 task artifact 可能包含任务内容，发布前需要检查。
 
-## Benchmark 归属
+## 架构上的 benchmark 归属
 
-- 完整 LoCoMo 使用 `basic` 作为 benchmark profile。
+- 如果完整 LoCoMo 迁移到该架构，应使用 `basic`。
 - LoCoMo 衍生的内置 sample 可以使用 `basic` 或 `bub`，但不代表 LoCoMo benchmark 结果。
-- SWE-Pro 与 Terminal-Bench 使用 `codex` 运行接近实际使用方式的评估。
+- 如果 SWE-Pro 与 Terminal-Bench 迁移到该架构，应使用 `codex` 运行接近实际使用方式的评估。
 - Coding task 可以增加单独的 Bub variant 用于白盒分析，但必须使用独立 workload ID 与 report。
 
 不同 profile 的结果不能合并为一个 benchmark score。对比实验必须固定相同的 task、PowerContext revision、model identity、
@@ -225,17 +244,18 @@ budget 与 acceptance policy，并把 profile 明确记录为 treatment variable
 
 ## 兼容性
 
-现有 Bub workload 改为 `execution.type: bub`，source task ID 保持不变。现有 LoCoMo benchmark 逻辑可以移到 `basic`
-profile，并保留固定数据与 scoring contract。长程 Codex workload 使用 Harbor 原生 Codex 支持，不经过 Bub ACP adapter。
+现有 Bub workload 改为 `execution.type: bub`，source task ID 保持不变。当前 LoCoMo benchmark 与 SWE-Pro evaluation branch
+不进入 workload catalog，并保留现有 command、artifact 与 result contract。后续迁移需要单独确定范围，并对相应 benchmark
+contract 做验证。
 
 Catalog 与命令入口保持统一。用户通过 workload ID 或 category 选择任务，不为 LoCoMo、Bub、Codex 或 dataset family 维护
 不同 Make target。
 
 # 代价
 
-Harness 需要维护三种 executor，而不是一种。公共 replay schema 必须区分 profile-specific evidence，不能把它们压成无类型
-dictionary。Bub 与 Codex workload 需要 Harbor 和 agent model，basic workload 则可能不需要。长程运行可能消耗付费模型
-额度，并产生较大的 artifact。
+该架构定义了三种 executor contract，而不是一种。随着 profile 逐步实现，公共 replay schema 必须区分 profile-specific
+evidence，不能把它们压成无类型 dictionary。Bub 与 Codex workload 需要 Harbor 和 agent model，basic workload 则可能
+不需要。长程运行可能消耗付费模型额度，并产生较大的 artifact。
 
 # 理由与替代方案
 
@@ -251,18 +271,19 @@ contract 将这些职责放在一处，同时允许 execution semantics 不同�
 # 非目标
 
 本 RFC 不替代 RFC 0081，不定义 leaderboard，不要求发布到 registry，也不引入新的 agent protocol。它不统一 executor 私有
-实现，也不替代任务原生 grader。
+实现，也不替代任务原生 grader。本 RFC 不迁移、重写或移除当前 LoCoMo benchmark 与 SWE-Pro evaluation branch。为这两类
+benchmark 实现 `basic` 或 `codex` 需要单独评审。
 
 # 验收条件
 
 满足以下条件时，本提案完成：
 
-- 一个 Pydantic workload manifest 支持封闭的 `basic`、`bub` 与 `codex` execution union；
-- 一个命令可以跨 profile 按一个或多个 workload ID 及 category 选择任务；
-- 仓库自行维护的 task 与 registry task 使用相同的 provenance 和 task layout contract；
-- Bub 保持为可配置的白盒 runtime，并记录原生 evidence；
-- Codex workload 使用 Harbor 原生 Codex agent 与现有 PowerContext integration；
-- basic workload 不使用通用 agent；
-- 完整 LoCoMo 与 LoCoMo 衍生 sample 使用正确的 benchmark 或 sample scope 进行报告；
+- RFC 定义封闭的 `basic`、`bub` 与 `codex` execution 架构及各自的 evidence 边界；
+- 现有内置 workload 使用带有 `execution.type: bub` 的 Pydantic manifest；
+- 一个命令可以按一个或多个已实现的 workload ID 及 category 选择任务；
+- 仓库自行维护与 registry-backed 的 Bub task 使用相同的 provenance 和 task layout contract；
+- Bub 保持为可配置的白盒 runtime，并通过 Harbor 记录原生 evidence；
+- LoCoMo 衍生的内置 case 保持 sample 身份，不代表 LoCoMo benchmark 结果；
 - 长程 Memory acceptance 与任务原生 reward 保持独立；
-- 每份 replay 都标识选定 profile，并能在不重新运行任务的情况下离线评分。
+- 每个已实现 workload 的 replay 都标识 profile，并能在不重新运行任务的情况下离线评分；
+- 当前 LoCoMo benchmark 与 SWE-Pro evaluation branch 保持不变。
