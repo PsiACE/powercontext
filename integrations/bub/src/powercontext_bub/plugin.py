@@ -397,6 +397,32 @@ def _error_name(error: Exception | None) -> str | None:
 
 def _redact_known_secrets(value: str) -> str:
     secrets = {secret for name, secret in os.environ.items() if secret and len(secret) >= 8 and _is_sensitive_key(name)}
+    secrets.update(_codex_auth_secrets())
     for secret in secrets:
         value = value.replace(secret, "[REDACTED]")
     return value
+
+
+def _codex_auth_secrets() -> set[str]:
+    codex_home = Path(os.getenv("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+    try:
+        auth = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return _sensitive_values(auth)
+
+
+def _sensitive_values(value: Any, *, sensitive: bool = False) -> set[str]:
+    if isinstance(value, dict):
+        secrets: set[str] = set()
+        for key, item in value.items():
+            secrets.update(_sensitive_values(item, sensitive=sensitive or _is_sensitive_key(str(key))))
+        return secrets
+    if isinstance(value, list | tuple):
+        secrets = set()
+        for item in value:
+            secrets.update(_sensitive_values(item, sensitive=sensitive))
+        return secrets
+    if sensitive and isinstance(value, str) and len(value) >= 8:
+        return {value}
+    return set()
