@@ -14,6 +14,20 @@ not captured.
 
 ## Configuration
 
+The plugin uses Bub's Pydantic settings extension. Configuration can live in the `powercontext` section of Bub's
+configuration file:
+
+```yaml
+powercontext:
+  base_url: http://127.0.0.1:8000
+  scope_id: project:example
+  capture_events: true
+  capture_checkpoint_every: 5
+```
+
+Environment variables use the `POWERCONTEXT_BUB_` prefix and take precedence over file values. Values are parsed and
+validated by Pydantic before the plugin starts.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `POWERCONTEXT_BUB_BASE_URL` | `http://127.0.0.1:8000` | PowerContext Server URL |

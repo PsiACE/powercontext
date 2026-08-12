@@ -6,14 +6,16 @@ import asyncio
 import hashlib
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from bub import hookimpl
+from bub import Settings, config, ensure_config, hookimpl
 from bub.hooks.interception import LlmCallRequest, LlmCallResult, ToolCall, ToolCallResult
 from bub.turn import TurnState
+from pydantic import Field, HttpUrl
+from pydantic_settings import SettingsConfigDict
 
 from powercontext.client import InvalidResponseError, PowerContextClient, ServerResponseError, TransportError
 from powercontext.http import CaptureContentSourceRequest, FlushMemoryRequest, PrepareContextRequest
@@ -30,64 +32,34 @@ CAPTURE_SCHEMA = "powercontext.bub-capture-event/v1"
 SENSITIVE_KEY_PARTS = ("api_key", "authorization", "cookie", "password", "secret", "token")
 
 
-class ConfigurationError(ValueError):
-    """Report invalid PowerContext settings during Bub startup."""
+@config(name="powercontext")
+class PowerContextSettings(Settings):
+    """Validated Bub configuration for the PowerContext plugin."""
 
-    def __init__(self, name: str, requirement: str) -> None:
-        super().__init__(f"{name} must be {requirement}")
+    model_config = SettingsConfigDict(
+        env_prefix="POWERCONTEXT_BUB_",
+        env_ignore_empty=True,
+        extra="ignore",
+        frozen=True,
+    )
 
-
-@dataclass(frozen=True, slots=True)
-class Settings:
-    """PowerContext settings for one Bub process."""
-
-    base_url: str
-    scope_id: str
-    timeout: float
-    max_bytes: int
-    capture_events: bool
-    capture_checkpoint_every: int
-    capture_max_bytes: int
-    capture_log: Path | None
-
-    @classmethod
-    def from_environment(cls, workspace: Path) -> Settings:
-        scope_id = os.getenv("POWERCONTEXT_BUB_SCOPE_ID", "").strip()
-        if not scope_id:
-            digest = hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()[:20]
-            scope_id = f"bub:{digest}"
-
-        max_bytes = int(os.getenv("POWERCONTEXT_BUB_MAX_BYTES", "8000"))
-        if not 512 <= max_bytes <= 32768:
-            raise ConfigurationError("POWERCONTEXT_BUB_MAX_BYTES", "between 512 and 32768")
-
-        capture_checkpoint_every = int(os.getenv("POWERCONTEXT_BUB_CAPTURE_CHECKPOINT_EVERY", "5"))
-        if not 1 <= capture_checkpoint_every <= 100:
-            raise ConfigurationError("POWERCONTEXT_BUB_CAPTURE_CHECKPOINT_EVERY", "between 1 and 100")
-
-        capture_max_bytes = int(os.getenv("POWERCONTEXT_BUB_CAPTURE_MAX_BYTES", "8192"))
-        if not 512 <= capture_max_bytes <= 32768:
-            raise ConfigurationError("POWERCONTEXT_BUB_CAPTURE_MAX_BYTES", "between 512 and 32768")
-
-        capture_log_value = os.getenv("POWERCONTEXT_BUB_CAPTURE_LOG", "").strip()
-
-        return cls(
-            base_url=os.getenv("POWERCONTEXT_BUB_BASE_URL", "http://127.0.0.1:8000").strip(),
-            scope_id=scope_id,
-            timeout=float(os.getenv("POWERCONTEXT_BUB_TIMEOUT", "10")),
-            max_bytes=max_bytes,
-            capture_events=_environment_flag("POWERCONTEXT_BUB_CAPTURE_EVENTS", default=False),
-            capture_checkpoint_every=capture_checkpoint_every,
-            capture_max_bytes=capture_max_bytes,
-            capture_log=Path(capture_log_value) if capture_log_value else None,
-        )
+    base_url: HttpUrl = HttpUrl("http://127.0.0.1:8000")
+    scope_id: str | None = Field(default=None, min_length=1)
+    timeout: float = Field(default=10, gt=0)
+    max_bytes: int = Field(default=8000, ge=512, le=32768)
+    capture_events: bool = False
+    capture_checkpoint_every: int = Field(default=5, ge=1, le=100)
+    capture_max_bytes: int = Field(default=8192, ge=512, le=32768)
+    capture_log: Path | None = None
 
 
 class PowerContextPlugin:
     """Bub hooks backed by the public PowerContext client."""
 
     def __init__(self, framework: Any) -> None:
-        self.settings = Settings.from_environment(Path(framework.workspace))
+        self.settings = ensure_config(PowerContextSettings)
+        self.base_url = str(self.settings.base_url).rstrip("/")
+        self.scope_id = self.settings.scope_id or _workspace_scope(Path(framework.workspace))
         self._capture_lock = asyncio.Lock()
 
     @hookimpl
@@ -95,8 +67,8 @@ class PowerContextPlugin:
         del message, session_id
         return {
             STATE_KEY: {
-                "base_url": self.settings.base_url,
-                "scope_id": self.settings.scope_id,
+                "base_url": self.base_url,
+                "scope_id": self.scope_id,
                 "timeout": self.settings.timeout,
                 "capture_sequence": 0,
                 "captured_events": 0,
@@ -183,12 +155,12 @@ class PowerContextPlugin:
 
     async def _prepare_context(self, query: str, state: TurnState) -> str | None:
         request = PrepareContextRequest(
-            scope_id=self.settings.scope_id,
+            scope_id=self.scope_id,
             query=query,
             max_bytes=self.settings.max_bytes,
         )
         try:
-            async with PowerContextClient(self.settings.base_url, timeout=self.settings.timeout) as client:
+            async with PowerContextClient(self.base_url, timeout=self.settings.timeout) as client:
                 prepared = await client.prepare_context(request)
         except CLIENT_ERRORS as exc:
             state[STATE_KEY]["prepare_error"] = type(exc).__name__
@@ -221,10 +193,10 @@ class PowerContextPlugin:
             capture_state["capture_sequence"] += 1
             sequence = capture_state["capture_sequence"]
             session_id = str(state.get("session_id", "unknown"))
-            source_id = _source_id(self.settings.scope_id, session_id, sequence, event, run_id)
+            source_id = _source_id(self.scope_id, session_id, sequence, event, run_id)
             content = _capture_content(event, sequence, payload, self.settings.capture_max_bytes)
             request = CaptureContentSourceRequest(
-                scope_id=self.settings.scope_id,
+                scope_id=self.scope_id,
                 source_id=source_id,
                 content=content,
                 metadata={
@@ -237,7 +209,7 @@ class PowerContextPlugin:
                 },
             )
             try:
-                async with PowerContextClient(self.settings.base_url, timeout=self.settings.timeout) as client:
+                async with PowerContextClient(self.base_url, timeout=self.settings.timeout) as client:
                     response = await client.capture_content_source(request)
             except CLIENT_ERRORS as exc:
                 self._write_capture_record(
@@ -268,8 +240,8 @@ class PowerContextPlugin:
             return
 
         try:
-            async with PowerContextClient(self.settings.base_url, timeout=self.settings.timeout) as client:
-                response = await client.flush_memory(FlushMemoryRequest(scope_id=self.settings.scope_id))
+            async with PowerContextClient(self.base_url, timeout=self.settings.timeout) as client:
+                response = await client.flush_memory(FlushMemoryRequest(scope_id=self.scope_id))
         except CLIENT_ERRORS as exc:
             self._write_capture_record(
                 event="checkpoint",
@@ -329,16 +301,9 @@ def _contains_context_marker(message: dict[str, Any]) -> bool:
     return isinstance(content, str) and CONTEXT_MARKER in content
 
 
-def _environment_flag(name: str, *, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    normalized = value.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ConfigurationError(name, "a boolean value")
+def _workspace_scope(workspace: Path) -> str:
+    digest = hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()[:20]
+    return f"bub:{digest}"
 
 
 def _source_id(scope_id: str, session_id: str, sequence: int, event: str, run_id: str) -> str:
