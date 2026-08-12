@@ -11,6 +11,7 @@ COPY --from=uv /uv /uvx /bin/
 ENV PATH="/workspace/powercontext/e2e/bub/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    POWERCONTEXT_E2E_REPOSITORY=/workspace/powercontext \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 

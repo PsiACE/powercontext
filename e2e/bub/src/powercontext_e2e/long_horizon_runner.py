@@ -338,7 +338,7 @@ def _job_config(
 
 
 def _build_agent_wheels(wheel_dir: Path) -> None:
-    repository = Path(__file__).resolve().parents[4]
+    repository = Path(os.getenv("POWERCONTEXT_E2E_REPOSITORY", str(Path(__file__).resolve().parents[4]))).resolve()
     uv = shutil.which("uv")
     if uv is None:
         raise UvNotFoundError
