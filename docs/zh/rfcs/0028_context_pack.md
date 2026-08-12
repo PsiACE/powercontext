@@ -33,9 +33,10 @@ Coding Agent profile 现在已有第二个实现来源：approved Experience。�
   precedence、provider 行为以及 empty/failure 语义都不改变。Provider integration 本就把 `content` 当作 Runtime
   已准备好的 opaque value，因此不需要增加解析或二次选择。
 
-任务收益必须与上下文体积分开评估。有效评测需要固定 coding task，并让 control/treatment 使用同一 Agent、model 与
-settings；只有 treatment 注入 prepared Experience；两组都由独立可执行检查评分，同时报告成功率与注入 byte。
-approval、retrieval 或 token 增加本身都不能证明收益。
+`approved-experience-recall` live workload 通过统一的 Harbor、ACP、Bub 与 PowerContext runtime 评估这条链路。
+固定 coding case 的独立可执行 verifier 作为诊断 evidence。Memory acceptance 检查 prepared Experience 注入、agent event
+采集、有来源依据的 Memory 与运行后 recall。该 workload 不声称因果性的任务收益；这种结论仍需让 control 与 treatment
+使用相同 agent、model、settings 和独立可执行检查。
 
 # Motivation
 

@@ -12,7 +12,7 @@ pinned samples, and registry datasets use the same manifest, runner, evidence, a
 All workloads follow one execution path:
 
 ```text
-workload -> Harbor Job -> ACP -> Bub -> PowerContext -> evidence -> Memory evaluator -> report
+workload -> public PowerContext setup -> Harbor Job -> ACP -> Bub -> PowerContext -> evidence -> Memory evaluator -> report
 ```
 
 The acceptance result answers whether the run captured useful, grounded, and recallable Memory. A source-native task
@@ -60,6 +60,11 @@ evaluation:
 `dataset` can identify a local Harbor task or a versioned registry task. The remaining workload fields keep the same
 meaning in both cases. Pydantic validates manifests and runtime settings before execution.
 
+A workload may declare public PowerContext state that must exist before Harbor starts. For example, an Experience
+recall workload declares approved Experiences in `setup`. The common runner creates this state through the public
+Client in the workload scope and records the resulting Artifact references. Setup does not select another agent or
+runner.
+
 Workloads have stable IDs. One command can run one ID, several IDs, or every workload in a category. Categories are
 selection metadata and do not select a different runner.
 
@@ -68,9 +73,10 @@ but does not claim a LoCoMo benchmark result.
 
 ## One execution flow
 
-The harness creates an isolated PowerContext scope and records its initial Memory. Harbor resolves the dataset, creates
-the task environment, and runs the task through its ACP agent support. Bub receives the task instructions and uses the
-PowerContext integration while it works. The integration captures eligible events and advances Memory checkpoints.
+The harness creates an isolated PowerContext scope, applies declared setup through the public Client, and records its
+initial Memory. Harbor resolves the dataset, creates the task environment, and runs the task through its ACP agent
+support. Bub receives the task instructions and uses the PowerContext integration while it works. The integration
+captures eligible events and advances Memory checkpoints.
 
 After Harbor finishes, the harness records native ACP evidence, final Memory, and the result of each recall probe. The
 same evaluator produces machine-readable and reviewer-readable reports. A failed workload still writes the evidence
@@ -114,6 +120,9 @@ The manifest is the only harness-level task abstraction. Dataset adapters resolv
 second workload schema. Agent configuration and PowerContext evaluation settings belong to the validated manifest.
 Secrets and machine-local paths remain in validated runtime settings.
 
+Agent-driven approved Experience recall is a live workload in the same catalog. Deterministic Experience and Skill
+lifecycle behavior remains in `tests/e2e/`, where it is exercised through public product interfaces without a model.
+
 Dependencies flow in one direction:
 
 ```text
@@ -136,7 +145,7 @@ Each workload produces one artifact directory:
 
 | Artifact | Purpose |
 | --- | --- |
-| `replay.json` | Workload, run identity, resolved instructions, captured events, Memory snapshots, probes, and native evidence |
+| `replay.json` | Workload, run identity, setup results, resolved instructions, captured events, Memory snapshots, probes, and native evidence |
 | `eval-report.json` | Assertions, scores, labels, metrics, and reasons |
 | `report.md` | A compact human-readable projection of the same evaluation result |
 
@@ -177,6 +186,7 @@ new agent protocol. It does not replace source-native graders or require tests f
 The proposal is complete when:
 
 - local tasks and registry tasks use the same manifest, Harbor entrypoint, ACP agent, evaluator, and artifact schemas;
+- agent-driven approved Experience recall uses the common workload catalog and has no direct Codex runner;
 - one command selects workloads by one or more IDs and by category;
 - the LoCoMo-derived case remains a pinned built-in sample in the common catalog;
 - replay evidence identifies the instructions that the agent received;

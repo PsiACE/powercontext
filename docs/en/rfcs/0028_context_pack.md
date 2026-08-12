@@ -53,10 +53,11 @@ public request/response contracts remain unchanged.
   trust precedence, provider behavior, and empty/failure semantics do not change. Provider integrations already treat
   `content` as an opaque Runtime-prepared value and therefore require no new parsing or selection behavior.
 
-Task value must be evaluated separately from context volume. A valid evaluation uses fixed coding tasks and the same
-Agent/model/settings for control and treatment, injects only the prepared Experience in treatment, scores both arms
-with independent executable checks, and reports success rate together with injected bytes. Approval, retrieval, or
-more tokens alone does not establish benefit.
+The `approved-experience-recall` live workload evaluates this path through the common Harbor, ACP, Bub, and
+PowerContext runtime. Its fixed coding cases keep independent executable verifiers as diagnostic evidence. Memory
+acceptance checks prepared Experience injection, captured agent events, grounded Memory, and post-run recall. It does
+not claim causal task improvement. Such a claim would require paired control and treatment runs with the same agent,
+model, settings, and independent executable checks.
 
 # Motivation
 

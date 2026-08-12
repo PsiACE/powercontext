@@ -12,7 +12,7 @@ PowerContext 将所有内置端到端样例与长程 agent 任务表示为 workl
 所有 workload 只经过一条执行链：
 
 ```text
-workload -> Harbor Job -> ACP -> Bub -> PowerContext -> evidence -> Memory evaluator -> report
+workload -> public PowerContext setup -> Harbor Job -> ACP -> Bub -> PowerContext -> evidence -> Memory evaluator -> report
 ```
 
 Acceptance 判断本次运行是否采集到了有用、有来源依据且可以召回的 Memory。任务自己的 reward 只用于诊断，不决定
@@ -58,6 +58,10 @@ evaluation:
 `dataset` 可以指向本地 Harbor task，也可以指向带版本的 registry task。其他字段在两种来源下含义一致。Manifest
 与运行时配置都在执行前经过 Pydantic 校验。
 
+Workload 可以声明 Harbor 启动前必须存在的公开 PowerContext 状态。例如，Experience recall workload 在 `setup` 中声明
+approved Experience。统一 runner 使用公开 Client 在 workload scope 中创建这些状态，并记录最终 Artifact reference。
+Setup 不会选择另一种 agent 或 runner。
+
 每个 workload 都有稳定 ID。一个命令可以运行单个 ID、多个 ID，或一个 category 下的全部 workload。Category 只是选择
 条件，不会切换 runner。
 
@@ -65,9 +69,9 @@ Catalog 中的 LoCoMo 数据是固定的内置采样。它用固定 conversation
 
 ## 一条执行链
 
-Harness 创建隔离的 PowerContext scope，并记录初始 Memory。Harbor 解析 dataset、创建任务环境，再通过 ACP agent 支持
-运行任务。Bub 接收任务指令，并在工作过程中使用 PowerContext integration。Integration 捕获符合条件的事件，并推进
-Memory checkpoint。
+Harness 创建隔离的 PowerContext scope，通过公开 Client 应用声明的 setup，并记录初始 Memory。Harbor 解析 dataset、
+创建任务环境，再通过 ACP agent 支持运行任务。Bub 接收任务指令，并在工作过程中使用 PowerContext integration。
+Integration 捕获符合条件的事件，并推进 Memory checkpoint。
 
 Harbor 结束后，harness 记录原生 ACP evidence、最终 Memory 和每个 recall probe 的结果。统一 evaluator 生成机器可读与
 供评审阅读的 report。Workload 中途失败时，已经采集的 evidence 仍会写入 artifact。
@@ -107,6 +111,9 @@ Harbor reward、verifier result、运行时长与 model usage 保留为 label、
 Manifest 是 harness 层唯一的任务抽象。Dataset adapter 负责解析 Harbor task，但不定义第二套 workload schema。Agent
 配置与 PowerContext evaluation settings 属于同一个经过校验的 manifest；secret 与本机路径留在经过校验的运行时配置中。
 
+Agent 驱动的 approved Experience recall 是同一 catalog 中的 live workload。确定性的 Experience 与 Skill lifecycle 行为
+仍位于 `tests/e2e/`，通过产品公开接口运行，不调用模型。
+
 依赖保持单向：
 
 ```text
@@ -128,7 +135,7 @@ Evaluator 只读取 replay evidence，不控制 Harbor 或 Bub。Report renderer
 
 | Artifact | 用途 |
 | --- | --- |
-| `replay.json` | Workload、运行身份、最终指令、采集事件、Memory snapshot、probe 与原生 evidence |
+| `replay.json` | Workload、运行身份、setup result、最终指令、采集事件、Memory snapshot、probe 与原生 evidence |
 | `eval-report.json` | Assertion、score、label、metric 与判断理由 |
 | `report.md` | 同一个 evaluation result 的简短可读表示 |
 
@@ -166,6 +173,7 @@ grader。对于用户无法观察的 runner 私有实现细节，本 RFC 不要�
 满足以下条件时，本提案完成：
 
 - 本地任务与 registry task 使用相同的 manifest、Harbor entrypoint、ACP agent、evaluator 和 artifact schema；
+- Agent 驱动的 approved Experience recall 使用统一 workload catalog，不保留直接 Codex runner；
 - 一个命令可以按一个或多个 ID 以及 category 选择 workload；
 - LoCoMo 衍生 case 作为固定内置样例留在统一 catalog 中；
 - replay evidence 可以确认 agent 收到的指令；

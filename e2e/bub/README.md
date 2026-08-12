@@ -8,6 +8,7 @@ Every workload follows one execution path:
 
 ```text
 Pydantic manifest and settings
+  -> declared PowerContext setup through the public Client
   -> Harbor Job
   -> Harbor ACP runner
   -> Bub ACP server
@@ -61,12 +62,14 @@ evaluation:
 ```
 
 The dataset can be a local Harbor dataset path or a registry dataset name and version. `agent` selects Bub and ACP
-budgets. `evaluation` declares only externally observable Memory behavior.
+budgets. Optional `setup` entries prepare declared public PowerContext state in the isolated workload scope.
+`evaluation` declares only externally observable Memory behavior.
 
 The built-in manifests are:
 
 | ID | Dataset | Categories | Purpose |
 | --- | --- | --- | --- |
+| `approved-experience-recall` | local Harbor multi-step task | `live`, `experience` | Approved Experience injection and Memory collection |
 | `locomo-support-group` | local Harbor multi-step task | `acceptance`, `sample` | Pinned LoCoMo-derived sample |
 | `project-database-decision` | local Harbor multi-step task | `acceptance`, `sample`, `smoke` | Durable project decision |
 | `terminal-bench-db-wal-recovery` | `terminal-bench@2.0` | `long-horizon`, `terminal-bench` | Long-running capture and recall |
@@ -98,6 +101,19 @@ POWERCONTEXT_E2E_IDS=locomo-support-group,project-database-decision \
 make harness-compose-run
 ```
 
+The live approved Experience workload uses the same command and fixed harness:
+
+```bash
+POWERCONTEXT_E2E_IDS=approved-experience-recall make harness-compose-run
+```
+
+It requires Codex OAuth plus configured PowerContext generation and embedding inference. The manifest declares three
+approved Experiences. The common runner proposes and approves them through the public Client in the isolated scope,
+then starts one Harbor multi-step task. Every step uses the existing Bub ACP agent and PowerContext integration. The
+native verifiers check the coding repositories for diagnostic task outcomes. Memory acceptance instead checks that
+the Experiences reached the agent through prepared context and that the agent run produced grounded, recallable
+Memory. No separate Codex runner or Experience-specific agent participates in this path.
+
 Each selected workload writes the same layout:
 
 ```text
@@ -108,7 +124,8 @@ Each selected workload writes the same layout:
   harbor-jobs/
 ```
 
-`replay.json` is a self-contained Pydantic observation and records the instructions resolved by Harbor's ACP runner.
+`replay.json` is a self-contained Pydantic observation and records declared setup results plus the instructions
+resolved by Harbor's ACP runner.
 `eval-report.json` uses
 `powercontext.e2e-evaluation/v1`. `report.md` is rendered from the report model with Marko. Native Harbor and ACP
 evidence remains under `harbor-jobs/`.
