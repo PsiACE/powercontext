@@ -44,13 +44,10 @@ harness-check: ## Validate the Bub replay harness and committed scenarios.
 	@uv run --project e2e/bub python -m pytest e2e/bub/tests
 	@uv run --project e2e/bub powercontext-e2e --help >/dev/null
 
-.PHONY: harness-run
-harness-run: ## Run workloads by ID or category against an existing Server.
-	@set --; \
-	if [ -n "$${POWERCONTEXT_E2E_IDS:-}" ]; then set -- "$$@" --id "$$POWERCONTEXT_E2E_IDS"; fi; \
-	if [ -n "$${POWERCONTEXT_E2E_CATEGORIES:-}" ]; then set -- "$$@" --category "$$POWERCONTEXT_E2E_CATEGORIES"; fi; \
-	uv run --project e2e/bub powercontext-e2e run "$$@" \
-		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results}"
+.PHONY: harness-acceptance
+harness-acceptance: ## Evaluate workloads by ID or category against an existing Server.
+	@uv run --project e2e/bub powercontext-e2e acceptance \
+		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results}" $(ARGS)
 
 .PHONY: harness-rescore
 harness-rescore: ## Rescore REPLAY without rerunning Bub or PowerContext.
@@ -63,14 +60,13 @@ harness-compose-check: ## Validate the SQLite and OceanBase Compose environments
 	@POWERCONTEXT_E2E_DATABASE=sqlite e2e/bub/run.sh check
 	@POWERCONTEXT_E2E_DATABASE=oceanbase e2e/bub/run.sh check
 
-.PHONY: harness-compose-run
-harness-compose-run: ## Build and run workloads by ID or category in the fixed harness.
-	@e2e/bub/run.sh run
+.PHONY: harness-compose-acceptance
+harness-compose-acceptance: ## Build and evaluate workloads by ID or category in the fixed harness.
+	@e2e/bub/run.sh acceptance $(ARGS)
 
 .PHONY: harness-compose-down
-harness-compose-down: ## Stop both isolated harness environments and remove their volumes.
-	@POWERCONTEXT_E2E_DATABASE=sqlite e2e/bub/run.sh down
-	@POWERCONTEXT_E2E_DATABASE=oceanbase e2e/bub/run.sh down
+harness-compose-down: ## Stop the selected isolated harness environment and remove its volumes.
+	@e2e/bub/run.sh down
 
 .PHONY: contract-test
 contract-test: api-generate-check ## Verify generated API code and contract bindings.

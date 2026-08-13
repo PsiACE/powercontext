@@ -20,7 +20,7 @@ def render_report(observation: TaskObservation, report: EvaluationReport) -> str
             markdown,
             "\n".join((
                 f"- Workload: `{observation.task.id}`",
-                f"- Execution profile: `{observation.execution_profile}`",
+                f"- Execution adapter: `{observation.task.execution.type}`",
                 f"- Harbor dataset: `{observation.task.dataset.name or observation.task.dataset.path}`",
                 f"- Collection status: `{observation.status}`",
                 f"- Native task outcome: `{_task_outcome(report)}` (diagnostic only)",
@@ -38,7 +38,7 @@ def render_report(observation: TaskObservation, report: EvaluationReport) -> str
     children.append(block.BlankLine(0))
     children.extend(_nodes(markdown, "## Memory evaluation"))
     children.append(block.BlankLine(0))
-    children.extend(_nodes(markdown, f"```text\n{report.render()}\n```"))
+    children.extend(_nodes(markdown, f"```text\n{_evaluation_text(report)}\n```"))
     document.children = children
     return markdown.render(document)
 
@@ -50,3 +50,18 @@ def _nodes(markdown: Markdown, source: str) -> list[Element]:
 def _task_outcome(report: EvaluationReport) -> str:
     value = report.cases[0].labels.get("task_outcome")
     return str(value.value) if value is not None else "unscored"
+
+
+def _evaluation_text(report: EvaluationReport) -> str:
+    lines: list[str] = []
+    for case in report.cases:
+        lines.append(case.name)
+        for name, result in case.assertions.items():
+            status = "PASS" if result.value else "FAIL"
+            reason = f" — {result.reason}" if result.reason else ""
+            lines.append(f"  [{status}] {name}{reason}")
+        for name, result in case.scores.items():
+            lines.append(f"  [SCORE] {name}: {result.value}")
+        for name, result in case.labels.items():
+            lines.append(f"  [LABEL] {name}: {result.value}")
+    return "\n".join(lines)

@@ -51,7 +51,7 @@ jobs:
         env:
           POWERCONTEXT_E2E_DATABASE: ${{ matrix.database }}
           POWERCONTEXT_E2E_OUTPUT: ${{ github.workspace }}/.powercontext-e2e/${{ matrix.database }}/acceptance
-        run: make harness-compose-run
+        run: make harness-compose-acceptance
 
       - name: Scan replay evidence
         id: evidence_scan
@@ -94,7 +94,7 @@ jobs:
         if: always()
         env:
           POWERCONTEXT_E2E_DATABASE: ${{ matrix.database }}
-        run: e2e/bub/run.sh down
+        run: make harness-compose-down
 
   # live-replay:
   #   needs: acceptance
@@ -131,8 +131,7 @@ jobs:
   #         BUB_MODEL: ${{ vars.POWERCONTEXT_E2E_MODEL }}
   #         POWERCONTEXT_E2E_DATABASE: ${{ matrix.database }}
   #         POWERCONTEXT_E2E_OUTPUT: ${{ github.workspace }}/.powercontext-e2e/${{ matrix.database }}/live
-  #         POWERCONTEXT_E2E_CATEGORIES: live
-  #       run: make harness-compose-run
+  #       run: make harness-compose-acceptance ARGS='--category live'
 
   #     - name: Scan replay evidence
   #       id: evidence_scan
@@ -183,4 +182,4 @@ jobs:
   #       if: always()
   #       env:
   #         POWERCONTEXT_E2E_DATABASE: ${{ matrix.database }}
-  #       run: e2e/bub/run.sh down
+  #       run: make harness-compose-down

@@ -10,16 +10,9 @@ dataset:
   checksum: a892da6ad2cdddc9f3815a66c9543d615db4aa2616777aa4c7f5e5c279ff6bb5
 execution:
   type: bub
-  model_source: none
-  bub_version: 0.4.2
-  acp_server_version: 0.0.2
+  model: false
   max_steps: 10
   max_tokens: 4096
-  timeout_seconds: 300
-  setup_timeout_seconds: 900
-powercontext:
-  host_url: http://127.0.0.1:8000
-  container_url: http://host-gateway:8000
 evaluation:
   expected_memory:
     - OceanBase

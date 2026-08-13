@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from powercontext_e2e.evaluation import MemoryEvaluator
 from powercontext_e2e.models import (
     CaptureRecord,
     HarborTrialObservation,
@@ -17,7 +18,6 @@ from powercontext_e2e.models import (
     TaskObservation,
     load_tasks,
 )
-from powercontext_e2e.runner import MemoryEvaluator
 
 
 def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
@@ -32,8 +32,9 @@ def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
         environment=RunEnvironment(
             commit="abcdef0",
             database="sqlite",
-            agent_model=task.execution.model,
-            model_source="codex-oauth",
+            adapter_version="test-adapter",
+            adapter_protocol_version="test-protocol",
+            agent_model="test:model",
             started_at=recorded_at,
             finished_at=recorded_at,
         ),
@@ -109,7 +110,7 @@ def test_memory_acceptance_does_not_require_the_harbor_task_to_pass() -> None:
         ),
     )
 
-    report = MemoryEvaluator().evaluate(task, observation, experiment="behavior-test")
+    report = MemoryEvaluator.evaluate(observation, experiment="behavior-test")
 
     assert report.accepted
     assert report.cases[0].scores["harbor_reward_reward"].value == 1 / 3

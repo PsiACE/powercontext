@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
+from powercontext_e2e.artifacts import write_artifacts
+from powercontext_e2e.evaluation import MemoryEvaluator
 from powercontext_e2e.evidence import load_resolved_instructions
 from powercontext_e2e.models import (
     HarborTrialObservation,
@@ -15,7 +17,7 @@ from powercontext_e2e.models import (
     TaskObservation,
     load_tasks,
 )
-from powercontext_e2e.runner import MemoryEvaluator, write_artifacts
+from powercontext_e2e.settings import HarnessSettings
 
 
 def test_resolved_instruction_evidence_matches_harbor_acp_summaries(
@@ -29,7 +31,7 @@ def test_resolved_instruction_evidence_matches_harbor_acp_summaries(
     instruction = f"Inspect the database with {sensitive_value}."
     summary_path.write_text(json.dumps({"instruction": instruction}), encoding="utf-8")
 
-    resolved = load_resolved_instructions(tmp_path)
+    resolved = load_resolved_instructions(tmp_path, HarnessSettings())
 
     assert len(resolved) == 1
     assert resolved[0].step == "capture"
@@ -54,7 +56,8 @@ def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_sche
         environment=RunEnvironment(
             commit="abcdef0",
             database="sqlite",
-            model_source="none",
+            adapter_version="test-adapter",
+            adapter_protocol_version="test-protocol",
             started_at=recorded_at,
             finished_at=recorded_at,
         ),
@@ -87,9 +90,9 @@ def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_sche
             )
         ),
     )
-    report = MemoryEvaluator().evaluate(task, observation, experiment="evidence-test")
+    report = MemoryEvaluator.evaluate(observation, experiment="evidence-test")
 
-    write_artifacts(observation, report, tmp_path)
+    write_artifacts(observation, report, tmp_path, settings=HarnessSettings())
 
     artifacts = {path.name: path.read_text(encoding="utf-8") for path in tmp_path.iterdir()}
     assert set(artifacts) == {"eval-report.json", "replay.json", "report.md"}
@@ -98,9 +101,7 @@ def test_final_evidence_redacts_configured_secrets_and_preserves_the_public_sche
     replay = json.loads(artifacts["replay.json"])
     evaluation = json.loads(artifacts["eval-report.json"])
     assert replay["schema"] == "powercontext.e2e-evidence/v1"
-    assert replay["execution_profile"] == "bub"
     assert replay["task"]["execution"]["type"] == "bub"
-    assert "agent" not in replay["task"]
     assert replay["resolved_instructions"][0]["content"] == "Use credential [REDACTED] to complete the task."
     assert evaluation["schema"] == "powercontext.e2e-evaluation/v1"
-    assert evaluation["cases"][0]["attributes"]["execution_profile"] == "bub"
+    assert evaluation["cases"][0]["attributes"]["execution_adapter"] == "bub"

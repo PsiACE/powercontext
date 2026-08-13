@@ -17,16 +17,9 @@ dataset:
   checksum: 13b88f406933d47c3a826d30143a2d5404f1990a0166b3d98ec25a24bcc0069c
 execution:
   type: bub
-  model_source: none
-  bub_version: 0.4.2
-  acp_server_version: 0.0.2
+  model: false
   max_steps: 10
   max_tokens: 4096
-  timeout_seconds: 300
-  setup_timeout_seconds: 900
-powercontext:
-  host_url: http://127.0.0.1:8000
-  container_url: http://host-gateway:8000
 evaluation:
   expected_memory:
     - LGBTQ support group

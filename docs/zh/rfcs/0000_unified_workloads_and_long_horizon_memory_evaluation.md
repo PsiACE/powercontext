@@ -5,211 +5,194 @@
 
 # 摘要
 
-PowerContext 将内置端到端样例和长程 benchmark task 表示为 workload。每个 workload 选择固定的 task、指定一种
-execution profile、设置预算，并声明如何评估本次运行产生的 Memory。
+PowerContext 将内置端到端样例和长程任务表示为 workload。每个 workload 选择固定的 task、指定 execution adapter、设置预算，
+并声明如何评估本次运行产生的 Memory。
 
-支持三种 execution profile：
+所有 workload 共用 catalog、setup contract、replay envelope、Memory evaluator、report 格式和 `acceptance` 命令。当前实现使用
+Bub adapter，因为 Bub 的 model call、tool、context injection、capture 与 checkpoint 都可以观察。以后可以增加其他 adapter，
+而不改变这些公共 contract。
 
-| Profile | 用途 |
-| --- | --- |
-| `basic` | 不使用通用 agent，通过 PowerContext 公开接口运行受控 benchmark 流程。 |
-| `bub` | 运行白盒 agent，可以检查或替换 model、tool、context injection、capture 与 checkpoint。 |
-| `codex` | 使用原生 Codex agent 运行接近实际使用方式的软件工程任务。 |
-
-三种 profile 共用 workload catalog、setup、evidence envelope、Memory evaluator 与 report 格式，但不共用 agent 实现。
-任务原生 reward 只用于诊断，不决定 Memory acceptance。
-
-本 RFC 定义统一架构，并将它用于现有 Bub workload。当前 LoCoMo benchmark 与 SWE-Pro evaluation branch 不在迁移范围内。
-`basic` 和 `codex` profile 只说明这些 benchmark 以后可以如何接入，避免再次引入独立的 workload 或 report contract。
+任务原生 reward 只用于诊断，不决定 PowerContext 是否采集到有依据、可召回的 Memory。
 
 # 动机
 
-RFC 0081 定义了更广泛的端到端评估架构，但仍有两个缺口。它没有确定本地样例与长程任务如何共享一套 workload
-contract，也把 Bub 当作首个实现，而不是多种执行方式中的一种。
+RFC 0081 定义了更广泛的端到端评估架构，但本地确定性样例、使用 model 的 agent 运行和长程任务仍然使用不同的命令与
+artifact 路径。这种分离会重复实现 selection、execution setup、evidence handling 与 reporting。
 
-没有一种 runtime 能为所有评估问题提供合适的 evidence：
+统一的 workload contract 应稳定回答以下问题：
 
-- 受控的 LoCoMo 运行需要稳定的 ingestion、retrieval、answering 与 scoring 边界。引入通用 agent 只会增加变量。
-- 当实验需要检查或替换 agent loop 的每个部分时，Bub 很合适。它是 capture policy、checkpoint cadence、context
-  injection 与故障分析的白盒 runtime。
-- SWE-Pro 与 Terminal-Bench 需要接近实际使用方式的 coding agent。直接运行原生 Codex，可以避免把 Bub 的行为归因给
-  Codex。
+- 运行了哪个固定 task 与 revision？
+- 哪个 execution adapter 与运行时配置驱动了任务？
+- execution 前存在哪些 PowerContext 状态？
+- execution 期间采集了哪些 evidence？
+- 本次运行是否创建了有依据的 Memory，并在之后成功召回？
+- 是否可以在不重新运行任务的情况下使用相同 evidence 重新评分？
 
-长程评估还需要与任务完成情况分开的成功定义。即使任务没有完成，一次运行仍然可以说明 PowerContext 是否采集了调查
-过程、保留了 source provenance、创建了 Memory，以及这些 Memory 能否在任务结束后被召回。
+Bub 适合作为首个 adapter，因为确定性 tool flow 和使用 model 的 agent flow 都可以经过真实的 ACP、command、tool、hook 与
+plugin 边界。确定性执行不需要伪装成 model run，长程执行则可以暴露 model loop 与 capture policy。
 
 ## 范围
 
-本 RFC 的交付范围是共享 workload 架构和基于 Bub 的内置 workload catalog，包括公共 manifest、按 ID 或 category 选择、
-Bub workload 的 Harbor execution、标准化 evidence、Memory acceptance 与 report rendering。
+本 RFC 包括：
 
-以下工作明确延后：
+- 一套 Pydantic workload manifest 与 catalog；
+- 按 workload ID 或 category 选择；
+- 在隔离 scope 中准备声明的 PowerContext 状态；
+- 通过 Harbor 运行仓库内与 registry-backed 的 Bub task；
+- 标准化 replay evidence、Memory evaluation 与 report rendering；
+- 在 SQLite 与 OceanBase 上运行确定性 acceptance；
+- 显式选择使用 model 的 workload 与 long-horizon workload；
+- 根据固定的 evidence contract 离线重新评分。
 
-- 将当前 LoCoMo benchmark runner 迁移到 `basic` profile；
-- 将任何 SWE-Pro evaluation branch 或 result set 迁移到 `codex` profile；
-- 改变这两类 benchmark 的输入、scoring contract、已发布结果或运行工具；
-- 声明现有 benchmark 与未来 profile 实现之间的 parity。
-
-`basic` 与 `codex` 章节只定义架构边界，不是本 RFC 的迁移计划或实现承诺。
+完整 LoCoMo benchmark 与独立的 SWE-Pro evaluation 不进入该 catalog。本 RFC 不迁移它们，也不改变其原生输入、评分、结果
+或运行命令。
 
 # 使用方式
 
 ## Workload manifest
 
-Workload manifest 同时是 catalog entry 与执行契约。Manifest 与运行时配置都在执行前经过 Pydantic 校验。
-`execution.type` 是封闭的 profile-specific settings 联合的判别字段。
-
-Codex workload 可以这样声明：
+Workload manifest 同时是 catalog entry 与执行契约。Manifest 和运行时配置都在 execution 前经过 Pydantic 校验。
 
 ```yaml
 schema: powercontext.e2e-task/v1
-id: swe-pro-example-codex
+id: project-database-decision
 categories:
-  - long-horizon
-  - swe-pro
+  - acceptance
+  - sample
 dataset:
-  path: e2e/benchmarks/swe-pro/tasks
-  task_id: scaleai/swe-bench-pro__example
-  checksum: <task-checksum>
-execution:
-  type: codex
-  model_source: codex-oauth
-  model: gpt-5.6-sol
-  reasoning_effort: medium
-  timeout_seconds: 7200
-evaluation:
-  capture_events: true
-  probes:
-    - id: investigation
-      query: What did the agent learn while investigating the failure?
-```
-
-Bub workload 可以声明更大的 step budget 和 capture cadence：
-
-```yaml
+  path: e2e/bub/harbor-tasks
+  task_id: project-database-decision
+  checksum: <harbor-task-checksum>
 execution:
   type: bub
-  model_source: codex-oauth
-  model: gpt-5.6-sol
-  bub_version: 0.4.2
-  acp_server_version: 0.0.2
-  max_steps: 200
-  max_tokens: 16384
-  checkpoint_every_events: 5
+  model: false
+  max_steps: 10
+  max_tokens: 4096
+evaluation:
+  expected_memory:
+    - OceanBase
+  probes:
+    - id: database-decision
+      query: Which project decision selected multi-node persistent storage?
+      expected_context:
+        - OceanBase
 ```
 
-Basic workload 不需要 agent 配置：
+`dataset` 可以指向仓库自行维护的 Harbor task，也可以指向带版本的 registry task。两者使用相同的 execution 与 evidence
+路径。
 
-```yaml
-execution:
-  type: basic
+`execution.type` 选择 adapter，当前 contract 实现 `bub`。`execution.model` 只声明 workload 是否需要 model：
+
+- `false` 保持 Bub execution 确定性，不向 agent environment 传入 model；
+- `true` 要求运行时在 Harbor Job 启动前解析出 model。
+
+Model identity、provider、endpoint 与 authentication 都属于运行时配置，不应进入可移植的 workload manifest。使用 model
+时，replay evidence 会记录最终解析出的 model identity，但不会记录 credential。
+Harness 不复制这些 setting：Client 消费 `POWERCONTEXT_CLIENT_*`，Bub adapter 在需要 model 时原样转发 `BUB_*`，integration
+消费 `POWERCONTEXT_BUB_*`。Harbor 直接接收 `AgentConfig`，不需要 model provider key。
+
+Adapter package version 与 timeout 遵循相同的所有权规则。Adapter runtime 固定 Bub 与 ACP server 版本，并把解析后的版本写入
+replay evidence。Harbor task definition 拥有 task 与 setup timeout；Bub 拥有 `BUB_MODEL_TIMEOUT_SECONDS`。Workload manifest
+不覆盖这两个 timeout domain。
+
+Workload 可以声明 execution 前必须存在的公开 PowerContext 状态。例如，Experience recall workload 可以在 `setup` 中声明
+approved Experience。Harness 通过公开 Client 创建这些状态，flush 待处理的 setup Source，并记录 execution 前的 Memory
+baseline。
+
+## Selection 与命令入口
+
+Workload 使用稳定 ID，category 只是选择元数据。`acceptance` 命令可以选择一个或多个 ID、category，默认选择
+`acceptance` category：
+
+```bash
+powercontext-e2e acceptance --output e2e/bub/results
+
+powercontext-e2e acceptance \
+  --id locomo-support-group \
+  --id project-database-decision \
+  --output e2e/bub/results
+
+powercontext-e2e acceptance \
+  --category long-horizon \
+  --output e2e/bub/results
 ```
 
-`dataset` 可以指向仓库自行维护的 task，也可以指向带版本的 registry task。仓库内的 adapter 可以固定上游数据与
-verifier revision，无需发布到 registry。所有生成的 task 使用相同的标准布局。发布到 registry 是一种分发方式，不是
-执行依赖。
+两类 selector 都只使用可重复的 command option；contract 不提供 environment alias 或逗号分隔语法。
 
-Workload 可以声明 execution 前必须存在的公开 PowerContext 状态。例如，Experience recall workload 可以在 `setup` 中
-声明 approved Experience。Harness 通过公开 Client 创建这些状态，flush 待处理的 setup Source，并记录 execution 前的
-Memory baseline。Setup 不会选择另一种 profile。
+Long-horizon 与 live workload 仍然是 acceptance evaluation。Category 控制选择，不需要引入新的 execution mode 或命令。
 
-每个 workload 都有稳定 ID。一个命令可以运行单个 ID、多个 ID，或一个 category 下的全部 workload。Category 只是选择
-条件。Workload ID 标识包含 profile 在内的完整执行契约。两个 workload 可以使用同一个 source task 和不同 profile，但
-它们的结果必须保持独立。
+SQLite 与 OceanBase 是运行时 database variant，不是 execution adapter，也不是 workload category。Required CI 在两个数据库上
+运行相同的确定性 `acceptance` workload。
 
-## Execution profile
+## 当前 Bub adapter
 
-### Basic
+当前 adapter 通过 Harbor Job 与 Harbor ACP runner 进入每个 workload。Harbor 管理 task environment 与 agent lifecycle，
+Bub 通过受支持的安装路径运行，并加载 PowerContext integration。
 
-`basic` profile 通过 PowerContext 公开接口运行有界的 benchmark driver。它不使用通用 agent，也不模拟 agent。Driver
-负责 ordered session ingestion、retrieval、answer generation 与 source-native scoring 等 benchmark operation。
+确定性 workload 使用 `model: false`，执行 `powercontext.remember` 与 `powercontext.context` 等 Bub command。它们在不调用
+model 的情况下验证 Harbor-to-ACP-to-Bub tool path。使用 model 的 workload 设置 `model: true`，并额外覆盖 Bub model、
+context injection、trajectory capture 与 checkpoint hook。
 
-如果以后迁移完整 LoCoMo 评估，应使用该 profile，因为 driver 可以明确隔离 transcript ingestion、gold data、retrieval
-input 与 answer scoring。本 RFC 不执行这项迁移。当前 benchmark runner 与 result contract 保持不变。内置 LoCoMo case
-仍然只是 sample，不代表 LoCoMo benchmark 结果。
-
-### Bub
-
-`bub` profile 是白盒 agent runtime。Harbor 管理 task environment 与 ACP lifecycle，Bub 通过受支持的安装方式运行，并在
-工作过程中使用 PowerContext integration。
-
-该 profile 记录检查 model request、tool result、prepared context、captured event 与 checkpoint 所需的 evidence。测试和
-实验可以替换或配置这些部分，而不改变公共 workload 与 report contract。内置 agent sample 和 Memory policy experiment
-通常应使用该 profile。
-
-### Codex
-
-`codex` profile 使用 Harbor 原生 Codex agent 与现有 PowerContext Codex integration。它使用 operator 配置的 Codex OAuth
-source，不经过 Bub，也不定义另一个 agent。
-
-如果以后迁移 SWE-Pro 或 Terminal-Bench，通常应使用该 profile。仓库自行维护的 Harbor adapter 应保留 source task、
-environment 与 verifier 语义，harness 只在原生任务外围增加 Memory collection。本 RFC 不迁移当前 SWE-Pro evaluation
-branch 或其结果。
+两种形式生成相同的 replay envelope，并使用相同的 Memory evaluator。确定性 workload 仍然属于 Bub adapter，因为它经过
+Bub adapter；确定性描述是否使用 model，而不是 adapter identity。
 
 ## 共享执行流程
 
-固定 harness 在 profile execution 前后完成公共工作：
+Harness 在 adapter execution 前后完成公共工作：
 
 ```text
-manifest
+manifest and task provenance
   -> validated setup and isolated PowerContext scope
-  -> basic | bub | codex executor
+  -> execution adapter
   -> normalized replay evidence
   -> Memory evaluation
   -> report rendering
 ```
 
-Harness 记录初始 Memory，应用声明的 setup，flush setup Source，并记录 execution 前的 baseline。随后调用选定 profile。
-Bub 与 Codex task 从 Harbor `Job.run` 进入；basic profile 使用 benchmark driver，不创建 agent session。
-
-Execution 结束后，harness 记录最终 Memory 并执行声明的 recall probe。Workload 中途失败时，已经采集的 evidence 仍会写入
-artifact。
+Harness 记录初始 Memory，应用声明的 setup，flush setup Source，并记录 execution 前的 baseline。随后调用 adapter，记录最终
+Memory，并运行声明的 recall probe。Workload 中途失败时，已经采集的 evidence 仍会写入 artifact。
 
 ## 输入与指令边界
 
-固定的 task 或 benchmark adapter 拥有 execution input。对于 Bub 和 Codex，Harbor task 拥有 agent 可见的 instruction。
-Basic adapter 拥有有序 input record 与 question。Workload manifest 只引用这些输入，不复制内容。
+固定的 task 拥有 execution input，Harbor task 拥有 agent 可见的 instruction。Workload manifest 只引用这些输入，不复制
+内容。Replay evidence 记录最终解析出的 instruction identity，并在安全时记录其内容。
 
-Replay evidence 记录最终解析出的 input identity，并在安全的情况下记录内容。Evaluation probe 与 execution input 相互独立。
-Probe 在任务结束后运行，不能向 agent 或 benchmark answerer 提供提示。
+Evaluation probe 与 execution input 相互独立。Probe 在任务结束后运行，不能向 agent 或 task verifier 提供提示。
 
 ## Memory acceptance
 
-Memory acceptance 使用跨实现可观察的 evidence：
+Memory acceptance 使用可观察的 evidence：
 
-- 最终解析出的 task 和 execution profile 与 manifest 一致；
-- 记录了所选 profile 要求的原生 evidence；
-- 本次运行采集了符合条件的 event 或声明的 input record；
+- 最终解析出的 task checksum 与 execution adapter 符合 manifest；
+- 记录了所需的原生 execution evidence；
+- 要求 capture 时采集了符合条件的 event；
 - 本次运行创建了 Memory，并完成要求的 checkpoint 或 flush；
-- 新建 Memory 引用了声明的 setup Source 或 execution 期间采集的 Source；
+- 新建 Memory 引用了 setup Source 或 execution 期间采集的 Source；
 - 声明的 recall probe 能获得可用的 prepared context。
 
-确定性的 workload 可以要求预期 Memory 内容。长程任务通常评估 coverage、grounding 与 recall，不要求固定的最终答案。
+确定性 workload 可以要求固定的 Memory 片段。长程任务通常评估 capture coverage、grounding 与 recall，不要求固定的任务答案。
 
-任务原生 reward、verifier result、运行时长与 model usage 保留为 label、score 或 metric。任务可以没有通过原生 grader，
-同时通过 Memory acceptance。
+任务原生 reward、verifier result、运行时长与 model usage 保留为 label、score 或 metric。任务可以没有通过原生 grader，同时
+通过 Memory acceptance。
 
 # 设计
 
-## Workload 与 executor contract
+## Workload 与 adapter contract
 
-Manifest 是 harness 层唯一的 workload 抽象。`execution` 是 Pydantic discriminated union。每个 profile 只接受自己的
-setting，Bub version 与 step budget 不能进入 Codex 或 basic workload。Secret 与本机路径留在经过校验的运行时配置中。
-
-Dataset adapter 生成标准 task layout，并固定 upstream provenance。它不运行 workload，不选择 profile，不评估 Memory，
-也不渲染 report。
+Manifest 是 harness 层的 workload 抽象。Adapter 拥有 execution-specific setting，并把固定 task 转换为标准化 evidence。
+Dataset adapter 只生成标准 task layout 并固定 upstream provenance；它不运行 workload、不评估 Memory，也不渲染 report。
 
 依赖保持单向：
 
 ```text
 manifest and task provenance
-  -> profile executor
+  -> execution adapter
   -> replay evidence
   -> Memory evaluation
   -> report rendering
 ```
 
-Evaluator 只读取 replay evidence，不能控制 executor。Report renderer 只读取 evaluation result，不重新计算 acceptance。
+Evaluator 只读取 replay evidence，不能控制 adapter。Report renderer 只读取 evaluation result，不重新计算 acceptance。
 
 ## Evidence contract
 
@@ -217,73 +200,76 @@ Evaluator 只读取 replay evidence，不能控制 executor。Report renderer �
 
 | Artifact | 用途 |
 | --- | --- |
-| `replay.json` | Workload identity、profile、task provenance、setup、runtime observation、Memory snapshot、probe 与原生 evidence reference。 |
+| `replay.json` | Workload identity、adapter、task provenance、setup、runtime observation、Memory snapshot、probe 与原生 evidence reference。 |
 | `eval-report.json` | Assertion、score、label、metric 与判断理由。 |
 | `report.md` | Evaluation result 的可读表示。 |
 
-公共 replay envelope 支持离线重新评分。每种 profile 的原生 evidence 在 envelope 中保持类型信息：
+Replay 记录 dataset checksum、workload 唯一的 `execution.type`、存在时最终解析出的 model identity、database identity、最终 instruction 与
+PowerContext scope state。公共 envelope 支持离线重新评分。Adapter 原生 evidence 在 envelope 中保留类型信息；当前 Bub
+adapter 记录 ACP summary、captured event、checkpoint、tool observation 与 trajectory artifact。
 
-| Profile | 原生 evidence |
-| --- | --- |
-| `basic` | Input progress、ingestion 与 flush result、retrieval observation、answer 和 source-native score。 |
-| `bub` | ACP summary、captured event、checkpoint、tool observation 与 trajectory artifact。 |
-| `codex` | Codex trajectory、plugin capture observation、Harbor task result 与 verifier artifact。 |
+最终 artifact sink 会移除已配置的 secret。原生 task artifact 可能包含任务内容，发布前需要检查。
 
-Replay 记录 dataset checksum、model identity、database identity、最终输入与 PowerContext scope state。最终 artifact sink 会移除
-已配置的 secret。原生 task artifact 可能包含任务内容，发布前需要检查。
+## Adapter 扩展
 
-## 架构上的 benchmark 归属
+如果未来的评估无法由 Bub 忠实表达，可以将 `execution` 扩展成包含新 adapter 的 discriminated union。例如：
 
-- 如果完整 LoCoMo 迁移到该架构，应使用 `basic`。
-- LoCoMo 衍生的内置 sample 可以使用 `basic` 或 `bub`，但不代表 LoCoMo benchmark 结果。
-- 如果 SWE-Pro 与 Terminal-Bench 迁移到该架构，应使用 `codex` 运行接近实际使用方式的评估。
-- Coding task 可以增加单独的 Bub variant 用于白盒分析，但必须使用独立 workload ID 与 report。
+```yaml
+execution:
+  type: basic
+```
 
-不同 profile 的结果不能合并为一个 benchmark score。对比实验必须固定相同的 task、PowerContext revision、model identity、
-budget 与 acceptance policy，并把 profile 明确记录为 treatment variable。
+```yaml
+execution:
+  type: codex
+```
+
+这些示例不预留实现，也不把任何 benchmark 分配给其中一个 adapter。新 adapter 必须定义自己的 typed execution setting 与
+原生 evidence，同时复用 workload identity、selection、setup、replay envelope、Memory evaluation、artifact layout 与
+reporting。迁移现有 benchmark 需要单独确定范围，并验证其原生语义。
 
 ## 兼容性
 
-现有 Bub workload 改为 `execution.type: bub`，source task ID 保持不变。当前 LoCoMo benchmark 与 SWE-Pro evaluation branch
-不进入 workload catalog，并保留现有 command、artifact 与 result contract。后续迁移需要单独确定范围，并对相应 benchmark
-contract 做验证。
+公开命令保持为 `acceptance`。现有 SQLite 与 OceanBase CI job 继续调用 `make harness-compose-acceptance`，并评估相同的默认
+acceptance category。ID 与 category selector 扩展该命令，不引入通用 `run` 命令。
 
-Catalog 与命令入口保持统一。用户通过 workload ID 或 category 选择任务，不为 LoCoMo、Bub、Codex 或 dataset family 维护
-不同 Make target。
+当前 LoCoMo benchmark 与 SWE-Pro evaluation 保留现有 command、artifact 与 result contract。LoCoMo 衍生的内置 workload
+保持为固定 sample，不代表完整 benchmark 结果。
 
 # 代价
 
-该架构定义了三种 executor contract，而不是一种。随着 profile 逐步实现，公共 replay schema 必须区分 profile-specific
-evidence，不能把它们压成无类型 dictionary。Bub 与 Codex workload 需要 Harbor 和 agent model，basic workload 则可能
-不需要。长程运行可能消耗付费模型额度，并产生较大的 artifact。
+公共 replay envelope 必须保留 adapter 原生 evidence，不能把它压成无类型 dictionary。长程运行可能消耗付费模型额度、
+需要 privileged container，并产生较大的 artifact。因此 required database matrix 只覆盖确定性 workload，使用 model 的
+category 保持为显式选择的 evaluation。
 
 # 理由与替代方案
 
-所有 workload 都使用 Bub 可以统一 runtime，但会把 agent 行为引入受控 benchmark，也无法测量原生 Codex 行为。移除 Bub
-同样不合理，因为 Codex 不提供同等的白盒控制能力。三种 profile 分别保留受控测量、白盒分析和真实 agent execution。
+为确定性样例、live agent run 与长程任务维护独立 harness，会重复 selection、setup、evidence、evaluation 与 reporting。
+公共 contract 将这些职责放在一处，adapter 则隔离 execution semantics。
 
-为每种 profile 维护独立 harness 会重复 selection、setup、evidence、evaluation 与 reporting。公共 manifest 和 artifact
-contract 将这些职责放在一处，同时允许 execution semantics 不同。
+把 model name 或 authentication method 放入 manifest，会让 workload 依赖某个 operator environment。布尔 requirement 可以
+保留确定性边界，同时由运行时配置选择可用的 model 与 credential。
 
 直接用任务原生 reward 作为 Memory acceptance，只能回答任务是否完成，不能回答 PowerContext 是否采集到有效 Memory。
 原生结果会保留，但不会取代 Memory evaluator。
 
 # 非目标
 
-本 RFC 不替代 RFC 0081，不定义 leaderboard，不要求发布到 registry，也不引入新的 agent protocol。它不统一 executor 私有
-实现，也不替代任务原生 grader。本 RFC 不迁移、重写或移除当前 LoCoMo benchmark 与 SWE-Pro evaluation branch。为这两类
-benchmark 实现 `basic` 或 `codex` 需要单独评审。
+本 RFC 不替代 RFC 0081，不定义 leaderboard，不要求发布到 registry，也不引入新的 agent protocol。它不统一 adapter 私有
+实现，也不替代任务原生 grader。本 RFC 不迁移、重写或移除当前 LoCoMo benchmark 与 SWE-Pro evaluation，也不实现其他
+execution adapter。
 
 # 验收条件
 
 满足以下条件时，本提案完成：
 
-- RFC 定义封闭的 `basic`、`bub` 与 `codex` execution 架构及各自的 evidence 边界；
-- 现有内置 workload 使用带有 `execution.type: bub` 的 Pydantic manifest；
-- 一个命令可以按一个或多个已实现的 workload ID 及 category 选择任务；
-- 仓库自行维护与 registry-backed 的 Bub task 使用相同的 provenance 和 task layout contract；
-- Bub 保持为可配置的白盒 runtime，并通过 Harbor 记录原生 evidence；
-- LoCoMo 衍生的内置 case 保持 sample 身份，不代表 LoCoMo benchmark 结果；
-- 长程 Memory acceptance 与任务原生 reward 保持独立；
-- 每个已实现 workload 的 replay 都标识 profile，并能在不重新运行任务的情况下离线评分；
-- 当前 LoCoMo benchmark 与 SWE-Pro evaluation branch 保持不变。
+- 一套 Pydantic manifest 可以表示确定性、使用 model 与 long-horizon workload；
+- `execution.type: bub` 选择当前 adapter，`execution.model` 只声明是否需要 model；
+- 各组件的原生运行时配置选择 model identity、provider、endpoint 与 credential，不增加 harness mapping layer；
+- 一个 `acceptance` 命令可以选择一个或多个 workload ID 与 category；
+- 仓库内与 registry Harbor task 使用相同的 execution 与 provenance contract；
+- SQLite 与 OceanBase 在 required CI 中运行相同的确定性 acceptance category；
+- 使用 model 的 Bub workload 通过 Harbor 与 ACP 记录原生 evidence；
+- long-horizon Memory acceptance 与任务原生 reward 保持独立；
+- 每个 replay 都标识 adapter，并支持离线重新评分；
+- 当前 LoCoMo benchmark 与 SWE-Pro evaluation 保持不变。

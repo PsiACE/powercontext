@@ -4,7 +4,10 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 cd "$root"
 
-command=${1:-run}
+command=${1:-acceptance}
+if [ "$#" -gt 0 ]; then
+    shift
+fi
 database=${POWERCONTEXT_E2E_DATABASE:-sqlite}
 
 case "$database" in
@@ -16,9 +19,9 @@ case "$database" in
 esac
 
 case "$command" in
-    run | check | down) ;;
+    acceptance | check | down) ;;
     *)
-        echo "command must be run, check, or down" >&2
+        echo "command must be acceptance, check, or down" >&2
         exit 2
         ;;
 esac
@@ -28,27 +31,29 @@ if [ "$database" = oceanbase ]; then
     compose_files="$compose_files -f e2e/bub/compose.oceanbase.yaml"
 fi
 export COMPOSE_PROJECT_NAME="powercontext-e2e-$database"
-output=${POWERCONTEXT_E2E_OUTPUT:-"$root/.powercontext-e2e/bub/$database/run"}
+output=${POWERCONTEXT_E2E_OUTPUT:-"$root/.powercontext-e2e/bub/$database/acceptance"}
 mkdir -p "$output"
 POWERCONTEXT_E2E_OUTPUT=$(CDPATH= cd -- "$output" && pwd)
 export POWERCONTEXT_E2E_OUTPUT
 export POWERCONTEXT_E2E_DATABASE=$database
 
-auth_path=${POWERCONTEXT_E2E_CODEX_AUTH:-${CODEX_HOME:-$HOME/.codex}/auth.json}
+auth_path=${CODEX_HOME:-$HOME/.codex}/auth.json
 if [ -f "$auth_path" ]; then
     auth_directory=$(CDPATH= cd -- "$(dirname "$auth_path")" && pwd)
-    POWERCONTEXT_E2E_CODEX_AUTH="$auth_directory/$(basename "$auth_path")"
+    POWERCONTEXT_E2E_CODEX_AUTH_MOUNT="$auth_directory/$(basename "$auth_path")"
 else
-    POWERCONTEXT_E2E_CODEX_AUTH=/dev/null
+    POWERCONTEXT_E2E_CODEX_AUTH_MOUNT=/dev/null
 fi
-export POWERCONTEXT_E2E_CODEX_AUTH
+export POWERCONTEXT_E2E_CODEX_AUTH_MOUNT
 
 if [ "$command" = check ]; then
+    test "$#" -eq 0 || { echo "check does not accept workload arguments" >&2; exit 2; }
     docker compose $compose_files config --quiet
     exit
 fi
 
 if [ "$command" = down ]; then
+    test "$#" -eq 0 || { echo "down does not accept workload arguments" >&2; exit 2; }
     docker compose $compose_files down --volumes --remove-orphans
     exit
 fi
@@ -118,11 +123,5 @@ trap 'exit 143' TERM
 docker compose $compose_files build powercontext harness
 start_services
 
-set -- run --manifest e2e/bub/tasks --output /evidence
-if [ -n "${POWERCONTEXT_E2E_IDS:-}" ]; then
-    set -- "$@" --id "$POWERCONTEXT_E2E_IDS"
-fi
-if [ -n "${POWERCONTEXT_E2E_CATEGORIES:-}" ]; then
-    set -- "$@" --category "$POWERCONTEXT_E2E_CATEGORIES"
-fi
+set -- acceptance --manifest e2e/bub/tasks --output /evidence "$@"
 docker compose $compose_files run --rm harness "$@"

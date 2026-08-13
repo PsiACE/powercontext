@@ -10,18 +10,9 @@ dataset:
   checksum: 01f470c86f3a1f7ce4d91bdf0aaaa89fa96a4124ac48617990e2735b5291913a
 execution:
   type: bub
-  model: openai:gpt-5.4
-  model_source: codex-oauth
-  bub_version: 0.4.2
-  acp_server_version: 0.0.2
+  model: true
   max_steps: 200
   max_tokens: 16384
-  timeout_seconds: 3600
-  setup_timeout_seconds: 900
-powercontext:
-  host_url: http://127.0.0.1:8000
-  container_url: http://host-gateway:8000
-  timeout_seconds: 150
 evaluation:
   capture_events: true
   checkpoint_every_events: 5

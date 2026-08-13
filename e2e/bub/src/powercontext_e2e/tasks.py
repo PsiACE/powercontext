@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .models import E2ETask
 from .runner import evaluate_task
-from .settings import HarnessSettings
+from .settings import HarnessSettings, ModelNotConfiguredError, bub_environment
 
 
 class TaskSelectionError(ValueError):
@@ -22,8 +22,8 @@ def select_tasks(
     ids: tuple[str, ...] = (),
     categories: tuple[str, ...] = (),
 ) -> tuple[E2ETask, ...]:
-    requested_ids = _selectors(ids)
-    requested_categories = _selectors(categories)
+    requested_ids = set(ids)
+    requested_categories = set(categories)
     available_ids = {task.id for task in tasks}
     available_categories = {category for task in tasks for category in task.categories}
     if missing_ids := requested_ids - available_ids:
@@ -43,12 +43,12 @@ async def run_tasks(
     output_dir: Path,
     settings: HarnessSettings,
 ) -> bool:
+    model_workload_ids = tuple(task.id for task in tasks if task.execution.model)
+    if model_workload_ids and "BUB_MODEL" not in bub_environment():
+        raise ModelNotConfiguredError(model_workload_ids)
+
     accepted = True
     for task in tasks:
         task_accepted = await evaluate_task(task, output_dir=output_dir / task.id, settings=settings)
         accepted = task_accepted and accepted
     return accepted
-
-
-def _selectors(values: tuple[str, ...]) -> set[str]:
-    return {selector.strip() for value in values for selector in value.split(",") if selector.strip()}

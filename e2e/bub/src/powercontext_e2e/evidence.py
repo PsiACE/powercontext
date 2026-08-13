@@ -12,10 +12,10 @@ from .settings import HarnessSettings
 REDACTED = "[REDACTED]"
 
 
-def redact(value: str, settings: HarnessSettings | None = None) -> str:
+def redact(value: str, settings: HarnessSettings) -> str:
     """Redact configured runtime secrets from diagnostic text."""
 
-    for secret in (settings or HarnessSettings()).evidence_secrets():
+    for secret in settings.evidence_secrets():
         value = value.replace(secret, REDACTED)
         value = value.replace(json.dumps(secret, ensure_ascii=False)[1:-1], REDACTED)
     return value
@@ -23,7 +23,7 @@ def redact(value: str, settings: HarnessSettings | None = None) -> str:
 
 def load_resolved_instructions(
     trial_dir: Path,
-    settings: HarnessSettings | None = None,
+    settings: HarnessSettings,
 ) -> tuple[ResolvedInstruction, ...]:
     """Load the instructions that Harbor's ACP runner actually received."""
 
@@ -53,7 +53,7 @@ def _step_name(artifact: Path) -> str | None:
     return parts[1] if len(parts) > 1 and parts[0] == "steps" else None
 
 
-def write_evidence(path: Path, content: str, settings: HarnessSettings | None = None) -> None:
+def write_evidence(path: Path, content: str, settings: HarnessSettings) -> None:
     path.write_text(redact(content, settings), encoding="utf-8")
 
 
@@ -61,7 +61,7 @@ def write_evaluation_report(
     path: Path,
     *,
     report: EvaluationReport,
-    settings: HarnessSettings | None = None,
+    settings: HarnessSettings,
 ) -> None:
     write_evidence(
         path,

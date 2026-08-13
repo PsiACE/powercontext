@@ -9,10 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from .models import load_tasks
-from .runner import rescore_replay
 from .settings import HarnessSettings
-from .tasks import run_tasks, select_tasks
 
 
 def main() -> None:
@@ -22,11 +19,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="powercontext-e2e")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run")
-    run_parser.add_argument("--manifest", type=Path, default=Path("e2e/bub/tasks"))
-    run_parser.add_argument("--id", action="append", default=[])
-    run_parser.add_argument("--category", action="append", default=[])
-    run_parser.add_argument("--output", type=Path, required=True)
+    acceptance_parser = subparsers.add_parser("acceptance")
+    acceptance_parser.add_argument("--manifest", type=Path, default=Path("e2e/bub/tasks"))
+    acceptance_parser.add_argument(
+        "--id",
+        action="append",
+        default=[],
+        metavar="WORKLOAD_ID",
+        help="Select one workload; repeat to select more than one.",
+    )
+    acceptance_parser.add_argument(
+        "--category",
+        action="append",
+        default=[],
+        help="Select one category; repeat to select more than one.",
+    )
+    acceptance_parser.add_argument("--output", type=Path, required=True)
 
     rescore_parser = subparsers.add_parser("rescore")
     rescore_parser.add_argument("replay", type=Path)
@@ -35,8 +43,13 @@ def main() -> None:
     settings = HarnessSettings()
 
     if args.command == "rescore":
-        passed = asyncio.run(rescore_replay(args.replay, args.output, settings))
+        from .rescore import rescore_replay
+
+        passed = rescore_replay(args.replay, args.output, settings)
     else:
+        from .models import load_tasks
+        from .tasks import run_tasks, select_tasks
+
         tasks = load_tasks(args.manifest)
         selected = select_tasks(tasks, ids=tuple(args.id), categories=tuple(args.category))
         passed = asyncio.run(

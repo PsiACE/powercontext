@@ -160,9 +160,7 @@ dataset:
   checksum: <harbor-task-checksum>
 execution:
   type: bub
-  model_source: none
-  bub_version: 0.4.2
-  acp_server_version: 0.0.2
+  model: false
 evaluation:
   expected_memory:
     - durable project decision

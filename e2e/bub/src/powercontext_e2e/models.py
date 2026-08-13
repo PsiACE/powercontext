@@ -5,15 +5,14 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import yaml
-from harbor.models.job.config import DatasetConfig
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EvidenceModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class Provenance(EvidenceModel):
@@ -38,34 +37,18 @@ class HarborDatasetSpec(EvidenceModel):
             raise ValueError("A local Harbor dataset cannot declare a version")  # noqa: TRY003
         return self
 
-    def to_config(self, repository: Path) -> DatasetConfig:
-        if self.path is not None:
-            return DatasetConfig(path=repository / self.path, task_names=[self.task_id])
-        return DatasetConfig(name=self.name, version=self.version, task_names=[self.task_id])
-
 
 class BubExecutionSpec(EvidenceModel):
+    native_artifact_names: ClassVar[frozenset[str]] = frozenset({
+        "acp-summary.json",
+        "acp-events.jsonl",
+        "trajectory.json",
+    })
+
     type: Literal["bub"] = "bub"
-    model: str | None = None
-    model_source: Literal["none", "codex-oauth"] = "none"
-    bub_version: str = Field(min_length=1)
-    acp_server_version: str = Field(min_length=1)
+    model: bool = False
     max_steps: int = Field(default=50, ge=1, le=200)
     max_tokens: int = Field(default=16384, ge=256)
-    timeout_seconds: int = Field(default=3600, ge=60)
-    setup_timeout_seconds: int = Field(default=900, ge=60)
-
-    @model_validator(mode="after")
-    def require_model_for_oauth(self) -> BubExecutionSpec:
-        if self.model_source == "codex-oauth" and self.model is None:
-            raise ValueError("Codex OAuth tasks require an agent model")  # noqa: TRY003
-        return self
-
-
-class PowerContextEndpointSpec(EvidenceModel):
-    host_url: HttpUrl
-    container_url: HttpUrl
-    timeout_seconds: float = Field(default=30, gt=0, le=300)
 
 
 class CaptureThresholds(EvidenceModel):
@@ -106,7 +89,6 @@ class MemoryEvaluationSpec(EvidenceModel):
     max_event_bytes: int = Field(default=8192, ge=512, le=32768)
     require_checkpoint: bool = False
     expected_memory: tuple[str, ...] = ()
-    required_native_artifacts: tuple[str, ...] = ("acp-summary.json", "acp-events.jsonl", "trajectory.json")
     probes: tuple[RecallProbeSpec, ...] = Field(min_length=1)
     thresholds: CaptureThresholds = Field(default_factory=CaptureThresholds)
 
@@ -124,8 +106,7 @@ class E2ETask(EvidenceModel):
     categories: tuple[str, ...] = Field(min_length=1)
     provenance: Provenance | None = None
     dataset: HarborDatasetSpec
-    execution: BubExecutionSpec = Field(validation_alias=AliasChoices("execution", "agent"))
-    powercontext: PowerContextEndpointSpec
+    execution: BubExecutionSpec
     setup: WorkloadSetupSpec = Field(default_factory=WorkloadSetupSpec)
     evaluation: MemoryEvaluationSpec
 
@@ -133,10 +114,9 @@ class E2ETask(EvidenceModel):
 class RunEnvironment(EvidenceModel):
     commit: str
     database: str
+    adapter_version: str
+    adapter_protocol_version: str
     agent_model: str | None = None
-    model_source: Literal["none", "codex-oauth"]
-    generation_model: str | None = None
-    embedding_profile: str | None = None
     started_at: datetime
     finished_at: datetime
 
@@ -234,7 +214,6 @@ class TaskObservation(EvidenceModel):
         alias="schema",
     )
     run_id: str
-    execution_profile: Literal["bub"] = "bub"
     environment: RunEnvironment
     task: E2ETask
     status: Literal["completed", "failed"]
@@ -270,28 +249,11 @@ class EvaluationReport(EvidenceModel):
         alias="schema",
     )
     experiment: str
-    cases: tuple[CaseEvaluation, ...]
-    failures: tuple[str, ...] = ()
+    cases: tuple[CaseEvaluation, ...] = Field(min_length=1)
 
     @property
     def accepted(self) -> bool:
-        return not self.failures and all(
-            bool(result.value) for case in self.cases for result in case.assertions.values()
-        )
-
-    def render(self) -> str:
-        lines: list[str] = []
-        for case in self.cases:
-            lines.append(case.name)
-            for name, result in case.assertions.items():
-                status = "PASS" if result.value else "FAIL"
-                reason = f" — {result.reason}" if result.reason else ""
-                lines.append(f"  [{status}] {name}{reason}")
-            for name, result in case.scores.items():
-                lines.append(f"  [SCORE] {name}: {result.value}")
-            for name, result in case.labels.items():
-                lines.append(f"  [LABEL] {name}: {result.value}")
-        return "\n".join(lines)
+        return all(bool(result.value) for case in self.cases for result in case.assertions.values())
 
 
 def load_tasks(path: Path) -> tuple[E2ETask, ...]:
