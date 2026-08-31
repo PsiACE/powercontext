@@ -7,40 +7,32 @@ description: Install the PowerContext Claude Code plugin and configure recall, p
 
 ## Check prerequisites
 
-Install PowerContext and Claude Code first, and make sure both commands are available in the environment that will
-run setup:
+Install Claude Code first. The PowerContext installer obtains `uv` and installs the Runtime itself. Confirm the host
+CLI is available:
 
 ```bash
-powercontext --version
 claude --version
 ```
 
-Use the same PowerContext repository ref for the Python package and plugin. The Hook validates a versioned Prepared
-Context contract, so mixing an older Server with a newer plugin can disable recall without blocking Claude Code.
-
 ## Install or update the plugin
 
-Run:
+On macOS or Linux, run:
 
 ```bash
-powercontext setup claude-code --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local --host claude-code --yes
 ```
 
-Before changing Claude Code settings, setup reports the settings entry, plugin cache, persistent data location,
-required permissions, and exact rollback commands. It then registers the Marketplace, installs the plugin at user
-scope, and verifies the enabled plugin through Claude Code's JSON output.
+On Windows PowerShell, run:
 
-Claude Code owns the Marketplace registry, versioned plugin cache, and plugin data directory. Claude 2.1.133 does not
-accept configuration flags on `plugin install`, so setup atomically merges `server_url` and `capture_prompts` into
-the user-level `pluginConfigs` after installation while preserving unrelated settings; on failure it restores the
-pre-install snapshot. PowerContext resolves these locations from `CLAUDE_CONFIG_DIR` or Claude Code's default
-configuration directory.
-
-For a local checkout, pass its directory:
-
-```bash
-powercontext setup claude-code --source ./powercontext
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host claude-code --yes
 ```
+
+The installer creates or updates the Runtime, registers the Marketplace, installs the plugin at user scope, and
+verifies the enabled plugin through Claude Code's JSON output. Claude Code continues to own its Marketplace registry,
+versioned plugin cache, plugin data directory, and mutable plugin configuration.
 
 Start the Server and open a new Claude Code session after installation:
 
@@ -51,8 +43,8 @@ claude
 
 Use `/hooks` to confirm the `UserPromptSubmit` Hook and `/mcp` to confirm the `powercontext` Server.
 
-Running setup again updates the plugin configuration and verifies the installed version. It does not remove existing
-PowerContext Server data.
+Running the installer again updates and verifies the Runtime and plugin. It does not remove existing PowerContext
+Server data.
 
 ## Understand the plugin behavior
 
@@ -105,22 +97,16 @@ processing produces Memory.
 
 ## Configure the Server endpoint and prompt capture
 
-Set the endpoint during setup:
-
-```bash
-powercontext setup claude-code \
-  --server-url http://127.0.0.1:9000 \
-  --no-capture-prompts
-```
-
-Claude Code stores these non-sensitive options in its user `pluginConfigs`. You can also override the Hook process for
-one launch:
+Override the Hook process for a Claude Code launch:
 
 ```bash
 export POWERCONTEXT_CLAUDE_SERVER_URL=http://127.0.0.1:9000
 export POWERCONTEXT_CLAUDE_CAPTURE_PROMPTS=false
 claude
 ```
+
+For a persistent value, use Claude Code's native plugin configuration surface. Installation does not own these
+mutable Runtime settings.
 
 Use `POWERCONTEXT_CLAUDE_SCOPE_ID` only when the Memory scope must intentionally differ from both the Git remote and
 local project path.

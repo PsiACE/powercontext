@@ -5,26 +5,10 @@ description: 为 OpenClaw 安装 PowerContext memory 插件，并控制召回、
 
 # 配置 OpenClaw
 
-## 安装或刷新插件
+## 安装状态
 
-在 PowerContext 正式版本包含 OpenClaw 之前，从同一个 `master` revision 安装 CLI 和插件：
-
-```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
-```
-
-未指定 `--server-url` 时，setup 会把插件 endpoint 配置为 Server 默认地址 `http://127.0.0.1:8000`。
-
-也可以使用本地 checkout：
-
-```bash
-powercontext setup openclaw --source .
-```
-
-`setup openclaw` 会用 pnpm 构建插件，通过 `openclaw plugins install --link --force` 安装，把它启用为 `memory`
-插件槽，把 PowerContext 工具加入 `tools.alsoAllow`，并重启 OpenClaw gateway。它不会启动 Server。启动 Server 后，
-开启新的 OpenClaw 会话：
+分发安装器尚未提供 OpenClaw。仓库中的插件仍可用于开发和打包，但在宿主 artifact 完成迁移前，不提供受支持的最终用户
+安装命令。开发安装完成后，启动 Server 和新的 OpenClaw 会话：
 
 ```bash
 powercontext server run
@@ -56,7 +40,7 @@ scope 默认是 `agent`，根据 OpenClaw agent 身份推导 memory scope。需�
 project scope：
 
 ```bash
-powercontext setup openclaw --scope-mode project
+openclaw config set plugins.entries.memory-powercontext.config.scopeMode project
 ```
 
 project scope 仅在 OpenClaw 为一次 turn 提供唯一可信项目身份时启用。

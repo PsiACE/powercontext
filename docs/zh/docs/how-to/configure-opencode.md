@@ -5,22 +5,10 @@ description: 安装 PowerContext OpenCode 插件并控制其本地行为。
 
 # 配置 OpenCode
 
-## 安装或刷新插件
+## 安装状态
 
-插件要求 OpenCode 1.18.21 或更新的 1.x 版本。插件应与 PowerContext Server、CLI 使用同一 Git ref：
-
-```bash
-powercontext setup opencode --source oceanbase/powercontext --ref master
-```
-
-该命令会全局注册原生插件，并把属于 PowerContext 的 `project-context` Skill 安装到 OpenCode 配置目录。
-如果同名 Skill 不是 PowerContext 安装的，命令会停止并保留原文件。本地 checkout 同样可以使用：
-
-```bash
-powercontext setup opencode --source .
-```
-
-启动 Server，再打开新的 OpenCode 会话：
+分发安装器尚未提供 OpenCode。仓库中的插件仍可用于开发和打包，但在宿主 artifact 完成迁移前，不提供受支持的最终用户
+安装命令。开发安装完成后，启动 Server，再打开新的 OpenCode 会话：
 
 ```bash
 powercontext server run

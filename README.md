@@ -13,30 +13,32 @@ collaboration. It turns shared work into project context that can be understood,
 
 ## Quick start
 
-You need macOS or Linux, Python 3.11 or newer, [`uv`](https://docs.astral.sh/uv/), and at least one supported agent
-host.
+You need macOS, Linux, or Windows and at least one supported Agent host. The installer obtains
+[`uv`](https://docs.astral.sh/uv/) when necessary; Python does not need to be installed first.
 
 ### 1. Install PowerContext and integrations
 
+macOS and Linux:
+
 ```bash
-uv tool install "powercontext[cli,server]==0.0.2"
-
-# Choose one or more integrations.
-powercontext setup codex --source oceanbase/powercontext --ref v0.0.2
-powercontext setup claude-code --source oceanbase/powercontext --ref v0.0.2
-powercontext setup dsh --source oceanbase/powercontext --ref v0.0.2
-powercontext setup hermes --source oceanbase/powercontext --ref v0.0.2
-
-# OpenClaw and OpenCode currently require the matching CLI and integrations from master.
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
-powercontext setup opencode --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local \
+  --host codex \
+  --host claude-code \
+  --yes
 ```
 
-The first command installs the latest released CLI and local Server in an isolated environment. The release setup
-commands install their integrations from the matching repository tag. Until OpenClaw and OpenCode are included in a
-release, the extra `uv tool install` command keeps the CLI, Server, and integrations on the same `master` revision.
-Run setup again to refresh an existing integration.
+Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host codex --host claude-code --yes
+```
+
+The installer creates a dedicated per-user Runtime environment, exposes `powercontext` on the user executable path,
+and installs each selected integration through its host's native marketplace. Repeat the same command to update and
+verify the installation. The initial installer supports Codex and Claude Code; other integrations remain development
+workflows until they are migrated.
 
 ### 2. Start and verify the local Server
 

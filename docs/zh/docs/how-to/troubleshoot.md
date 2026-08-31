@@ -46,8 +46,8 @@ command -v dsh
 command -v pi
 ```
 
-必要时把 uv tool bin 目录加入 `PATH`。宿主 CLI 不可用时，`powercontext setup codex`、
-`powercontext setup claude-code`、`powercontext setup dsh` 和 `powercontext setup pi` 都会报告错误，而不会尝试安装。
+必要时把安装器管理的可执行目录加入 `PATH`。安装器会在修改 Runtime 前检查所有已选宿主，并直接报告不可用的 Codex
+或 Claude Code CLI。
 
 ## 插件缺失或版本不一致
 
@@ -59,10 +59,10 @@ powercontext doctor dsh
 powercontext doctor pi
 ```
 
-使用与工具一致的 ref 重新安装：
+使用与 Runtime 一致的 ref 重复执行安装器：
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
+bash install.sh --profile local --host codex --ref <ref> --yes
 codex plugin list --json
 ```
 
@@ -72,21 +72,19 @@ codex plugin list --json
 
 ```bash
 powercontext doctor claude-code
-powercontext setup claude-code --source oceanbase/powercontext --ref <ref>
+bash install.sh --profile local --host claude-code --ref <ref> --yes
 claude plugin list --json
 ```
 
 然后开启新的 Claude Code 会话并检查 `/hooks` 与 `/mcp`。插件清单应只包含一个
 `UserPromptSubmit` Hook 和一个 `powercontext` MCP Server。
 
-如果 setup 在创建新的 user scope 对象时失败，它会尝试只删除本次调用创建的插件与 Marketplace 项，
-setup 前已有的对象会保留。修正命令报告的 Claude CLI 或仓库错误后，重新执行同一个 setup 命令。
+修正命令报告的 Claude CLI 或仓库错误后，重复执行安装器。
 
-对于 DeepSeek Harness，执行：
+分发安装器尚未提供 DeepSeek Harness 和 Pi。开发安装完成后，执行：
 
 ```bash
 powercontext doctor dsh
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
 dsh --profile web --dump-config
 ```
 
@@ -97,7 +95,6 @@ dsh --profile web --dump-config
 
 ```bash
 powercontext doctor pi
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
 pi list
 ```
 

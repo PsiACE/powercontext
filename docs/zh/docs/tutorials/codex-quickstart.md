@@ -10,20 +10,19 @@ Memory。
 
 ## 开始之前
 
-你需要 macOS 或 Linux、`uv`、Codex CLI，以及 PowerContext Git 地址的读取权限。请先确认本机已有的 Git
-凭据能够访问该地址。
+你需要 macOS 或 Linux 和 Codex CLI。安装器会在需要时获取 `uv`。
 
 ## 1. 安装工具和插件
 
 在任意目录执行：
 
 ```bash
-uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup codex --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local --host codex --yes
 ```
 
-第一条命令安装隔离的应用环境；第二条命令安装 Codex 插件，并准备 PowerContext 用户数据目录。详细的安装、升级和
-数据位置说明见[安装和运行](../how-to/install-and-run.md)。
+安装器会创建隔离的 Runtime，并通过 Codex 原生 marketplace 安装和验证 Codex 插件。详细的安装、升级和数据位置
+说明见[安装和运行](../how-to/install-and-run.md)。
 
 ## 2. 启动 Server
 

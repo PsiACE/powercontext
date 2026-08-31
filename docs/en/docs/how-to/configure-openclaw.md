@@ -5,26 +5,11 @@ description: Install the PowerContext memory plugin for OpenClaw and control rec
 
 # Configure OpenClaw
 
-## Install or refresh the plugin
+## Installation status
 
-Until a PowerContext release includes OpenClaw, install the CLI and plugin from the same `master` revision:
-
-```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
-```
-
-Without `--server-url`, setup configures the plugin for the Server default at `http://127.0.0.1:8000`.
-
-A local checkout works as well:
-
-```bash
-powercontext setup openclaw --source .
-```
-
-`setup openclaw` builds the plugin with pnpm, installs it with `openclaw plugins install --link --force`, enables it
-as the `memory` plugin slot, adds the PowerContext tools to `tools.alsoAllow`, and restarts the OpenClaw gateway. It
-does not start the Server. Start the Server, then start a new OpenClaw session:
+OpenClaw is not yet exposed by the distribution installer. Its checked-in plugin remains available for development
+and packaging work, but there is no supported end-user installation command until its host artifact is migrated. After
+a development installation, start the Server and a new OpenClaw session:
 
 ```bash
 powercontext server run
@@ -58,7 +43,7 @@ Scope mode defaults to `agent`, which derives the memory scope from the OpenClaw
 when the memory must be shared across agents working in the same project:
 
 ```bash
-powercontext setup openclaw --scope-mode project
+openclaw config set plugins.entries.memory-powercontext.config.scopeMode project
 ```
 
 Project scope is used only when OpenClaw supplies exactly one trusted project identity for a turn.

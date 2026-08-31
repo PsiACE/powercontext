@@ -1,30 +1,32 @@
 ---
 title: 安装和运行
-description: 从 Git 安装 PowerContext，并运行本地 Server。
+description: 安装 PowerContext 和所选集成，并运行本地 Server。
 ---
 
 # 安装和运行
 
-## 安装应用
+## 安装应用和集成
 
-先安装 `uv`，再从指定 Git ref 直接安装 PowerContext：
-
-```bash
-uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-```
-
-该方式支持 macOS 和 Linux，不需要用户自行管理仓库工作副本。Git 会沿用本机的凭据配置，包括 credential
-helper 和 SSH 设置。如需使用 SSH，请把 HTTPS URL 换成当前环境允许的 Git URL。
-
-安装指定分支或 tag 时，替换最后一个 `@` 后的 `master`。配置集成时应使用同一个 ref：
+在 macOS 或 Linux 上，显式选择 Runtime profile 和每个宿主：
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local \
+  --host codex \
+  --host claude-code \
+  --yes
 ```
 
-宿主专有选项见[配置 Codex](configure-codex.md)和[配置 DeepSeek Harness](configure-dsh.md)。
+在 Windows PowerShell 上：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host codex --host claude-code --yes
+```
+
+安装器会在需要时获取 `uv`，创建独立的用户级虚拟环境，暴露 `powercontext` 可执行文件，通过宿主原生
+marketplace 安装所选集成，并验证宿主可见状态。只安装 Runtime 时传入 `--no-hosts`。在交互终端中省略
+`--yes`，可以先检查并确认安装计划。
 
 ## 运行本地 Server
 
@@ -49,10 +51,11 @@ powercontext server run
 ## 使用嵌入式 seekDB
 
 在有兼容 `pylibseekdb` wheel 的 Linux 和 macOS 系统上可以使用嵌入式 seekDB；Windows 不支持该嵌入式
-后端。安装或替换工具时加入可选的 seekDB extra：
+后端。使用 seekDB profile 安装或替换 Runtime：
 
 ```bash
-uv tool install --force "powercontext[cli,server,seekdb] @ git+https://github.com/oceanbase/powercontext.git@master"
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile seekdb --no-hosts --yes
 ```
 
 从 SQLite 切换时，需要从 `.env` 中删除 `POWERCONTEXT_SERVER_DATABASE_URL` 和
@@ -96,13 +99,12 @@ powercontext capabilities
 
 ## 更新或替换安装
 
-使用指定 ref 替换现有工具：
+使用所需 profile 和宿主重复运行安装器即可更新。开发期间可以传入 `--ref`，让 Runtime 和 marketplace
+安装自同一个 Git ref：
 
 ```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@<ref>"
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --ref <git-ref> --profile local --host codex --yes
 ```
 
 更新后重启 Server，并开启新的宿主会话。只要没有修改 `POWERCONTEXT_HOME` 或数据库 URL，现有 SQLite

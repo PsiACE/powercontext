@@ -3,11 +3,8 @@
 This native Pi package restores bounded project context before each normal prompt and captures eligible user prompts
 as Source evidence. It does not sync Pi transcripts or start a PowerContext Server.
 
-Install it from a PowerContext checkout:
-
-```bash
-powercontext setup pi --source /path/to/powercontext
-```
+Pi is not yet exposed by the distribution installer. This checked-in package remains available for development and
+packaging work.
 
 Start `powercontext server run`, then open a new Pi session in the project. The package supplies the
 `project-context` skill, `pc_*` Memory and Handoff tools, and `/pc` diagnostics.

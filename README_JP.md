@@ -14,28 +14,31 @@ PowerContext は [PowerMem](https://www.powermem.ai/) のアップグレード�
 
 ## クイックスタート
 
-macOS または Linux、Python 3.11 以降、[`uv`](https://docs.astral.sh/uv/)、および少なくとも 1 つの対応 Agent Host が必要です。
+macOS、Linux、または Windows と、少なくとも 1 つの対応 Agent Host が必要です。インストーラーは必要に応じて
+[`uv`](https://docs.astral.sh/uv/) を取得するため、Python を事前にインストールする必要はありません。
 
 ### 1. PowerContext とインテグレーションをインストールする
 
+macOS と Linux：
+
 ```bash
-uv tool install "powercontext[cli,server]==0.0.2"
-
-# 1 つ以上のインテグレーションを選択します。
-powercontext setup codex --source oceanbase/powercontext --ref v0.0.2
-powercontext setup claude-code --source oceanbase/powercontext --ref v0.0.2
-powercontext setup dsh --source oceanbase/powercontext --ref v0.0.2
-powercontext setup hermes --source oceanbase/powercontext --ref v0.0.2
-
-# OpenClaw は現在、master から対応する CLI とインテグレーションをインストールする必要があります。
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local \
+  --host codex \
+  --host claude-code \
+  --yes
 ```
 
-最初のコマンドは、隔離された環境に最新リリースの CLI とローカル Server をインストールします。リリース版の setup
-コマンドは、対応するリポジトリの tag から各インテグレーションをインストールします。OpenClaw がリリースに含まれる
-までは、追加の `uv tool install` コマンドによって CLI、Server、インテグレーションを同じ `master` revision に
-そろえます。既存のインストールを更新するには、setup をもう一度実行してください。
+Windows PowerShell：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host codex --host claude-code --yes
+```
+
+インストーラーはユーザー専用の Runtime 環境を作成し、`powercontext` をユーザーの実行パスに公開して、各 Host の
+ネイティブ marketplace から選択したインテグレーションをインストールします。同じコマンドを再実行すると更新と検証が
+行われます。最初のインストーラーは Codex と Claude Code をサポートします。
 
 ### 2. ローカル Server を起動して検証する
 

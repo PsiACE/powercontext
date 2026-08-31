@@ -10,20 +10,19 @@ revise, and retire Memory saved from the first Codex session in a second session
 
 ## Before you start
 
-You need macOS or Linux, `uv`, Codex CLI, and read access to the PowerContext Git URL. Confirm that Git can reach the
-repository with the credentials already configured on your machine.
+You need macOS or Linux and Codex CLI. The installer obtains `uv` when necessary.
 
 ## 1. Install the tool and plugin
 
 Run these commands from any directory:
 
 ```bash
-uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup codex --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local --host codex --yes
 ```
 
-The first command installs an isolated application. The second installs the Codex plugin and prepares PowerContext's
-user data directory. For installation, updates, and data locations, see [Install and run](../how-to/install-and-run.md).
+The installer creates an isolated Runtime and installs and verifies the Codex plugin through Codex's native
+marketplace. For installation, updates, and data locations, see [Install and run](../how-to/install-and-run.md).
 
 ## 2. Start the Server
 

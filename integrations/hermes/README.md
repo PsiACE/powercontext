@@ -7,17 +7,17 @@ preparation, and memory lifecycle operations.
 
 The integration requires Hermes Agent v0.20.4 or newer.
 
-## Install with the PowerContext CLI
+## Development installation
 
-With Hermes installed and available on `PATH`, install or refresh the provider
-from the matching PowerContext release tag:
+Hermes is not yet exposed by the distribution installer. For development, copy
+`plugins/powercontext` into one of the Hermes provider locations:
 
 ```bash
-powercontext setup hermes --source oceanbase/powercontext --ref v0.0.2
+cp -R integrations/hermes/plugins/powercontext \
+  "$HERMES_HOME/plugins/powercontext"
 ```
 
-The command copies the provider to `$HERMES_HOME/plugins/powercontext`. Verify
-the installation with:
+Verify the development installation with:
 
 ```bash
 powercontext doctor hermes
@@ -26,26 +26,8 @@ powercontext doctor hermes
 Then run `hermes memory setup` and select `PowerContext` to configure the
 provider. Hermes v0.20.4 or newer is required.
 
-<details>
-<summary>Manual directory installation (alternative)</summary>
-
-### Manual directory installation
-
-`powercontext setup hermes` performs this copy automatically for a user-level
-installation. Use the manual method only for a project-local provider or when
-the PowerContext CLI is not available.
-
-Copy `plugins/powercontext` into one of the Hermes provider locations:
-
-```bash
-cp -R integrations/hermes/plugins/powercontext \
-  "$HERMES_HOME/plugins/powercontext"
-```
-
 For project-local installation, copy it to `.hermes/plugins/powercontext` and
 enable project plugins with `HERMES_ENABLE_PROJECT_PLUGINS=1`.
-
-</details>
 
 Start PowerContext separately:
 

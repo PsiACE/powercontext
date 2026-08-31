@@ -5,22 +5,11 @@ description: Install the native PowerContext package for Pi and control recall, 
 
 # Configure Pi
 
-## Install or refresh the package
+## Installation status
 
-Install Pi, then install the package from the same PowerContext ref as the CLI:
-
-```bash
-powercontext setup pi --source oceanbase/powercontext --ref master
-```
-
-A local checkout works as well:
-
-```bash
-powercontext setup pi --source .
-```
-
-`setup pi` calls Pi's native package installer and creates PowerContext's data directory. It does not start the
-Server. Start the Server, then open a new Pi session in a project directory:
+Pi is not yet exposed by the distribution installer. Its checked-in package remains available for development and
+packaging work, but there is no supported end-user installation command until its host artifact is migrated. After a
+development installation, start the Server and open a new Pi session in a project directory:
 
 ```bash
 powercontext server run

@@ -9,11 +9,12 @@ All remote interfaces operate on the same Server and persistent Artifact storage
 
 | Interface | Intended use | Install |
 | --- | --- | --- |
-| Codex plugin | Cross-session recall and explicit Memory maintenance in Codex | `powercontext setup codex` |
-| DeepSeek Harness plugin | Cross-session recall and explicit Memory maintenance in DeepSeek Harness | `powercontext setup dsh` |
+| Codex plugin | Cross-session recall and explicit Memory maintenance in Codex | `install.sh --host codex` |
+| Claude Code plugin | Cross-session recall and explicit Memory maintenance in Claude Code | `install.sh --host claude-code` |
+| DeepSeek Harness plugin | Cross-session recall and explicit Memory maintenance in DeepSeek Harness | Development only |
 | LangGraph adapter | Memory tools and bounded recall inside a LangGraph graph | `powercontext-langgraph` |
-| Pi package | Cross-session recall, native Memory/Handoff tools, and skills in Pi | `powercontext setup pi` |
-| CLI | Setup, diagnostics, Server control, capability checks, and human Candidate review | `powercontext[cli,server]` |
+| Pi package | Cross-session recall, native Memory/Handoff tools, and skills in Pi | Development only |
+| CLI | Diagnostics, Server control, capability checks, and human Candidate review | Installed with the Runtime |
 | Python Client SDK | Typed async calls to a running Server | `powercontext[client]` |
 | Core SDK | In-process Source, Artifact, Trigger, and composition contracts | base package |
 | HTTP | Service integration from any language | `powercontext[server]` |
@@ -99,9 +100,6 @@ boundary flushing fail open; explicit durable writes require interactive confirm
 ## CLI
 
 ```text
-powercontext setup codex
-powercontext setup dsh
-powercontext setup pi
 powercontext doctor
 powercontext doctor codex
 powercontext doctor dsh

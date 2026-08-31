@@ -2,19 +2,14 @@
 
 `plugins/powercontext` contains the PowerContext plugin for DeepSeek Harness.
 
-Install the PowerContext tool first, then configure the plugin from the same Git ref:
+DeepSeek Harness is not yet exposed by the distribution installer. The checked-in plugin remains available for
+development and packaging work. After a development installation:
 
 ```bash
-uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup dsh --source oceanbase/powercontext --ref master
 powercontext server run
 ```
 
-A local checkout works the same way. The plugin directory must contain a built `lib/index.js`:
-
-```bash
-powercontext setup dsh --source .
-```
+The plugin directory must contain a built `lib/index.js`.
 
 The plugin is a client of the running Server:
 

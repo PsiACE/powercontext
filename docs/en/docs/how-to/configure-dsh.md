@@ -5,23 +5,11 @@ description: Install the PowerContext DeepSeek Harness plugin and control its lo
 
 # Configure DeepSeek Harness
 
-## Install or refresh the plugin
+## Installation status
 
-Install DeepSeek Harness first and make sure the web profile exists. Then run:
-
-```bash
-powercontext setup dsh --source oceanbase/powercontext --ref master
-```
-
-The command installs the plugin from `integrations/dsh/plugins/powercontext` and creates the user data directory. The directory must contain a built `lib/index.js`. It is safe to run again: a valid checkout is reused, and a broken checkout for the same ref is replaced. Pass the same `--ref` used to install the PowerContext tool. `--source` accepts a GitHub slug or a `https://github.com/...` URL.
-
-A local checkout works the same way:
-
-```bash
-powercontext setup dsh --source .
-```
-
-`setup dsh` calls `dsh plugin --profile web add`. Open a new `dsh web` session after setup.
+DeepSeek Harness is not yet exposed by the distribution installer. Its checked-in integration remains available for
+development and packaging work, but there is no supported end-user installation command until its host artifact is
+migrated. The configuration below applies after such a development installation.
 
 ## Understand what the plugin does
 

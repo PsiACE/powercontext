@@ -5,23 +5,10 @@ description: 安装 PowerContext DeepSeek Harness 插件并控制其本地行为
 
 # 配置 DeepSeek Harness
 
-## 安装或刷新插件
+## 安装状态
 
-先安装 DeepSeek Harness，并确保 web profile 可用。然后执行：
-
-```bash
-powercontext setup dsh --source oceanbase/powercontext --ref master
-```
-
-该命令会从 `integrations/dsh/plugins/powercontext` 安装插件，并创建用户数据目录。该目录必须包含已构建的 `lib/index.js`。重复执行是安全的：有效 checkout 会复用，同一 ref 下的残缺 checkout 会被替换。`--ref` 应与安装 PowerContext 工具时使用的 ref 一致。`--source` 可以是 GitHub slug，也可以是 `https://github.com/...` URL。
-
-本地 checkout 同样可以：
-
-```bash
-powercontext setup dsh --source .
-```
-
-`setup dsh` 内部会执行 `dsh plugin --profile web add`。配置完成后重新打开 `dsh web`。
+分发安装器尚未提供 DeepSeek Harness。仓库中的集成仍可用于开发和打包，但在宿主 artifact 完成迁移前，不提供受支持的
+最终用户安装命令。以下配置适用于开发安装完成后的环境。
 
 ## 理解插件行为
 

@@ -10,13 +10,14 @@ description: 安装 PowerContext Codex 插件并控制其本地行为。
 执行：
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local --host codex --yes
 ```
 
-该命令会把仓库添加为 Codex marketplace，安装 PowerContext 插件，并创建用户数据目录。重复执行是安全的。
-`--ref` 应与安装 PowerContext 工具时使用的 ref 一致。
+安装器会创建或更新 Runtime，把仓库添加为 Codex marketplace，安装 PowerContext 插件，并验证 Codex 已将其启用。
+重复执行是安全的。开发期间可以用 `--ref`，让 Runtime 和 marketplace 安装自同一个 Git ref。
 
-配置完成后开启新的 Codex 会话。通过 `/hooks` 查看 PowerContext `UserPromptSubmit` Hook，并在收到提示时
+安装完成后开启新的 Codex 会话。通过 `/hooks` 查看 PowerContext `UserPromptSubmit` Hook，并在收到提示时
 授予信任。
 
 ## 理解自动恢复、Memory 和 Handoff

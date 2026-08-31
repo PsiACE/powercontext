@@ -5,24 +5,11 @@ description: Install the PowerContext OpenCode plugin and control its local beha
 
 # Configure OpenCode
 
-## Install or refresh the plugin
+## Installation status
 
-OpenCode 1.18.21 or newer in the 1.x line is required. Install the plugin from the same PowerContext Git ref as the
-Server and CLI:
-
-```bash
-powercontext setup opencode --source oceanbase/powercontext --ref master
-```
-
-The setup command registers the native plugin globally and installs its owned `project-context` Skill under the
-OpenCode config directory. It refuses to replace an existing same-name Skill that is not owned by PowerContext. A
-local checkout is also supported:
-
-```bash
-powercontext setup opencode --source .
-```
-
-Start the Server, then open a new OpenCode session:
+OpenCode is not yet exposed by the distribution installer. Its checked-in plugin remains available for development
+and packaging work, but there is no supported end-user installation command until its host artifact is migrated. After
+a development installation, start the Server and open a new OpenCode session:
 
 ```bash
 powercontext server run

@@ -2,11 +2,10 @@
 
 `plugins/powercontext` contains the native PowerContext plugin for OpenCode 1.x.
 
-Install PowerContext and the plugin from the same Git ref:
+OpenCode is not yet exposed by the distribution installer. The checked-in plugin remains available for development
+and packaging work. After a development installation, start the Runtime and OpenCode:
 
 ```bash
-uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup opencode --source oceanbase/powercontext --ref master
 powercontext server run
 opencode
 ```

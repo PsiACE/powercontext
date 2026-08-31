@@ -82,7 +82,6 @@ powercontext = "powercontext.cli.app:main"
 [project.entry-points."powercontext.cli"]
 doctor = "powercontext.cli.system:doctor_app"
 server = "powercontext.server.cli:app"
-setup = "powercontext.cli.system:setup_app"
 
 [project.urls]
 Homepage = "https://github.com/oceanbase/powercontext"

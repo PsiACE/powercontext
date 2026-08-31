@@ -2,15 +2,15 @@
 
 This plugin is a thin DeepSeek Harness integration for a running PowerContext Server. It does not embed storage or start the Server.
 
-Install it from a PowerContext checkout so the Server and plugin stay on the same ref:
+DeepSeek Harness is not yet exposed by the distribution installer. After a development installation from this
+checkout:
 
 ```bash
-powercontext setup dsh --source oceanbase/powercontext --ref master
 powercontext server run
 dsh web
 ```
 
-`setup dsh` calls `dsh plugin --profile web add` on this directory. The plugin talks HTTP only. It does not use MCP.
+The plugin talks HTTP only. It does not use MCP.
 
 Before each model step it:
 

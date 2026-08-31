@@ -9,11 +9,12 @@ description: 在 Codex 和 Claude Code 插件、DeepSeek Harness 插件、Pi pac
 
 | 接口 | 适用场景 | 安装 |
 | --- | --- | --- |
-| Codex 插件 | 在 Codex 中跨会话恢复和显式维护 Memory | `powercontext setup codex` |
-| DeepSeek Harness 插件 | 在 DeepSeek Harness 中跨会话恢复和显式维护 Memory | `powercontext setup dsh` |
+| Codex 插件 | 在 Codex 中跨会话恢复和显式维护 Memory | `install.sh --host codex` |
+| Claude Code 插件 | 在 Claude Code 中跨会话恢复和显式维护 Memory | `install.sh --host claude-code` |
+| DeepSeek Harness 插件 | 在 DeepSeek Harness 中跨会话恢复和显式维护 Memory | 仅用于开发 |
 | LangGraph 适配器 | 在 LangGraph 图中提供 Memory 工具和有界召回 | `powercontext-langgraph` |
-| Pi package | 在 Pi 中跨会话恢复、使用原生 Memory/Handoff 工具和 skill | `powercontext setup pi` |
-| CLI | 配置、诊断、Server 控制、能力检查和人工 Candidate 审核 | `powercontext[cli,server]` |
+| Pi package | 在 Pi 中跨会话恢复、使用原生 Memory/Handoff 工具和 skill | 仅用于开发 |
+| CLI | 诊断、Server 控制、能力检查和人工 Candidate 审核 | 随 Runtime 安装 |
 | Python Client SDK | 对运行中的 Server 发起类型化异步调用 | `powercontext[client]` |
 | Core SDK | 进程内 Source、Artifact、Trigger 和组合契约 | 基础包 |
 | HTTP | 从任意语言集成服务 | `powercontext[server]` |
@@ -87,9 +88,6 @@ Pi transcript。召回、采集和边界 flush 都会正常降级；显式持久
 ## CLI
 
 ```text
-powercontext setup codex
-powercontext setup dsh
-powercontext setup pi
 powercontext doctor
 powercontext doctor codex
 powercontext doctor dsh

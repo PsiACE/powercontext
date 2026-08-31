@@ -5,22 +5,10 @@ description: 安装 PowerContext 原生 Pi package，并控制召回、采集和
 
 # 配置 Pi
 
-## 安装或刷新 package
+## 安装状态
 
-先安装 Pi，再从与 PowerContext CLI 相同的 ref 安装 package：
-
-```bash
-powercontext setup pi --source oceanbase/powercontext --ref master
-```
-
-也可以使用本地 checkout：
-
-```bash
-powercontext setup pi --source .
-```
-
-`setup pi` 会调用 Pi 的原生 package 安装器，并创建 PowerContext 数据目录；它不会启动 Server。启动 Server 后，
-在项目目录中开启新的 Pi 会话：
+分发安装器尚未提供 Pi。仓库中的 package 仍可用于开发和打包，但在宿主 artifact 完成迁移前，不提供受支持的最终用户
+安装命令。开发安装完成后，启动 Server，并在项目目录中开启新的 Pi 会话：
 
 ```bash
 powercontext server run

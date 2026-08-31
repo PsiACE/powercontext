@@ -16,39 +16,19 @@ normal OpenClaw work.
 
 ## Install or refresh the plugin
 
-Until a PowerContext release includes OpenClaw, install the CLI and plugin from the same `master` revision:
-
-```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
-```
-
-Without `--server-url`, setup configures the plugin for the Server default at `http://127.0.0.1:8000`.
-
-A local checkout works as well:
-
-```bash
-powercontext setup openclaw --source .
-```
-
-`setup openclaw` builds the plugin with pnpm, installs it with `openclaw plugins install --link --force`, enables it as
-the `memory` plugin slot, adds the PowerContext tools to `tools.alsoAllow`, and restarts the OpenClaw gateway. It does
-not start the Server.
-
-Start the Server, then start a new OpenClaw session:
+OpenClaw is not yet exposed by the distribution installer. Its checked-in plugin remains available for development
+and packaging work. After a development installation, start the Server and a new OpenClaw session:
 
 ```bash
 powercontext server run
 openclaw
 ```
 
-To change the Server endpoint or memory scope during setup:
+To change the memory scope after a development installation:
 
 ```bash
-powercontext setup openclaw --server-url http://127.0.0.1:8765 --scope-mode project
+openclaw config set plugins.entries.memory-powercontext.config.scopeMode project
 ```
-
-Run `setup openclaw` again to refresh an existing installation.
 
 ## Understand what the plugin does
 

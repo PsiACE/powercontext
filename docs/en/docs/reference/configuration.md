@@ -256,8 +256,8 @@ Codex; restart Codex after changing it.
 | `POWERCONTEXT_CLAUDE_HTTP_BUDGET_SECONDS` | `4` | Shared Hook HTTP budget for recall, capture, and optional flush |
 | `POWERCONTEXT_CLAUDE_FLUSH_MAX_CALLS` | `4` | Maximum flush calls per prompt; valid values are 1 through 16 |
 
-`powercontext setup claude-code` stores `server_url` and `capture_prompts` as non-sensitive Claude Code plugin
-options. The corresponding `POWERCONTEXT_CLAUDE_*` variables take precedence for the process that starts Claude Code.
+Persist non-sensitive `server_url` and `capture_prompts` values through Claude Code's native plugin configuration.
+The corresponding `POWERCONTEXT_CLAUDE_*` variables take precedence for the process that starts Claude Code.
 Authorization is environment-only and must not be added to the Server URL or plugin options.
 
 The outer `UserPromptSubmit` Hook timeout is ten seconds. Recall and capture use one shared wall-clock budget but fail

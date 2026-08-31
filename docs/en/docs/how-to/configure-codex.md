@@ -10,13 +10,15 @@ description: Install the PowerContext Codex plugin and control its local behavio
 Run:
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local --host codex --yes
 ```
 
-The command adds the repository as a Codex marketplace, installs the PowerContext plugin, and creates the user data
-directory. It is safe to run again. Pass the same `--ref` used to install the PowerContext tool.
+The installer creates or updates the Runtime, adds the repository as a Codex marketplace, installs the PowerContext
+plugin, and verifies that Codex reports it as enabled. It is safe to run again. During development, use `--ref` to
+install the Runtime and marketplace from the same Git ref.
 
-Open a new Codex session after setup. Use `/hooks` to inspect and, when prompted, trust the PowerContext
+Open a new Codex session after installation. Use `/hooks` to inspect and, when prompted, trust the PowerContext
 `UserPromptSubmit` hook.
 
 ## Understand automatic recall, Memory, and Handoff

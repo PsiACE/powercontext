@@ -3,10 +3,9 @@
 This package is a thin OpenCode 1.x plugin for a running PowerContext Server. It does not embed storage or start the
 Server.
 
-Install it from the matching PowerContext checkout:
+OpenCode is not yet exposed by the distribution installer. After a development installation from this checkout:
 
 ```bash
-powercontext setup opencode --source oceanbase/powercontext --ref master
 powercontext server run
 opencode
 ```

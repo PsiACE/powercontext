@@ -10,15 +10,13 @@ The plugin deliberately uses only the Python standard library for HTTP, so it
 can be copied into Hermes without adding an HTTP client dependency. Its
 provider configuration is read from `$HERMES_HOME/powercontext/config.json`.
 
-To install or refresh the provider from a matching PowerContext release tag:
+Hermes is not yet exposed by the distribution installer. For development, copy
+this directory into Hermes' user plugin directory, then verify it:
 
 ```bash
-powercontext setup hermes --source oceanbase/powercontext --ref v0.0.2
+cp -R integrations/hermes/plugins/powercontext "$HERMES_HOME/plugins/powercontext"
 powercontext doctor hermes
 ```
-
-The setup command copies this directory to `$HERMES_HOME/plugins/powercontext`.
-It requires the Hermes CLI to be installed and available on `PATH`.
 
 The provider participates in Hermes' generic memory setup wizard. Run the
 command below and select `PowerContext` from the provider list:

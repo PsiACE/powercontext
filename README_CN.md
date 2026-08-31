@@ -12,28 +12,31 @@ PowerContext 是 [PowerMem](https://www.powermem.ai/) 的升级版本，也是�
 
 ## 快速开始
 
-你需要 macOS 或 Linux、Python 3.11 或更高版本、[`uv`](https://docs.astral.sh/uv/)，以及至少一个支持的 Agent Host。
+你需要 macOS、Linux 或 Windows，以及至少一个支持的 Agent Host。安装器会在需要时获取
+[`uv`](https://docs.astral.sh/uv/)，无需预先安装 Python。
 
 ### 1. 安装 PowerContext 和集成
 
+macOS 和 Linux：
+
 ```bash
-uv tool install "powercontext[cli,server]==0.0.2"
-
-# 选择一个或多个集成。
-powercontext setup codex --source oceanbase/powercontext --ref v0.0.2
-powercontext setup claude-code --source oceanbase/powercontext --ref v0.0.2
-powercontext setup dsh --source oceanbase/powercontext --ref v0.0.2
-powercontext setup hermes --source oceanbase/powercontext --ref v0.0.2
-
-# OpenClaw 和 OpenCode 当前需要从 master 安装匹配的 CLI 和集成。
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
-powercontext setup opencode --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local \
+  --host codex \
+  --host claude-code \
+  --yes
 ```
 
-第一条命令会在隔离环境中安装最新发布的 CLI 和本地 Server；发布版的 setup 命令会从匹配的仓库 tag
-安装对应集成。在 OpenClaw 和 OpenCode 进入正式发布版之前，额外的 `uv tool install` 命令会让 CLI、Server
-和集成使用同一个 `master` revision。如需刷新现有集成，请再次运行 setup。
+Windows PowerShell：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host codex --host claude-code --yes
+```
+
+安装器会创建独立的用户级 Runtime 环境，把 `powercontext` 暴露到用户可执行目录，并通过各宿主的原生
+marketplace 安装所选集成。重复执行同一命令即可更新并验证安装。首个安装器支持 Codex 和 Claude Code；其他集成在
+完成迁移前仍属于开发工作流。
 
 ### 2. 启动并验证本地 Server
 

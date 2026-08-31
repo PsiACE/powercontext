@@ -46,9 +46,8 @@ command -v dsh
 command -v pi
 ```
 
-Add the uv tool bin directory to `PATH` if needed. `powercontext setup codex`, `powercontext setup claude-code`,
-`powercontext setup dsh`, and `powercontext setup pi` report an error rather than attempting installation when the host
-CLI is unavailable.
+Add the installer-managed executable directory to `PATH` if needed. The installer checks every selected host before it
+changes the Runtime and reports an unavailable Codex or Claude Code CLI directly.
 
 ## The plugin is missing or stale
 
@@ -60,10 +59,10 @@ powercontext doctor dsh
 powercontext doctor pi
 ```
 
-Reinstall it from the same ref as the tool:
+Repeat the installer with the same ref as the Runtime:
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
+bash install.sh --profile local --host codex --ref <ref> --yes
 codex plugin list --json
 ```
 
@@ -73,22 +72,19 @@ For Claude Code, run:
 
 ```bash
 powercontext doctor claude-code
-powercontext setup claude-code --source oceanbase/powercontext --ref <ref>
+bash install.sh --profile local --host claude-code --ref <ref> --yes
 claude plugin list --json
 ```
 
 Then start a new Claude Code session. Check `/hooks` and `/mcp`; the plugin inventory should contain one
 `UserPromptSubmit` Hook and one `powercontext` MCP Server.
 
-If setup fails while creating new user-scoped objects, it attempts to remove only the plugin and Marketplace entries
-created by that invocation. Existing entries are preserved. Correct the reported Claude CLI or repository error and
-rerun the same setup command.
+Correct the reported Claude CLI or repository error and repeat the installer.
 
-For DeepSeek Harness, run:
+DeepSeek Harness and Pi are not yet exposed by the distribution installer. For a development installation, run:
 
 ```bash
 powercontext doctor dsh
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
 dsh --profile web --dump-config
 ```
 
@@ -99,7 +95,6 @@ For Pi, run:
 
 ```bash
 powercontext doctor pi
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
 pi list
 ```
 

@@ -160,6 +160,7 @@ def test_cli_exposes_installed_role_commands() -> None:
 
     assert result.exit_code == 0
     assert all(command in result.output for command in ("capabilities", "candidate", "stats", "server"))
+    assert "setup" not in result.output
     assert "builtin" not in result.output
     assert "client" not in result.output
 

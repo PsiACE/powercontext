@@ -7,37 +7,30 @@ description: 安装 PowerContext Claude Code 插件，并配置召回、提示�
 
 ## 检查前置条件
 
-先安装 PowerContext 和 Claude Code，并确认执行 setup 的环境可以找到这两个命令：
+先安装 Claude Code。PowerContext 安装器会自行获取 `uv` 并安装 Runtime。确认宿主 CLI 可用：
 
 ```bash
-powercontext --version
 claude --version
 ```
 
-Python package 和插件应使用同一个 PowerContext 仓库 ref。Hook 会校验带版本的 Prepared Context contract，
-因此旧 Server 与新插件混用时，召回可能被禁用，但不会阻塞 Claude Code。
-
 ## 安装或更新插件
 
-执行：
+在 macOS 或 Linux 上执行：
 
 ```bash
-powercontext setup claude-code --source oceanbase/powercontext --ref master
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local --host claude-code --yes
 ```
 
-修改 Claude Code 设置前，setup 会报告设置项、插件缓存、持久化数据位置、所需权限和准确的回滚命令。
-之后命令会注册 Marketplace、以 user scope 安装插件，并通过 Claude Code 的 JSON 输出确认插件已启用。
+在 Windows PowerShell 上执行：
 
-Marketplace registry、按版本保存的插件缓存和插件数据目录由 Claude Code 管理。Claude 2.1.133 的
-`plugin install` 不支持配置参数，因此 setup 会在安装成功后，把 `server_url` 和 `capture_prompts`
-原子合并到用户级 `pluginConfigs`，并保留其他设置；失败时恢复安装前快照。PowerContext 从
-`CLAUDE_CONFIG_DIR` 或 Claude Code 默认配置目录解析这些位置。
-
-使用本地 checkout 时，传入目录：
-
-```bash
-powercontext setup claude-code --source ./powercontext
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host claude-code --yes
 ```
+
+安装器会创建或更新 Runtime、注册 Marketplace、以 user scope 安装插件，并通过 Claude Code 的 JSON 输出确认插件已启用。
+Marketplace registry、按版本保存的插件缓存、插件数据目录和可变插件配置继续由 Claude Code 管理。
 
 安装完成后启动 Server，再开启新的 Claude Code 会话：
 
@@ -48,7 +41,7 @@ claude
 
 使用 `/hooks` 确认 `UserPromptSubmit` Hook，使用 `/mcp` 确认 `powercontext` Server。
 
-再次执行 setup 会更新插件配置并验证已安装版本，不会删除已有的 PowerContext Server 数据。
+再次执行安装器会更新并验证 Runtime 和插件，不会删除已有的 PowerContext Server 数据。
 
 ## 理解插件行为
 
@@ -98,21 +91,15 @@ exact Revision 才是跨 Agent 的持久交接点。
 
 ## 配置 Server 地址和提示词采集
 
-安装时设置 endpoint：
-
-```bash
-powercontext setup claude-code \
-  --server-url http://127.0.0.1:9000 \
-  --no-capture-prompts
-```
-
-Claude Code 会把这些非敏感选项保存在用户级 `pluginConfigs` 中。也可以只覆盖一次 Hook 进程：
+启动 Claude Code 时覆盖 Hook 进程：
 
 ```bash
 export POWERCONTEXT_CLAUDE_SERVER_URL=http://127.0.0.1:9000
 export POWERCONTEXT_CLAUDE_CAPTURE_PROMPTS=false
 claude
 ```
+
+需要持久化时，使用 Claude Code 原生插件配置界面。安装流程不再拥有这些可变 Runtime 设置。
 
 只有 Memory scope 必须有意区别于 Git remote 和本地项目路径时，才设置
 `POWERCONTEXT_CLAUDE_SCOPE_ID`。

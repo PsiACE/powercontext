@@ -249,8 +249,8 @@ Codex Hook 外层超时为十秒。Server 不可用或拒绝鉴权时，恢复�
 | `POWERCONTEXT_CLAUDE_HTTP_BUDGET_SECONDS` | `4` | 召回、采集和可选 flush 共用的 Hook HTTP 时间预算 |
 | `POWERCONTEXT_CLAUDE_FLUSH_MAX_CALLS` | `4` | 每个 prompt 最多执行的 flush 次数；有效值为 1 到 16 |
 
-`powercontext setup claude-code` 会把 `server_url` 和 `capture_prompts` 保存为非敏感的 Claude Code 插件
-选项。启动 Claude Code 的进程中，对应的 `POWERCONTEXT_CLAUDE_*` 环境变量优先级更高。
+通过 Claude Code 原生插件配置保存非敏感的 `server_url` 和 `capture_prompts`。启动 Claude Code 的进程中，
+对应的 `POWERCONTEXT_CLAUDE_*` 环境变量优先级更高。
 Authorization 只能来自环境变量，不能加入 Server URL 或插件选项。
 
 `UserPromptSubmit` Hook 的外层超时为十秒。召回与采集共用一个 wall-clock 时间预算，但会独立降级。

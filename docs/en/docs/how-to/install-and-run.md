@@ -1,32 +1,33 @@
 ---
 title: Install and run
-description: Install PowerContext from Git and run the local Server.
+description: Install PowerContext and selected integrations, then run the local Server.
 ---
 
 # Install and run
 
-## Install the application
+## Install the application and integrations
 
-Install `uv`, then install PowerContext directly from a Git ref:
-
-```bash
-uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-```
-
-This works on macOS and Linux and does not require a user-managed repository checkout. Git uses its normal credential
-configuration, including credential helpers and SSH settings. For an SSH-based install, replace the HTTPS URL with the
-Git URL approved for your environment.
-
-To install a tested branch or tag, replace `master` after the final `@`. Use the same ref when configuring integrations:
+On macOS or Linux, select a Runtime profile and each host explicitly:
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile local \
+  --host codex \
+  --host claude-code \
+  --yes
 ```
 
-For host-specific options, see [Configure Codex](configure-codex.md) and
-[Configure DeepSeek Harness](configure-dsh.md).
+On Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/oceanbase/powercontext/master/install.ps1))) `
+  --profile local --host codex --host claude-code --yes
+```
+
+The installer obtains `uv` when necessary, creates a dedicated per-user virtual environment, exposes the
+`powercontext` executable, installs selected integrations through their native host marketplaces, and verifies the
+observable host state. Use `--no-hosts` for a Runtime-only installation. Omit `--yes` to review and confirm the plan in
+an interactive terminal.
 
 ## Run the local Server
 
@@ -52,10 +53,11 @@ disable the Dashboard explicitly.
 ## Use embedded seekDB
 
 Embedded seekDB is available on Linux and macOS when a compatible `pylibseekdb` wheel is available. Windows does not
-support this embedded backend. Install or replace the tool with the optional seekDB extra:
+support this embedded backend. Install or replace the Runtime with the seekDB profile:
 
 ```bash
-uv tool install --force "powercontext[cli,server,seekdb] @ git+https://github.com/oceanbase/powercontext.git@master"
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --profile seekdb --no-hosts --yes
 ```
 
 When switching from SQLite, remove `POWERCONTEXT_SERVER_DATABASE_URL` and
@@ -102,13 +104,12 @@ recovery steps, see [Troubleshoot](troubleshoot.md).
 
 ## Update or replace an installation
 
-To replace the installed tool with a chosen ref:
+Repeat the installer with the desired profile and hosts. During development, pass `--ref` to install both the Runtime
+and marketplace from the same Git ref:
 
 ```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@<ref>"
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
+curl -fsSL https://raw.githubusercontent.com/oceanbase/powercontext/master/install.sh | bash -s -- \
+  --ref <git-ref> --profile local --host codex --yes
 ```
 
 Restart the Server and open a new host session after updating. Existing SQLite data remains in the user data
