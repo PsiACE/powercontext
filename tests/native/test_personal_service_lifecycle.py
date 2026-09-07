@@ -272,7 +272,6 @@ def _environment_file(tmp_path: Path) -> Path:
         "\n".join((
             f"POWERCONTEXT_HOME={data_dir}",
             f"POWERCONTEXT_SERVER_HTTP_PORT={_unused_loopback_port()}",
-            "POWERCONTEXT_SERVER_DASHBOARD_ENABLED=false",
             "",
         )),
         encoding="utf-8",

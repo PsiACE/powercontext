@@ -51,7 +51,6 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_PUBLIC_URL` | 未设置 | 远端技能注册引导使用的可达基础地址；默认要求 HTTPS |
 | `POWERCONTEXT_SERVER_ALLOW_INSECURE_HTTP` | `false` | 显式允许远端技能接收端接口和注册引导使用明文 HTTP |
 | `POWERCONTEXT_SERVER_ALLOW_UNAUTHENTICATED_NON_LOOPBACK` | `false` | 在鉴权关闭时显式允许绑定非 loopback 地址 |
-| `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `true` | 在 Server 根路径 `/` 启用 Dashboard |
 | `POWERCONTEXT_SERVER_HANDOFF_REPORT_ENABLED` | `true` | 启用 Handoff Report 及其 API route |
 | `POWERCONTEXT_SERVER_LOGGING_LEVEL` | `INFO` | operational log 级别 |
 | `POWERCONTEXT_SERVER_LOGGING_FORMAT` | `console` | `console` 或结构化 `json` 输出 |
@@ -120,8 +119,7 @@ Authentication 负责建立 Principal，Access Control 负责判断该 Principal
 该 Principal 必须在每个被处理的 scope 上拥有 `scope.contribute`；新 Memory Entry 和 Candidate 会保留它作为直接 owner 或
 `proposed_owner`。多用户 enforced 部署配置了 schedule 却未显式指定该 Principal 时，Server 会拒绝启动。
 
-远程、多用户或共享 Dashboard 必须使用 `enforced`。此模式下，HTTP、MCP、Dashboard 数据路由和 metrics 共用同一个
-Server PEP；Dashboard 配置的 scope 会在返回前按当前 Principal 的 `scope.read` 判定过滤。`/v1/access/me` 返回
+远程和多用户部署必须使用 `enforced`。此模式下，HTTP、MCP 和 metrics 共用同一个 Server PEP。`/v1/access/me` 返回
 `server`/`scope`/`artifact` Resource Kind、Provider 的 batch/list/relationship 能力与 Family profile。Managed Skill 的
 导出和安装不再引入单独的 Access action：接收者先获得逻辑 Skill identity 上的 `artifact.read`，再自行决定是否以及如何
 安装一个精确 Revision。
@@ -145,22 +143,17 @@ Receiver 的内部 PoC 显式例外见下文。当代码的 `http://` base URL �
 
 安全的 Docker 和远程访问配置见[部署 Server](../how-to/deploy-server.md)。
 
-Dashboard 默认启用，并与 HTTP API、MCP 共用监听地址和端口。它从 Server 发现默认 Scope 和所有已创建 Scope；
-Dashboard 初始化失败只记录包含直接原因的 warning，不影响 Server 的 HTTP API、MCP 和健康检查启动。
-
 Server 默认把启动目录作为 workspace，并自动提供两个可写的本机项目级目标：Codex 使用
-`<workspace>/.agents/skills`，Claude Code 使用 `<workspace>/.claude/skills`。目录不存在时不会报错；用户首次在
-Dashboard 中确认安装后才会创建目录。以 systemd、容器或其他不保证工作目录的方式启动时，应设置一次
-`POWERCONTEXT_SERVER_WORKSPACE`，之后页面不再要求用户填写 Skill 路径。
+`<workspace>/.agents/skills`，Claude Code 使用 `<workspace>/.claude/skills`。目录不存在时不会报错，只有显式发布操作
+才会创建目录。以 systemd、容器或其他不保证工作目录的方式启动时，应设置一次
+`POWERCONTEXT_SERVER_WORKSPACE`。
 
-远端技能接收端需要通过不同于当前 Dashboard 访问地址的外部入口连接时，只需在 Server 上配置一次
-`POWERCONTEXT_SERVER_PUBLIC_URL`。Skills Dashboard 会自动用它生成注册命令，不再要求每次添加目标时填写地址。
-未配置时，Dashboard 自动使用当前 HTTPS 来源；显式启用不安全开关后，也可以使用当前 HTTP 来源。两者都不可用时，
-注册命令使用远端命令行已经配置的服务地址。
+远端技能接收端需要通过稳定的外部入口连接时，在 Server 上配置
+`POWERCONTEXT_SERVER_PUBLIC_URL`。否则注册命令可以使用远端命令行已经配置的服务地址。
 
 一期 PoC 如果运行在受保护的内部测试网络，可以让 Server 和 Receiver 双端显式同意直连 HTTP：Server 设置
 `POWERCONTEXT_SERVER_ALLOW_INSECURE_HTTP=true`，并用 `POWERCONTEXT_SERVER_PUBLIC_URL` 公布 `http://` 地址；
-Receiver 注册时同时传入 `--allow-insecure-http`。Dashboard 会显示明文传输警告，并自动把该参数加入注册命令。
+Receiver 注册时同时传入 `--allow-insecure-http`。
 Server 未打开开关时，远端接口仍拒绝非 loopback HTTP；Receiver 未传参数时，CLI 会在发送一次性注册口令之前拒绝
 该 URL。许可会写入权限为 owner-only 的 Receiver 配置，因此 `remote-watch` 和 systemd user service 会沿用同一策略，
 unit 文件不需要保存凭据或额外参数。该开关不提供 TLS、网络隔离或防窃听能力，不能用于公网或不可信网络；长期部署
@@ -181,12 +174,8 @@ powercontext --server-url http://powercontext.internal.example:8765 \
 示例中的非 loopback opt-in 与 Receiver 传输例外彼此独立：它表示操作者接受该监听器上的所有 Server route 在没有
 Server 级 Bearer token 时可达。部署条件允许时，应优先启用鉴权，或在仅绑定 loopback 的 Server 前终止 TLS。
 
-使用兼容静态 Bearer 且 `enforced` 时，`/`、`/skills`、`/reviews`、`/handoff-reports` 的 HTML 外壳及其静态资源仍保持公开，以便
-浏览器渲染登录表单；数据请求仍受鉴权保护。在表单中输入 Server token 后，浏览器只把它保存在当前标签页的 session
-storage 中。如果连这些登录页也不能暴露，应同时关闭 Dashboard 和 Handoff Report。
-
-Handoff Report 独立默认启用，路径为 `/handoff-reports`。没有任何 scope 包含 committed Handoff 时，页面显示无数据
-模板预览。Scope discovery、检查、Revision 写入和导出步骤见[使用 Handoff Report](../how-to/use-handoff-report.md)。
+Handoff Report API route 独立默认启用。Selection、检查和导出步骤见
+[使用 Handoff Report](../how-to/use-handoff-report.md)。
 
 指定 SQLite 路径并启用定时提取的示例：
 
@@ -280,18 +269,18 @@ export POWERCONTEXT_SERVER_EXTERNAL_SKILLS='{
 显式设置 `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` 会完整替换自动生成的两个项目级 target；设置为
 `{"host_id": null, "targets": []}` 可以关闭本机发现和发布。每个 target ID 必须唯一；`agent_kind` 支持 `codex` 和
 `claude_code`，installation scope 支持 `user`、`project` 和 `plugin`。PowerContext 只扫描默认或显式 target 的直接
-Skill package 子目录，不会推断用户 home 目录、安装 package 或授予执行权限。自动生成的两个项目级 target 允许用户
-在 Dashboard 中显式安装；自定义 target 的 `allow_managed_publish` 默认是 `false`，设为 `true` 后，authenticated Skills Library 或 Review
-页面可以把 approved managed Skill 显式创建或安全更新到该 target。页面仍不能提交任意路径，也不会覆盖外部或
-已被修改的 package。发布会物化 Review 通过的完整精确 package（包括 scripts 和 references），不会执行其中内容，
-也不会向 package 注入 sidecar。相同页面只能在 binding 与 tree digest 仍匹配时安全取消发布；本地漂移和外部内容
-会保持不动。`host_id`、locator 和 registration 都是本地环境状态，不是跨 host contract。已有的
+Skill package 子目录，不会推断用户 home 目录、安装 package 或授予执行权限。自定义 target 的
+`allow_managed_publish` 默认是 `false`；设为 `true` 后，显式发布操作可以把 approved managed Skill 安全创建或更新到该
+target。发布操作不能提交任意路径，也不会覆盖外部或已被修改的 package。发布会物化 Review 通过的完整精确 package
+（包括 scripts 和 references），不会执行其中内容，也不会向 package 注入 sidecar。只有 binding 与 tree digest 仍匹配
+时才能安全取消发布；本地漂移和外部内容会保持不动。`host_id`、locator 和 registration 都是本地环境状态，不是跨
+host contract。已有的
 `codex_roots` 配置继续作为 Codex-only 兼容格式被接受；新配置应使用 `targets`。
 
 可选的 `environment` object 只包含已观测且不含密钥的兼容性事实。Command value 是版本标签；
 `environment_names` 只记录名称，绝不记录值。PowerContext 不会为了构造该 profile 而探测或执行 package script。
 未配置时，包含 script 的 package 会显示未知兼容性；配置后，Skills Library 会把已知 script interpreter 与已观测
-command name 对比，并显示带原因的 Assessment。Assessment 不会授予 network、filesystem、dependency install 或
+command name 对比，并返回带原因的 Assessment。Assessment 不会授予 network、filesystem、dependency install 或
 environment 访问权。
 
 Server 始终创建 non-recording OpenTelemetry request context，从 inbound span 派生 `X-PowerContext-Request-ID`。如需为

@@ -68,7 +68,6 @@ from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddlewa
 from powercontext.server.middleware import AuthenticationMiddleware
 from powercontext.server.settings import MissingAuthenticationProviderError, ServerSettings
 from powercontext.server.tracing import HttpTracingMiddleware, ServerTracing
-from powercontext.server.web import mount_web_ui
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +228,6 @@ def create_server_app(
         authentication_provider=configured_authentication,
         allow_insecure_remote_http=resolved.allow_insecure_http,
     )
-    _mount_optional_web_ui(app, resolved)
     if metrics is not None:
         app.add_api_route(
             "/metrics",
@@ -376,35 +374,6 @@ def _memory_resource(scope_id: str, entry: MemoryEntryRecord) -> ResourceRef:
         artifact_id=citation.memory_ref.artifact_id,
         selector=MemoryEntrySelector(entry_id=citation.entry_id),
     )
-
-
-def _mount_optional_web_ui(app: FastAPI, settings: ServerSettings) -> None:
-    app.state.dashboard_started = False
-    app.state.dashboard_startup_error = None
-    if not (settings.dashboard.enabled or settings.handoff_report.enabled):
-        return
-    try:
-        mount_web_ui(
-            app,
-            dashboard_enabled=settings.dashboard.enabled,
-            handoff_report_enabled=settings.handoff_report.enabled,
-            authentication_required=settings.access.mode == "enforced",
-            agent_skill_targets=settings.external_skills.agent_targets,
-            public_server_url=settings.public_url,
-            allow_insecure_http=settings.allow_insecure_http,
-        )
-        if settings.dashboard.enabled:
-            app.state.dashboard_started = True
-    except Exception as error:
-        app.state.dashboard_startup_error = str(error)
-        unit = "Dashboard" if settings.dashboard.enabled else "Handoff Report"
-        log_safely(
-            logger,
-            logging.WARNING,
-            f"PowerContext {unit} failed to start: {error}",
-            exc_info=error,
-            extra={"event": "web_ui.start_failed", "unit": "web_ui"},
-        )
 
 
 class _ServerReadinessProbe:

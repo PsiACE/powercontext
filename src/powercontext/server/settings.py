@@ -151,12 +151,6 @@ class AccessControlConfig(BaseModel):
     background_principal_description: str | None = Field(default=None, min_length=1, max_length=255)
 
 
-class DashboardConfig(BaseModel):
-    """Personal Dashboard served by the local Server."""
-
-    enabled: bool = True
-
-
 class ServerLoggingConfig(BaseModel):
     """Operational log output owned by the Server process."""
 
@@ -203,7 +197,6 @@ class ServerSettings(BaseSettings):
     auth: BearerAuthConfig = Field(default_factory=BearerAuthConfig)
     access: AccessControlConfig = Field(default_factory=AccessControlConfig)
     allow_unauthenticated_non_loopback: bool = False
-    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     logging: ServerLoggingConfig = Field(default_factory=ServerLoggingConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
@@ -315,7 +308,6 @@ class ServerSettings(BaseSettings):
 __all__ = [
     "AccessControlConfig",
     "BearerAuthConfig",
-    "DashboardConfig",
     "HandoffReportConfig",
     "HttpConfig",
     "McpConfig",

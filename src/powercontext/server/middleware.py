@@ -32,12 +32,7 @@ from powercontext.server.authz import PrincipalRef
 from powercontext.server.context import bind_authentication, is_internal_bridge, reset_authentication
 
 _PUBLIC_PATHS = frozenset({
-    "/",
     "/docs",
-    "/handoff-reports",
-    "/reviews",
-    "/skills",
-    "/shared",
     "/health/live",
     "/health/ready",
     "/v1/skill/remote/target/enroll",
@@ -45,7 +40,6 @@ _PUBLIC_PATHS = frozenset({
     "/v1/skill/remote/package/download",
     "/v1/skill/remote/receipt",
 })
-_PUBLIC_PATH_PREFIXES = ("/static/",)
 
 
 class AuthenticationMiddleware:
@@ -106,7 +100,7 @@ class StaticBearerMiddleware(AuthenticationMiddleware):
 
 
 def _is_public(scope: Scope) -> bool:
-    return scope["type"] != "http" or scope["path"] in _PUBLIC_PATHS or scope["path"].startswith(_PUBLIC_PATH_PREFIXES)
+    return scope["type"] != "http" or scope["path"] in _PUBLIC_PATHS
 
 
 def _client_host(scope: Scope) -> str | None:

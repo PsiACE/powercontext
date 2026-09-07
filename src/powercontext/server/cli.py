@@ -96,14 +96,6 @@ def _run_configured_server(settings: ServerSettings) -> None:
     tracing = configure_server_tracing(settings.tracing)
     try:
         application = create_server_app(settings=settings, tracing=tracing)
-        if settings.dashboard.enabled:
-            if application.state.dashboard_started:
-                typer.echo(f"PowerContext Dashboard: http://{settings.http.host}:{settings.http.port}/")
-            else:
-                typer.echo(
-                    f"PowerContext Dashboard failed to start: {application.state.dashboard_startup_error}",
-                    err=True,
-                )
         _run_server(
             application,
             host=settings.http.host,

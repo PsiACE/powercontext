@@ -56,7 +56,6 @@ from powercontext.server.factory import create_server_app
 from powercontext.server.settings import (
     AccessControlConfig,
     BearerAuthConfig,
-    DashboardConfig,
     McpConfig,
     MetricsConfig,
     ServerSettings,
@@ -432,7 +431,6 @@ def test_scheduled_memory_processing_uses_the_static_service_principal_as_owner(
                     deployment_id="scheduled-access-e2e",
                 ),
                 auth=BearerAuthConfig(token=SecretStr(token)),
-                dashboard=DashboardConfig(enabled=False),
                 metrics=MetricsConfig(enabled=False),
                 mcp=McpConfig(enabled=False),
             ),
@@ -697,7 +695,6 @@ def _app(
                 mode="enforced",
                 deployment_id=DEPLOYMENT_ID,
             ),
-            dashboard=DashboardConfig(enabled=False),
             metrics=MetricsConfig(enabled=False),
             mcp=McpConfig(enabled=False),
         ),

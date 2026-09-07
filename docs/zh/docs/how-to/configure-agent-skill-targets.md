@@ -5,7 +5,7 @@ description: 注册显式的本地 Codex 或 Claude Code Skill 目录，用于�
 
 # 配置 Agent Skill target
 
-在扫描 external Skill，或从 Server UI 发布 approved managed Skill 前，先注册本地 target。
+在扫描 external Skill，或以编程方式发布 approved managed Skill 前，先注册本地 target。
 
 ## 1. 设置 target 配置
 

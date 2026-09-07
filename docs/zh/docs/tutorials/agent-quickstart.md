@@ -150,7 +150,6 @@ powercontext server run
 默认 Server：
 
 - 监听 `http://127.0.0.1:8000`；
-- 在 `/` 提供 Dashboard；
 - 在 `/mcp` 提供 Streamable HTTP MCP；
 - 使用 PowerContext 用户数据目录中的持久化 SQLite 数据库。
 
@@ -350,7 +349,7 @@ unset POWERCONTEXT_DSH_SCOPE_ID
 unset POWERCONTEXT_OPENCODE_SCOPE_ID
 ```
 
-如需使用非默认边界，先通过 Scope API 或 Dashboard 创建 Scope，再把 Server 生成的真实 Scope ID 配置给两个 Host。
+如需使用非默认边界，先通过 Scope API 创建 Scope，再把 Server 生成的真实 Scope ID 配置给两个 Host。
 
 在示例项目中启动 DSH：
 

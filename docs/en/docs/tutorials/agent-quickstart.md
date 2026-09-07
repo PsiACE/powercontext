@@ -156,7 +156,6 @@ powercontext server run
 By default, the Server:
 
 - listens at `http://127.0.0.1:8000`;
-- serves the Dashboard at `/`;
 - serves Streamable HTTP MCP at `/mcp`;
 - uses a persistent SQLite database in the PowerContext user data directory.
 
@@ -370,7 +369,7 @@ unset POWERCONTEXT_DSH_SCOPE_ID
 unset POWERCONTEXT_OPENCODE_SCOPE_ID
 ```
 
-For a non-default boundary, create a Scope through the Scope API or Dashboard and configure both hosts with that actual
+For a non-default boundary, create a Scope through the Scope API and configure both hosts with that actual
 Server-generated Scope ID.
 
 Start DSH in the example project:
