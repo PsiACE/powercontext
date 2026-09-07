@@ -1,0 +1,46 @@
+{% from 'macros.html' import note_rows, experience_card, disclosure with context %}
+<div class="page-heading">
+  <div><h1>{{ data.title }}</h1><p>{{ t.home_subtitle }}</p></div>
+</div>
+{% if scenario == 'empty' %}
+  {% include 'empty.html' %}
+{% else %}
+<article class="card handoff-sheet" id="handoff">
+  <div class="card-body">
+    <div class="section-heading"><span>{{ t.last_handoff }}</span></div>
+    <h2 class="handoff-title">{{ data.handoff.objective }}</h2>
+    <div class="row g-4 mt-1">
+      <div class="col-md-7 handoff-state">
+        <h3>{{ t.recorded_state }}</h3>
+        <ul class="state-list">
+          {% for statement in data.handoff.state %}<li><span aria-hidden="true">—</span>{{ statement }}</li>{% endfor %}
+        </ul>
+      </div>
+      <div class="col-md-5 next-action">
+        <h3>{{ t.next_action }} <span aria-hidden="true">→</span></h3><p>{{ data.handoff.next_action }}</p>
+      </div>
+    </div>
+    <p class="history-note">{{ t.history_notice }}</p>
+    {% call disclosure('handoff-boundary', t.handoff_omissions) %}<p>{{ data.handoff.omissions }}</p>{% endcall %}
+  </div>
+</article>
+<div class="row g-5 home-columns">
+  <section class="col-lg-6" id="notes">
+    <div class="section-heading"><h2>{{ t.remember_heading }}</h2></div>
+    {{ note_rows(data.notes) }}
+  </section>
+  <section class="col-lg-6" id="methods">
+    <div class="section-heading"><h2>{{ t.methods_heading }}</h2></div>
+    {{ experience_card() }}
+    <div class="card mt-2">
+      {% call disclosure('skill-preview', data.skill.name) %}
+      <p class="text-secondary">{{ t.skill }} · {{ data.skill.description }}</p>
+      <p class="source-text">{{ data.skill.instructions }}</p>
+      <h3>{{ t.validation }}</h3><ul>{% for check in data.skill.validation %}<li>{{ check }}</li>{% endfor %}</ul>
+      <p class="small text-secondary">{{ t.skill_notice }}</p>
+      {% endcall %}
+    </div>
+  </section>
+</div>
+{% include 'compact_usage.html' %}
+{% endif %}

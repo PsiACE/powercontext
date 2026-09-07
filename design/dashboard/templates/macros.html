@@ -1,0 +1,65 @@
+{% macro icon(name) %}
+<span class="nav-symbol" aria-hidden="true">
+  <img src="/static/vendor/icons/{{ {'home':'home','handoff':'arrows-exchange','notes':'notes','methods':'book','usage':'chart-bar'}[name] }}.svg" alt="">
+</span>
+{% endmacro %}
+
+{% macro evidence_link(index=0, label='') %}
+{% if ablation != 'evidence' %}
+<a class="evidence-link" href="{{ link('evidence/' ~ data.sources[index].source_id) }}"
+   hx-get="{{ link('evidence/' ~ data.sources[index].source_id) }}" hx-target="#evidence-content"
+   hx-select="unset" hx-swap="innerHTML" hx-push-url="false" data-evidence>
+  {{ label or t.evidence_open }} <span aria-hidden="true">↗</span>
+</a>
+{% endif %}
+{% endmacro %}
+
+{% macro note_rows(items) %}
+<div class="list-group list-group-flush note-list">
+  {% for item in items %}
+  <div class="list-group-item">
+    <p><strong>{{ item.text.partition(t.clause_separator)[0] }}</strong>{{ item.text.partition(t.clause_separator)[2] }}</p>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% macro experience_card() %}
+<article class="card experience-card">
+  <div class="card-body">
+    <div class="method-type">{{ t.experience }}</div>
+    <h3><a href="{{ link('experience') }}">{{ data.experience.lesson }}</a></h3>
+    <p>{{ data.experience.situation }}</p>
+    <div class="source-trail">{{ data.sources|length }} {{ t.source_count }} <span>→</span> {{ t.experience }}</div>
+    <a href="{{ link('experience') }}">{{ t.read_experience }} →</a>
+  </div>
+</article>
+{% endmacro %}
+
+{% macro comparison_chart(compact=false) %}
+{% if ablation != 'chart' %}
+<div class="chart {{ 'chart-sm' if compact else 'chart-lg' }}" data-comparison-chart
+     data-compact="{{ 'true' if compact else 'false' }}"
+     data-labels='{{ [t.baseline, t.recalled]|tojson }}'
+     data-days='{{ stats.daily|tojson }}'
+     role="img" aria-label="{{ t.daily_title }}; {{ t.baseline }} {{ stats.baseline_tokens }}; {{ t.recalled }} {{ stats.recalled_tokens }}"></div>
+{% endif %}
+{% endmacro %}
+
+{% macro disclosure(identifier, title) %}
+<div class="accordion accordion-flush" id="{{ identifier }}">
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+              data-bs-target="#{{ identifier }}-body" aria-expanded="false" aria-controls="{{ identifier }}-body">{{ title }}
+        <span class="accordion-button-toggle" aria-hidden="true"><img class="icon" src="/static/vendor/icons/chevron-down.svg" alt=""></span>
+      </button>
+    </h2>
+    <div class="accordion-collapse collapse" id="{{ identifier }}-body">
+      <div class="accordion-body">{{ caller() }}</div>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro number(value) %}{{ t.unknown_value if value is none else '{:,}'.format(value) }}{% endmacro %}

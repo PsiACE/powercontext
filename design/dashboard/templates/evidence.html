@@ -1,0 +1,23 @@
+{% if not source %}
+  <h3>{{ t.source_not_found }}</h3>
+{% elif scenario == 'missing' %}
+  <h3>{{ t.source_unavailable }}</h3><p>{{ t.source_unavailable_body }}</p>
+  <code>{{ source.source_id }}</code>
+  <p class="mt-4">
+    <a href="{{ link('evidence/' ~ source.source_id) }}" hx-get="{{ link('evidence/' ~ source.source_id) }}" hx-select="unset" hx-target="#evidence-content" hx-swap="innerHTML" hx-push-url="false">{{ t.source_retry }} →</a>
+  </p>
+{% else %}
+  <nav class="nav nav-tabs mb-4" aria-label="{{ t.source_label }}">
+    {% for item in data.sources %}
+    <a href="{{ link('evidence/' ~ item.source_id) }}" class="nav-link {% if item.source_id == source.source_id %}active{% endif %}"
+       {% if item.source_id == source.source_id %}aria-current="page"{% endif %}
+       hx-get="{{ link('evidence/' ~ item.source_id) }}" hx-target="#evidence-content" hx-select="unset" hx-swap="innerHTML" hx-push-url="false">
+      {{ t.no_title }} {{ loop.index }}
+    </a>
+    {% endfor %}
+  </nav>
+  <h3>{{ t.source_original }}</h3><code class="source-identity">{{ source.source_id }}</code>
+  <div class="original-content">{{ source.content }}</div>
+  <p class="text-secondary">{{ t.source_note }}</p>
+  <a class="btn mt-3" href="{{ link('evidence/' ~ source.source_id) }}" target="_blank" rel="noopener" hx-boost="false">{{ t.open_full }} ↗</a>
+{% endif %}

@@ -1,0 +1,22 @@
+{% from 'macros.html' import comparison_chart with context %}
+<section class="card compact-usage">
+  {% if scenario == 'unavailable' %}
+  <div class="card-body"><p>{{ t.usage_unavailable }}</p><a href="{{ link('usage') }}">{{ t.view_usage }} →</a></div>
+  {% else %}
+  <div class="card-body">
+    <div class="compact-summary">
+      <h3>{{ t[period] }}</h3>
+      <p>{% if stats.percent is not none %}{{ t.compact_comparison }}{{ t.increased if stats.token_reduction < 0 else t.reduced }} <strong>{{ stats.percent }}%</strong>{% else %}{{ t.no_comparison }}{% endif %}</p>
+      <a href="{{ link('usage') }}">{{ stats.comparable_preparations }} / {{ stats.preparations }} {{ t.comparable_suffix }}</a>
+      <small>{{ t.compact_estimate_notice }}</small>
+    </div>
+    <div class="compact-chart">
+      <div class="section-heading">
+        <div class="compact-legend"><i class="baseline-key"></i>{{ t.baseline }} <i class="recalled-key ms-3"></i>{{ t.recalled }}</div>
+        <a href="{{ link('usage') }}">{{ t.view_usage }} →</a>
+      </div>
+      {{ comparison_chart(compact=true) }}
+    </div>
+  </div>
+  {% endif %}
+</section>

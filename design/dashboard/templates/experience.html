@@ -1,0 +1,32 @@
+{% from 'macros.html' import disclosure with context %}
+{% if scenario == 'empty' %}
+  {% include 'empty.html' %}
+{% else %}
+<a class="back-link" href="{{ link('home', fragment='methods') }}">← {{ t.back_methods }}</a>
+<article class="reading-sheet">
+  <div class="reading-heading">
+    <span class="method-type">{{ t.experience }} · {{ data.title }}</span>
+    <h1>{{ data.experience.lesson.partition(t.clause_separator)[0] }}{% if t.clause_separator in data.experience.lesson %}{{ t.clause_separator }}<br>{{ data.experience.lesson.partition(t.clause_separator)[2] }}{% endif %}</h1>
+    <p>{{ t.experience_intro }}</p>
+  </div>
+  <div class="reading-layout">
+    <div class="reading-body">
+      {% for field in ['situation', 'action', 'outcome'] %}
+      <section><h2>{{ t[field] }}</h2><p>{{ data.experience[field] }}</p></section>
+      {% endfor %}
+      {% call disclosure('record-identity', t.technical) %}
+      <code>experience/{{ data.experience.artifact_id }}@{{ data.experience.revision }}</code>
+      {% endcall %}
+    </div>
+    {% if ablation != 'evidence' %}
+    <aside class="reading-margin">
+      <h2>{{ t.source_label }}</h2><p>{{ t.whole_evidence }}</p>
+      {% for source in data.sources %}
+      <div class="source-index">{{ evidence_link(loop.index0, t.read_material ~ ' ' ~ loop.index) }}</div>
+      {% endfor %}
+      <small>{{ t.no_sentence_evidence }}</small>
+    </aside>
+    {% endif %}
+  </div>
+</article>
+{% endif %}
