@@ -4,6 +4,7 @@
     1440,
     1000
   ],
+  "capture": "viewport",
   "screenshots": [
     {
       "file": "home-populated-en-light.jpeg",
