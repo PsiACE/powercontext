@@ -90,6 +90,7 @@ cli = [
 
 [project.scripts]
 powercontext = "powercontext.cli.app:main"
+powercontext-hook = "powercontext.client.integration.bridge:main"
 
 [project.entry-points."powercontext.cli"]
 config = "powercontext.cli.config:app"
