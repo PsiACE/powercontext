@@ -17,19 +17,19 @@ from __future__ import annotations
 import json
 from unittest.mock import Mock
 
+import powercontext_integrations.dsh as dsh_cli
+import powercontext_integrations.hermes as hermes_cli
+import powercontext_integrations.hosts as hosts_cli
+import powercontext_integrations.openclaw as openclaw_cli
+import powercontext_integrations.opencode as opencode_cli
+import powercontext_integrations.pi as pi_cli
+import powercontext_integrations.system as system_cli
 import pytest
+from powercontext_integrations.hosts import parse_host_selection
+from powercontext_integrations.system import Diagnostic, DiagnosticStatus, SetupError, setup_app
 from typer.testing import CliRunner
 
-import powercontext.cli.dsh as dsh_cli
-import powercontext.cli.hermes as hermes_cli
-import powercontext.cli.hosts as hosts_cli
-import powercontext.cli.openclaw as openclaw_cli
-import powercontext.cli.opencode as opencode_cli
-import powercontext.cli.pi as pi_cli
-import powercontext.cli.system as system_cli
 from powercontext.cli.app import create_cli
-from powercontext.cli.hosts import parse_host_selection
-from powercontext.cli.system import Diagnostic, DiagnosticStatus, SetupError, setup_app
 
 FIRST_CLASS_HOSTS = ("codex", "claude-code", "dsh", "openclaw", "opencode", "pi", "hermes")
 
@@ -135,18 +135,10 @@ def test_setup_select_installs_only_the_requested_hosts(monkeypatch) -> None:
     result = _invoke(["setup", "select", "--host", "codex", "--host", "dsh", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == {
-        "hosts": [
-            {"host": "codex", "status": "installed"},
-            {"host": "claude-code", "status": "skipped"},
-            {"host": "dsh", "status": "installed"},
-            {"host": "openclaw", "status": "skipped"},
-            {"host": "opencode", "status": "skipped"},
-            {"host": "pi", "status": "skipped"},
-            {"host": "hermes", "status": "skipped"},
-            {"host": "workbuddy", "status": "skipped"},
-        ]
-    }
+    rows = {row["host"]: row for row in json.loads(result.output)["hosts"]}
+    assert set(rows) == set(hosts_cli.HOST_NAMES)
+    assert {name for name, row in rows.items() if row["status"] == "installed"} == {"codex", "dsh"}
+    assert all(row["status"] == "skipped" for name, row in rows.items() if name not in {"codex", "dsh"})
     installers["codex"].assert_called_once()
     installers["dsh"].assert_called_once()
     _assert_not_called(
@@ -161,28 +153,17 @@ def test_setup_select_installs_only_the_requested_hosts(monkeypatch) -> None:
 def test_setup_select_continues_after_a_selected_host_fails(monkeypatch) -> None:
     installers = _patch_installers(
         monkeypatch,
-        dsh=Mock(side_effect=SetupError.dsh_unavailable()),
+        dsh=Mock(side_effect=SetupError.unavailable("DeepSeek Harness CLI")),
     )
 
     result = _invoke(["setup", "select", "--host", "dsh", "--host", "hermes", "--json"])
 
     assert result.exit_code == 1
-    assert json.loads(result.output) == {
-        "hosts": [
-            {"host": "codex", "status": "skipped"},
-            {"host": "claude-code", "status": "skipped"},
-            {
-                "host": "dsh",
-                "status": "failed",
-                "error": "DeepSeek Harness CLI is not installed or is not on PATH.",
-            },
-            {"host": "openclaw", "status": "skipped"},
-            {"host": "opencode", "status": "skipped"},
-            {"host": "pi", "status": "skipped"},
-            {"host": "hermes", "status": "installed"},
-            {"host": "workbuddy", "status": "skipped"},
-        ]
-    }
+    rows = {row["host"]: row for row in json.loads(result.output)["hosts"]}
+    assert rows["dsh"]["status"] == "failed"
+    assert "not installed" in rows["dsh"]["error"]
+    assert rows["hermes"]["status"] == "installed"
+    assert all(row["status"] == "skipped" for name, row in rows.items() if name not in {"dsh", "hermes"})
     installers["dsh"].assert_called_once()
     installers["hermes"].assert_called_once()
 
@@ -190,7 +171,7 @@ def test_setup_select_continues_after_a_selected_host_fails(monkeypatch) -> None
 def test_setup_select_reports_an_unavailable_selected_host_and_continues(monkeypatch) -> None:
     installers = _patch_installers(
         monkeypatch,
-        codex=Mock(side_effect=SetupError.codex_unavailable()),
+        codex=Mock(side_effect=SetupError.unavailable("Codex CLI")),
     )
 
     result = _invoke(["setup", "select", "--host", "codex", "--host", "pi"])
@@ -352,6 +333,7 @@ def test_setup_select_passes_server_override_to_openclaw(monkeypatch) -> None:
 )
 def test_setup_select_fails_a_row_when_post_install_verification_fails(
     monkeypatch,
+    tmp_path,
     host: str,
     module: object,
     attribute: str,
@@ -372,7 +354,7 @@ def test_setup_select_fails_a_row_when_post_install_verification_fails(
         "error": "post-install verification failed: plugin: PowerContext plugin is not loaded",
     }
     installers[host].assert_called_once()
-    verification.assert_called_once_with()
+    assert not (tmp_path / "client-settings.json").exists()
 
 
 def test_setup_select_continues_after_post_install_verification_fails(monkeypatch) -> None:

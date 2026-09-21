@@ -17,6 +17,8 @@
 import { createHash } from 'node:crypto'
 import type { PowerContextClient } from './client.ts'
 import type { ResolvedConfig } from './config.ts'
+import { flushThrough as flushCheckpoint } from './checkpoints.ts'
+import { writeFailureConfirmation } from './errors.ts'
 import { containsSecret } from './secrets.ts'
 
 export { containsSecret }
@@ -48,24 +50,14 @@ function sourcePosition(value: unknown): number | undefined {
   return position
 }
 
-async function flushThrough(input: CaptureInput, position: number): Promise<boolean> {
-  for (let index = 0; index < input.config.flushMaxCalls; index += 1) {
-    try {
-      const result = await input.client.request('flush_memory', { scope_id: input.scopeId }, input.signal)
-      const cursor = result.kind === 'json' && result.value && typeof result.value === 'object'
-        ? (result.value as { current_cursor?: unknown }).current_cursor
-        : undefined
-      if (typeof cursor === 'number' && cursor >= position) return true
-    } catch (error) {
-      // A transient flush failure should not discard the captured position.
-      try {
-        input.onFailure?.('flush_memory', error)
-      } catch {
-        // Diagnostics are best effort and must not affect the turn.
-      }
-    }
+async function flushThrough(input: CaptureInput, position: number): Promise<'complete' | 'pending' | 'unknown'> {
+  try {
+    return await flushCheckpoint(input.client, input.scopeId, position, input.config.flushMaxCalls, input.signal)
+      ? 'complete' : 'pending'
+  } catch (error) {
+    try { input.onFailure?.('flush_memory', error) } catch { /* Diagnostics cannot affect the turn. */ }
+    return writeFailureConfirmation(error) === 'unconfirmed' ? 'unknown' : 'pending'
   }
-  return false
 }
 
 export async function captureUserPrompt(input: CaptureInput): Promise<number | undefined> {
@@ -90,7 +82,7 @@ export async function captureUserPrompt(input: CaptureInput): Promise<number | u
       },
     }, input.signal)
     const position = result.kind === 'json' ? sourcePosition(result.value) : undefined
-    if (input.config.flushOnCapture && position !== undefined && !(await flushThrough(input, position))) {
+    if (input.config.flushOnCapture && position !== undefined && await flushThrough(input, position) === 'pending') {
       try {
         input.onFlushFailure?.(position)
       } catch {

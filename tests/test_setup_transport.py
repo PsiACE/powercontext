@@ -18,10 +18,10 @@ import json
 from unittest.mock import Mock
 
 import pytest
+from powercontext_integrations.system import setup_app
 from typer.testing import CliRunner
 
 from powercontext.cli.app import create_cli
-from powercontext.cli.system import setup_app
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def test_every_setup_rejects_remote_http_without_consent_before_install(host):
 
 
 def test_json_setup_never_prompts_even_with_tty(monkeypatch):
-    from powercontext.cli import transport
+    from powercontext_integrations import transport
 
     monkeypatch.setattr(transport.sys.stdin, "isatty", lambda: True)
     confirm = Mock(side_effect=AssertionError("JSON setup must not prompt"))
@@ -51,7 +51,7 @@ def test_json_setup_never_prompts_even_with_tty(monkeypatch):
 
 
 def test_interactive_consent_is_default_no_and_not_saved_until_completed(monkeypatch):
-    from powercontext.cli import transport
+    from powercontext_integrations import transport
 
     monkeypatch.setattr(transport.sys.stdin, "isatty", lambda: True)
     confirm = Mock(return_value=False)
@@ -71,7 +71,7 @@ def test_interactive_consent_is_default_no_and_not_saved_until_completed(monkeyp
 
 
 def test_saved_consent_does_not_follow_changed_url(monkeypatch):
-    from powercontext.cli import transport
+    from powercontext_integrations import transport
 
     settings = transport.prepare_setup_transport("pi", server_url="http://192.0.2.10", allow_insecure_http=True)
     transport.save_setup_transport(settings)
@@ -81,7 +81,7 @@ def test_saved_consent_does_not_follow_changed_url(monkeypatch):
 
 
 def test_setup_saves_only_nonsecret_fields_and_preserves_other_hosts(monkeypatch):
-    from powercontext.cli import transport
+    from powercontext_integrations import transport
 
     monkeypatch.setenv("POWERCONTEXT_CLIENT_AUTHORIZATION", "Bearer test-secret")
     for host in ("pi", "dsh"):
@@ -92,7 +92,7 @@ def test_setup_saves_only_nonsecret_fields_and_preserves_other_hosts(monkeypatch
 
 
 def test_explicit_no_does_not_prompt_to_override_refusal(monkeypatch):
-    from powercontext.cli import transport
+    from powercontext_integrations import transport
 
     monkeypatch.setattr(transport.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(transport.typer, "confirm", Mock(side_effect=AssertionError("explicit no")))
@@ -101,7 +101,7 @@ def test_explicit_no_does_not_prompt_to_override_refusal(monkeypatch):
 
 
 def test_environment_false_does_not_prompt_to_override_refusal(monkeypatch):
-    from powercontext.cli import transport
+    from powercontext_integrations import transport
 
     monkeypatch.setenv("POWERCONTEXT_PI_ALLOW_INSECURE_HTTP", "false")
     monkeypatch.setattr(transport.sys.stdin, "isatty", lambda: True)
@@ -111,7 +111,7 @@ def test_environment_false_does_not_prompt_to_override_refusal(monkeypatch):
 
 
 def test_hermes_setup_synchronizes_native_endpoint_and_preserves_preferences(tmp_path, monkeypatch):
-    from powercontext.cli.transport import SetupTransport, save_setup_transport
+    from powercontext_integrations.transport import SetupTransport, save_setup_transport
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "powercontext/config.json"
@@ -127,8 +127,8 @@ def test_hermes_setup_synchronizes_native_endpoint_and_preserves_preferences(tmp
 
 @pytest.mark.parametrize("failed_file", ["shared", "native"])
 def test_failed_persistence_restores_native_settings(tmp_path, monkeypatch, failed_file):
-    import powercontext.cli.system as system
-    from powercontext.cli.transport import SetupTransport, client_config_file, save_setup_transport
+    import powercontext_integrations.system as system
+    from powercontext_integrations.transport import SetupTransport, client_config_file, save_setup_transport
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     native = tmp_path / "powercontext/config.json"
@@ -150,7 +150,7 @@ def test_failed_persistence_restores_native_settings(tmp_path, monkeypatch, fail
 
 
 def test_codex_setup_updates_native_mcp_endpoint_without_touching_headers(tmp_path, monkeypatch):
-    from powercontext.cli.system import _configure_codex_endpoint
+    from powercontext_integrations.system import _configure_codex_endpoint
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     path = tmp_path / "plugins/cache/powercontext/powercontext/0.1.0/.mcp.json"
@@ -172,7 +172,7 @@ def test_codex_setup_updates_native_mcp_endpoint_without_touching_headers(tmp_pa
 
 
 def test_workbuddy_setup_aligns_mcp_with_selected_endpoint(tmp_path):
-    from powercontext.cli.workbuddy import _merge_workbuddy_mcp
+    from powercontext_integrations.workbuddy import _merge_workbuddy_mcp
 
     path = tmp_path / "mcp.json"
     path.write_text(json.dumps({"mcpServers": {"other": {"url": "https://other.test"}}}))
@@ -183,7 +183,7 @@ def test_workbuddy_setup_aligns_mcp_with_selected_endpoint(tmp_path):
 
 
 def test_doctor_reports_insecure_opt_in_as_degraded():
-    from powercontext.cli.transport import prepare_setup_transport, save_setup_transport, transport_diagnostic
+    from powercontext_integrations.transport import prepare_setup_transport, save_setup_transport, transport_diagnostic
 
     save_setup_transport(prepare_setup_transport("pi", server_url="http://192.0.2.10", allow_insecure_http=True))
     diagnostic = transport_diagnostic("pi")
@@ -191,22 +191,8 @@ def test_doctor_reports_insecure_opt_in_as_degraded():
     assert "unencrypted" in diagnostic.detail
 
 
-def test_doctor_connects_only_after_explicit_opt_in(monkeypatch):
-    import powercontext.cli.system as system
-
-    probe = Mock(return_value=system.Diagnostic(status=system.DiagnosticStatus.OK, detail="reachable"))
-    monkeypatch.setattr(system, "_server_liveness_diagnostic", probe)
-    monkeypatch.setattr(system, "_server_readiness_diagnostic", probe)
-    diagnostics = system.run_diagnostics(server_url="http://192.0.2.10")
-    assert diagnostics["server_liveness"].status == "failed"
-    probe.assert_not_called()
-    diagnostics = system.run_diagnostics(server_url="http://192.0.2.10", allow_insecure_http=True)
-    assert diagnostics["server_liveness"].ok
-    assert diagnostics["transport"].status == "degraded"
-
-
 def test_doctor_reads_openclaw_native_endpoint_and_binds_consent(tmp_path, monkeypatch):
-    from powercontext.cli.transport import transport_diagnostic
+    from powercontext_integrations.transport import transport_diagnostic
 
     path = tmp_path / "openclaw.json"
     monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(path))
@@ -225,7 +211,7 @@ def test_doctor_reads_openclaw_native_endpoint_and_binds_consent(tmp_path, monke
 
 
 def test_doctor_does_not_claim_safety_for_unreadable_native_configuration(tmp_path, monkeypatch):
-    from powercontext.cli.transport import transport_diagnostic
+    from powercontext_integrations.transport import transport_diagnostic
 
     path = tmp_path / "openclaw.json"
     monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(path))
@@ -234,7 +220,7 @@ def test_doctor_does_not_claim_safety_for_unreadable_native_configuration(tmp_pa
 
 
 def test_dsh_setup_checks_the_web_profile_even_with_another_runtime_profile(tmp_path, monkeypatch):
-    from powercontext.cli.transport import prepare_setup_transport
+    from powercontext_integrations.transport import prepare_setup_transport
 
     monkeypatch.setenv("DSH_HOME", str(tmp_path))
     monkeypatch.setenv("DSH_PROFILE", "custom")

@@ -19,8 +19,7 @@ from __future__ import annotations
 import sys
 
 import pytest
-
-from powercontext.cli.system import DiagnosticStatus, run_codex_diagnostics
+from powercontext_integrations.system import DiagnosticStatus, run_codex_diagnostics
 
 pytestmark = [pytest.mark.real_e2e, pytest.mark.skipif(sys.platform != "win32", reason="Windows Codex Desktop only")]
 

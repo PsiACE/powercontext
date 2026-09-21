@@ -39,6 +39,7 @@ from typing_extensions import override
 
 from powercontext.client import ClientError
 from powercontext.client.capture import render_capture_event
+from powercontext.client.checkpoints import Checkpoints
 from powercontext.http import CaptureContentSourceRequest, FlushMemoryRequest, PrepareContextRequest
 from powercontext_pydantic_ai.scope import ScopeId
 from powercontext_pydantic_ai.settings import PowerContextSettings
@@ -87,6 +88,7 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
             _auth_reporter=self._auth_reporter,
         )
         self._state = _state
+        self._checkpoints = Checkpoints()
 
     @classmethod
     @override
@@ -119,12 +121,6 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
     ) -> ModelRequestContext:
         state = self._require_state()
         query = _latest_user_text(request_context.messages)
-        if self.settings.capture_events and not state.prompt_captured:
-            prompt_text = _content_text(ctx.prompt) or query
-            if prompt_text:
-                state.prompt_captured = True
-                await self._capture_event(ctx, "user_prompt", {"text": prompt_text})
-
         if state.context_injected or _has_current_run_context(request_context.messages, ctx.run_id):
             state.context_injected = True
             return request_context
@@ -137,6 +133,12 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
             return request_context
 
         prepared_content = await self._prepare_context(query)
+        if self.settings.capture_events and not state.prompt_captured:
+            prompt_text = _content_text(ctx.prompt) or query
+            if prompt_text:
+                state.prompt_captured = True
+                await self._capture_event(ctx, "user_prompt", {"text": prompt_text})
+
         if not prepared_content:
             return request_context
 
@@ -295,7 +297,7 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
         state = self._require_state()
         scope_id = state.require_scope_id()
         target_position = state.captured_position
-        if target_position <= state.flushed_position:
+        if target_position <= state.flushed_position or not self._checkpoints.allows(scope_id, target_position):
             return
         try:
             async with asyncio.timeout(self.settings.timeout):
@@ -312,7 +314,11 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
                             target_position,
                         )
                         return
+        except asyncio.CancelledError as exc:
+            self._checkpoints.failed(scope_id, target_position, exc)
+            raise
         except ClientError as exc:
+            self._checkpoints.failed(scope_id, target_position, exc)
             self._auth_reporter.report(exc, "capture flush")
             logger.debug(
                 "PowerContext %s capture flush failed open: %s",
@@ -322,6 +328,7 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
             )
             return
         except TimeoutError as exc:
+            self._checkpoints.failed(scope_id, target_position, exc)
             logger.debug(
                 "PowerContext %s capture flush failed open: %s",
                 "final" if final else "checkpoint",

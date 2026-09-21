@@ -19,10 +19,10 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
+from powercontext_integrations.system import SetupError, doctor_app, setup_app
 from typer.testing import CliRunner
 
 from powercontext.cli.app import create_cli
-from powercontext.cli.system import SetupError, doctor_app, setup_app
 
 
 def _write_pi_package(root: Path) -> Path:
@@ -41,7 +41,7 @@ def _write_pi_package(root: Path) -> Path:
 
 
 def test_setup_pi_installs_the_native_package_and_reports_configuration(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     checkout = tmp_path / "powercontext"
     package = _write_pi_package(checkout)
@@ -58,7 +58,7 @@ def test_setup_pi_installs_the_native_package_and_reports_configuration(tmp_path
 
 
 def test_setup_pi_refreshes_remote_source_and_replaces_previous_package(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     data_dir = tmp_path / "data"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(data_dir))
@@ -104,7 +104,7 @@ def test_setup_pi_refreshes_remote_source_and_replaces_previous_package(tmp_path
 
 
 def test_setup_pi_keeps_the_existing_package_when_refresh_installation_fails(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     data_dir = tmp_path / "data"
     checkout = tmp_path / "replacement"
@@ -136,7 +136,7 @@ def test_setup_pi_keeps_the_existing_package_when_refresh_installation_fails(tmp
 
 
 def test_setup_pi_does_not_echo_source_credentials(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     marker = "redacted-value"
     source = f"https://{marker}@github.com/oceanbase/powercontext"
@@ -149,7 +149,7 @@ def test_setup_pi_does_not_echo_source_credentials(tmp_path: Path, monkeypatch) 
 
 
 def test_setup_pi_does_not_echo_git_clone_output(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     marker = "redacted-value"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
@@ -165,7 +165,7 @@ def test_setup_pi_does_not_echo_git_clone_output(tmp_path: Path, monkeypatch) ->
 
 
 def test_doctor_pi_reports_a_missing_cli(monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     monkeypatch.setattr(pi_cli, "which", lambda _name: None)
 
@@ -177,7 +177,7 @@ def test_doctor_pi_reports_a_missing_cli(monkeypatch) -> None:
 
 
 def test_doctor_pi_reports_an_installed_package_as_json(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.pi as pi_cli
+    import powercontext_integrations.pi as pi_cli
 
     package = _write_pi_package(tmp_path / "powercontext")
     monkeypatch.setattr(pi_cli, "which", lambda _name: "/usr/bin/pi")

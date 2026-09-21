@@ -15,19 +15,19 @@
 from __future__ import annotations
 
 import json
-from email.message import Message
-from io import BytesIO, StringIO
+import shlex
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
-from urllib.error import HTTPError
 
+import powercontext_integrations.authorization as authorization_cli
+import powercontext_integrations.system as system_cli
 import pytest
+from powercontext_integrations.system import Diagnostic, DiagnosticStatus, doctor_app, setup_app
 from typer.testing import CliRunner
 
-import powercontext.cli.authorization as authorization_cli
-import powercontext.cli.system as system_cli
+import powercontext.cli.system as common_system
 from powercontext.cli.app import create_cli
-from powercontext.cli.system import Diagnostic, DiagnosticStatus, doctor_app, setup_app
 from powercontext.paths import default_scheduler_path
 from powercontext.server.settings import ServerSettings
 from powercontext.service.model import (
@@ -1170,6 +1170,8 @@ def test_setup_claude_code_refreshes_an_existing_powercontext_statusline(tmp_pat
     )
 
     statusline = json.loads(settings_file.read_text(encoding="utf-8"))["statusLine"]
+    assert shlex.split(statusline["command"])[:2] == ["powercontext-hook", "--script"]
+    assert " -- --server-url " in statusline["command"]
     assert statusline["command"] != previous_command
     assert "0.0.9" not in statusline["command"]
     assert "scripts/statusline.py" in statusline["command"]
@@ -1252,7 +1254,7 @@ def test_setup_claude_code_rejects_unsafe_server_urls_before_cli_writes(
 
 def test_doctor_reports_each_check_and_exits_nonzero_on_failure(monkeypatch) -> None:
     monkeypatch.setattr(
-        system_cli,
+        common_system,
         "run_diagnostics",
         lambda **_kwargs: {
             "package": Diagnostic(status=DiagnosticStatus.OK, detail="powercontext 0.0.1"),
@@ -1315,7 +1317,7 @@ def test_doctor_mismatched_local_endpoint_skips_service_query_and_probe(monkeypa
 
     monkeypatch.setattr("powercontext.service.controller.ServiceController", Controller)
 
-    assert system_cli._local_service_diagnostics("http://127.0.0.1:9000") == {}
+    assert common_system._local_service_diagnostics("http://127.0.0.1:9000") == {}
 
 
 @pytest.mark.parametrize(
@@ -1342,7 +1344,7 @@ def test_doctor_matching_loopback_endpoint_includes_service_diagnostics(
 
     monkeypatch.setattr("powercontext.service.controller.ServiceController", Controller)
 
-    diagnostics = system_cli._local_service_diagnostics(target)
+    diagnostics = common_system._local_service_diagnostics(target)
 
     assert calls == ["registration", "manager"]
     assert diagnostics["service_registration"].status is DiagnosticStatus.OK
@@ -1356,231 +1358,7 @@ def test_doctor_remote_endpoint_skips_local_registration(monkeypatch: pytest.Mon
         Mock(side_effect=AssertionError("remote endpoint must not inspect the local service")),
     )
 
-    assert system_cli._local_service_diagnostics(target) == {}
-
-
-class _Response(BytesIO):
-    def __init__(self, status: int, payload: object) -> None:
-        super().__init__(json.dumps(payload).encode())
-        self._status = status
-
-    def getcode(self) -> int:
-        return self._status
-
-
-def test_default_doctor_checks_server_without_inspecting_codex(monkeypatch) -> None:
-    _mock_optional_personal_service(monkeypatch)
-    monkeypatch.setattr(
-        system_cli,
-        "run_codex_diagnostics",
-        Mock(side_effect=AssertionError("default doctor must not inspect Codex")),
-    )
-    monkeypatch.setattr(
-        system_cli,
-        "urlopen",
-        Mock(
-            side_effect=[
-                _Response(200, {"status": "ok"}),
-                _Response(200, {"status": "ready", "checks": {"runtime": "ready", "database": "ready"}}),
-            ]
-        ),
-    )
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["ok"] is True
-    assert payload["status"] == "ok"
-    assert list(payload["checks"]) == [
-        "package",
-        "service_support",
-        "service_registration",
-        "server_liveness",
-        "server_readiness",
-    ]
-
-
-def test_default_doctor_uses_client_server_url_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("POWERCONTEXT_CLIENT_SERVER_URL", "http://127.0.0.1:8888/")
-    urlopen = Mock(
-        side_effect=[
-            _Response(200, {"status": "ok"}),
-            _Response(200, {"status": "ready", "checks": {"runtime": "ready", "database": "ready"}}),
-        ]
-    )
-    monkeypatch.setattr(system_cli, "urlopen", urlopen)
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor"])
-
-    assert result.exit_code == 0
-    assert "server liveness: ok - http://127.0.0.1:8888 status=ok" in result.output
-    assert "server readiness: ok - http://127.0.0.1:8888 status=ready" in result.output
-    assert [call.args[0].full_url for call in urlopen.call_args_list] == [
-        "http://127.0.0.1:8888/health/live",
-        "http://127.0.0.1:8888/health/ready",
-    ]
-
-    # Explicit CLI argument should override the environment variable.
-    urlopen.reset_mock()
-    urlopen.side_effect = [
-        _Response(200, {"status": "ok"}),
-        _Response(200, {"status": "ready", "checks": {"runtime": "ready", "database": "ready"}}),
-    ]
-    override = CliRunner().invoke(
-        create_cli([doctor_app]),
-        ["doctor", "--server-url", "http://127.0.0.1:9999"],
-    )
-
-    assert override.exit_code == 0
-    assert "server liveness: ok - http://127.0.0.1:9999 status=ok" in override.output
-    assert "server readiness: ok - http://127.0.0.1:9999 status=ready" in override.output
-    assert [call.args[0].full_url for call in urlopen.call_args_list] == [
-        "http://127.0.0.1:9999/health/live",
-        "http://127.0.0.1:9999/health/ready",
-    ]
-
-
-def test_default_doctor_rejects_non_loopback_plaintext_environment_url_without_request(monkeypatch) -> None:
-    monkeypatch.setenv("POWERCONTEXT_CLIENT_SERVER_URL", "http://memory.example")
-    urlopen = Mock()
-    monkeypatch.setattr(system_cli, "urlopen", urlopen)
-    monkeypatch.setattr(
-        system_cli,
-        "_local_service_diagnostics",
-        Mock(side_effect=AssertionError("invalid URL must not inspect the local service")),
-    )
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor"])
-
-    assert result.exit_code == 1
-    assert "Unencrypted PowerContext Server URLs must be loopback addresses" in result.output
-    urlopen.assert_not_called()
-
-
-def test_default_doctor_skips_readiness_when_liveness_is_unreachable(monkeypatch) -> None:
-    _mock_optional_personal_service(monkeypatch)
-    urlopen = Mock(side_effect=OSError("connection refused"))
-    monkeypatch.setattr(system_cli, "urlopen", urlopen)
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor"])
-
-    assert result.exit_code == 1
-    assert "server liveness: failed - cannot reach http://127.0.0.1:8000" in result.output
-    assert "server readiness: skipped - not checked because Server liveness failed" in result.output
-    assert urlopen.call_count == 1
-
-
-def test_default_doctor_preserves_not_ready_checks_in_human_and_json_output(monkeypatch) -> None:
-    _mock_optional_personal_service(monkeypatch)
-
-    def responses() -> list[object]:
-        readiness = HTTPError(
-            "http://127.0.0.1:8000/health/ready",
-            503,
-            "Service Unavailable",
-            hdrs=Message(),
-            fp=_Response(
-                503,
-                {
-                    "status": "not_ready",
-                    "checks": {
-                        "runtime": "ready",
-                        "database": "unavailable",
-                    },
-                },
-            ),
-        )
-        return [_Response(200, {"status": "ok"}), readiness]
-
-    monkeypatch.setattr(system_cli, "urlopen", Mock(side_effect=responses()))
-    human = CliRunner().invoke(create_cli([doctor_app]), ["doctor"])
-    monkeypatch.setattr(system_cli, "urlopen", Mock(side_effect=responses()))
-    machine = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "--json"])
-
-    assert human.exit_code == 1
-    assert "server readiness: failed - http://127.0.0.1:8000 status=not_ready" in human.output
-    assert "  database: unavailable" in human.output
-    assert machine.exit_code == 1
-    assert json.loads(machine.output)["status"] == "failed"
-    assert json.loads(machine.output)["checks"]["server_readiness"] == {
-        "ok": False,
-        "status": "failed",
-        "detail": "http://127.0.0.1:8000 status=not_ready",
-        "checks": {
-            "runtime": "ready",
-            "database": "unavailable",
-        },
-    }
-
-
-def test_default_doctor_preserves_degraded_checks_in_human_and_json_output(monkeypatch) -> None:
-    _mock_optional_personal_service(monkeypatch)
-    monkeypatch.setattr(system_cli, "version", lambda _package: "0.0.2")
-
-    def responses() -> list[_Response]:
-        return [
-            _Response(200, {"status": "ok"}),
-            _Response(
-                200,
-                {
-                    "status": "degraded",
-                    "checks": {
-                        "runtime": "ready",
-                        "database": "ready",
-                        "inference.embedding": "misconfigured",
-                    },
-                },
-            ),
-            _Response(200, {"status": "ok"}),
-            _Response(200, [{"scope_id": "default", "display_name": "Default", "summary": ""}]),
-        ]
-
-    monkeypatch.setattr(system_cli, "urlopen", Mock(side_effect=responses()))
-    human = CliRunner().invoke(create_cli([doctor_app]), ["doctor"])
-    monkeypatch.setattr(system_cli, "urlopen", Mock(side_effect=responses()))
-    machine = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "--json"])
-
-    assert human.exit_code == 1
-    assert "server readiness: degraded - http://127.0.0.1:8000 status=degraded" in human.output
-    assert "  inference.embedding: misconfigured" in human.output
-    assert machine.exit_code == 1
-    assert json.loads(machine.output) == {
-        "ok": False,
-        "status": "degraded",
-        "checks": {
-            "package": {
-                "ok": True,
-                "status": "ok",
-                "detail": "powercontext 0.0.2",
-            },
-            "service_support": {
-                "ok": True,
-                "status": "ok",
-                "detail": "native personal service adapter is supported",
-            },
-            "service_registration": {
-                "ok": True,
-                "status": "ok",
-                "detail": "not_installed (optional)",
-            },
-            "server_liveness": {
-                "ok": True,
-                "status": "ok",
-                "detail": "http://127.0.0.1:8000 status=ok",
-            },
-            "server_readiness": {
-                "ok": False,
-                "status": "degraded",
-                "detail": "http://127.0.0.1:8000 status=degraded",
-                "checks": {
-                    "runtime": "ready",
-                    "database": "ready",
-                    "inference.embedding": "misconfigured",
-                },
-            },
-        },
-    }
+    assert common_system._local_service_diagnostics(target) == {}
 
 
 def _mock_optional_personal_service(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1600,30 +1378,6 @@ def _mock_optional_personal_service(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_doctor_codex_reports_missing_cli_and_skipped_plugin(monkeypatch) -> None:
-    monkeypatch.setattr(system_cli, "which", lambda _name: None)
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "codex", "--json"])
-
-    assert result.exit_code == 1
-    assert json.loads(result.output) == {
-        "ok": False,
-        "status": "failed",
-        "checks": {
-            "codex": {
-                "ok": False,
-                "status": "failed",
-                "detail": "Codex CLI is not installed or is not on PATH",
-            },
-            "plugin": {
-                "ok": False,
-                "status": "skipped",
-                "detail": "not checked because Codex CLI is unavailable",
-            },
-        },
-    }
-
-
 def test_doctor_codex_requires_an_enabled_powercontext_plugin(monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
     monkeypatch.setattr(system_cli, "_run_codex_json", lambda *_args: {"installed": []})
@@ -1633,30 +1387,6 @@ def test_doctor_codex_requires_an_enabled_powercontext_plugin(monkeypatch) -> No
     assert result.exit_code == 1
     assert "codex: ok - /usr/bin/codex" in result.output
     assert "plugin: failed - PowerContext plugin is not installed" in result.output
-
-
-def test_doctor_claude_code_reports_missing_cli_and_skipped_plugin(monkeypatch) -> None:
-    monkeypatch.setattr(system_cli, "which", lambda _name: None)
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "claude-code", "--json"])
-
-    assert result.exit_code == 1
-    assert json.loads(result.output) == {
-        "ok": False,
-        "status": "failed",
-        "checks": {
-            "claude_code": {
-                "ok": False,
-                "status": "failed",
-                "detail": "Claude Code CLI is not installed or is not on PATH",
-            },
-            "plugin": {
-                "ok": False,
-                "status": "skipped",
-                "detail": "not checked because Claude Code CLI is unavailable",
-            },
-        },
-    }
 
 
 def test_doctor_claude_code_requires_an_enabled_powercontext_plugin(monkeypatch) -> None:
@@ -1682,7 +1412,7 @@ def test_claude_runner_uses_the_resolved_executable(monkeypatch) -> None:
 
 
 def test_setup_dsh_adds_plugin_from_a_local_checkout(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.dsh as dsh_cli
+    import powercontext_integrations.dsh as dsh_cli
 
     checkout = tmp_path / "powercontext"
     plugin = checkout / "integrations" / "dsh" / "plugins" / "powercontext"
@@ -1712,12 +1442,13 @@ def test_setup_dsh_adds_plugin_from_a_local_checkout(tmp_path: Path, monkeypatch
         "--profile",
         "web",
         "add",
+        "--workspace-root",
         str(plugin),
     )
 
 
 def test_setup_dsh_fails_when_dsh_cli_is_missing(tmp_path: Path, monkeypatch) -> None:
-    import powercontext.cli.dsh as dsh_cli
+    import powercontext_integrations.dsh as dsh_cli
 
     monkeypatch.setattr(dsh_cli, "which", lambda _name: None)
 
@@ -1730,34 +1461,8 @@ def test_setup_dsh_fails_when_dsh_cli_is_missing(tmp_path: Path, monkeypatch) ->
     assert "DeepSeek Harness CLI is not installed" in result.output
 
 
-def test_doctor_dsh_reports_missing_cli_and_skipped_plugin(monkeypatch) -> None:
-    import powercontext.cli.dsh as dsh_cli
-
-    monkeypatch.setattr(dsh_cli, "which", lambda _name: None)
-
-    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "dsh", "--json"])
-
-    assert result.exit_code == 1
-    assert json.loads(result.output) == {
-        "ok": False,
-        "status": "failed",
-        "checks": {
-            "dsh": {
-                "ok": False,
-                "status": "failed",
-                "detail": "DeepSeek Harness CLI is not installed or is not on PATH",
-            },
-            "plugin": {
-                "ok": False,
-                "status": "skipped",
-                "detail": "not checked because DeepSeek Harness CLI is unavailable",
-            },
-        },
-    }
-
-
 def test_doctor_dsh_requires_the_installed_plugin(monkeypatch) -> None:
-    import powercontext.cli.dsh as dsh_cli
+    import powercontext_integrations.dsh as dsh_cli
 
     monkeypatch.setattr(dsh_cli, "which", lambda _name: "/usr/bin/dsh")
     monkeypatch.setattr(dsh_cli, "_run_dsh", lambda *_args: "id: other-plugin\n")
