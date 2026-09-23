@@ -26,18 +26,17 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from powercontext.client import PowerContextClient
-from powercontext.client.bounded import MAX_RESPONSE_BYTES
-from powercontext.client.errors import InvalidResponseError, ServerResponseError, TransportError
+from powercontext.client.errors import InvalidResponseError, ResponseReadError, ServerResponseError, TransportError
 from powercontext.client.integration.models import HookRequest, HookResult
 from powercontext.client.operations import OPERATIONS, WRITE_OPERATIONS
 
-MAX_MESSAGE_BYTES = MAX_RESPONSE_BYTES
+MAX_MESSAGE_BYTES = 1_048_576
 
 
 async def execute(
     request: HookRequest,
     *,
-    client: PowerContextClient | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
     on_headers: Callable[[int, str | None], None] | None = None,
 ) -> HookResult:
     """Execute exactly once. Scope and capture consent belong to the adapter."""
@@ -50,16 +49,21 @@ async def execute(
     async def observe(response: httpx.Response) -> None:
         observed.update(status_code=response.status_code, request_id=response.headers.get("X-PowerContext-Request-ID"))
         notify(observed["status_code"], observed["request_id"])
+        await _read_response(response)
 
     try:
         async with asyncio.timeout(min(request.deadline - time(), request.connection.request_timeout)):
-            if client is not None:
-                return await _invoke(request, client)
             headers = {}
             if request.connection.authorization is not None:
                 headers["Authorization"] = request.connection.authorization.get_secret_value()
             async with (
-                httpx.AsyncClient(headers=headers, event_hooks={"response": [observe]}) as http,
+                httpx.AsyncClient(
+                    headers=headers,
+                    timeout=request.connection.request_timeout,
+                    follow_redirects=False,
+                    **({"transport": transport} if transport is not None else {}),
+                    event_hooks={"response": [observe]},
+                ) as http,
                 PowerContextClient(
                     request.connection.base_url,
                     http_client=http,
@@ -92,6 +96,29 @@ async def execute(
         return HookResult(id=request.id, outcome="failed", error="invalid_request")
     except ValueError:
         return HookResult(id=request.id, outcome="failed", error="configuration")
+
+
+async def _read_response(response: httpx.Response) -> None:
+    """Bound Hook responses while leaving caller-owned SDK transport policy intact."""
+    content = bytearray()
+    try:
+        async for chunk in response.aiter_bytes():
+            if len(content) + len(chunk) > MAX_MESSAGE_BYTES:
+                raise ResponseReadError(
+                    response.url.path,
+                    status_code=response.status_code,
+                    request_id=response.headers.get("X-PowerContext-Request-ID"),
+                    body_error="response_too_large",
+                )
+            content.extend(chunk)
+    except httpx.HTTPError as error:
+        raise ResponseReadError(
+            response.url.path,
+            status_code=response.status_code,
+            request_id=response.headers.get("X-PowerContext-Request-ID"),
+            body_error="request_timeout" if isinstance(error, httpx.TimeoutException) else "connection_failed",
+        ) from error
+    response._content = bytes(content)
 
 
 def _transport_failure(request: HookRequest, error: Exception, observed: dict[str, Any]) -> HookResult:

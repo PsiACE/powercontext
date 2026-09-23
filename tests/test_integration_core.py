@@ -33,6 +33,7 @@ import pytest
 from powercontext.client import PowerContextClient
 from powercontext.client.integration.core import execute
 from powercontext.client.integration.models import Connection, HookRequest
+from powercontext.http import GetHandoffReportRequest, ReportFormat
 
 
 def prepare_request(**changes) -> HookRequest:
@@ -78,11 +79,9 @@ def prepare_request(**changes) -> HookRequest:
 )
 def test_context_is_bounded_and_empty_is_not_a_failure(body, expected) -> None:
     async def scenario():
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))) as http,
-            PowerContextClient("http://127.0.0.1:8000", http_client=http) as client,
-        ):
-            result = await execute(prepare_request(), client=client)
+        result = await execute(
+            prepare_request(), transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))
+        )
         assert result.outcome == expected
         if expected == "failed":
             assert result.error == "invalid_response"
@@ -107,18 +106,73 @@ def test_deadline_cancels_read_and_does_not_claim_a_write_failed(operation, argu
             await asyncio.sleep(1)
             return httpx.Response(200, json={})
 
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(slow)) as http,
-            PowerContextClient("http://127.0.0.1:8000", http_client=http) as client,
-        ):
-            result = await execute(
-                prepare_request(operation=operation, arguments=arguments, deadline=time() + 0.03), client=client
-            )
+        result = await execute(
+            prepare_request(operation=operation, arguments=arguments, deadline=time() + 0.03),
+            transport=httpx.MockTransport(slow),
+        )
         assert result.outcome == expected
         assert result.error == "deadline"
         assert len(accepted) == 1
 
     asyncio.run(scenario())
+
+
+def test_sdk_downloads_large_reports_and_honors_redirects_while_hooks_remain_bounded() -> None:
+    content = b"# Handoff\n" + b"evidence\n" * 150_000
+
+    def respond(request):
+        if request.url.path != "/report":
+            return httpx.Response(307, headers={"Location": "/report"})
+        return httpx.Response(200, content=content, headers={"Content-Type": "text/markdown"})
+
+    async def scenario():
+        async with (
+            httpx.AsyncClient(transport=httpx.MockTransport(respond), follow_redirects=True) as http,
+            PowerContextClient("http://127.0.0.1:8000", http_client=http) as client,
+        ):
+            request = GetHandoffReportRequest.model_validate({
+                "selection": {"mode": "exact", "scope_ids": ["scope:one"]},
+                "format": ReportFormat.MARKDOWN,
+            })
+            assert await client.download_handoff_report(request) == content
+        hook_request = prepare_request(
+            operation="get_handoff_report",
+            arguments=request.model_dump(mode="json") | {"download": True},
+        )
+        redirected = await execute(hook_request, transport=httpx.MockTransport(respond))
+        assert redirected.outcome == "failed"
+        assert redirected.status_code == 307
+        oversized = await execute(
+            hook_request,
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, content=content)),
+        )
+        assert oversized.outcome == "failed"
+        assert oversized.body_error == "response_too_large"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status,expected", [(202, "unknown"), (401, "failed"), (403, "failed")])
+def test_hook_body_limit_preserves_write_outcomes_and_stops_reading(status, expected) -> None:
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(20):
+                yield b"x" * 100_000
+            pytest.fail("Hook read an unbounded response")
+
+    request = prepare_request(
+        operation="capture_content_source",
+        arguments={"scope_id": "scope:one", "source_id": "source:one", "content": "hello"},
+    )
+    result = asyncio.run(
+        execute(
+            request,
+            transport=httpx.MockTransport(lambda _: httpx.Response(status, stream=Body())),
+        )
+    )
+    assert result.outcome == expected
+    assert result.status_code == status
+    assert result.body_error == "response_too_large"
 
 
 def test_expired_write_never_reaches_the_server() -> None:

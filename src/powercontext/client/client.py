@@ -25,7 +25,6 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from powercontext.client.bounded import request_bounded
 from powercontext.client.errors import InvalidResponseError, TransportError, UnknownOutcomeError, server_response_error
 from powercontext.client.operations import OPERATIONS, WRITE_OPERATIONS
 from powercontext.client.tags import ArtifactTagSetResponse
@@ -347,7 +346,6 @@ class PowerContextClient:
         if not transport_trusted and not allow_insecure_http and is_plaintext_non_loopback(self._base_url):
             raise ValueError("refusing to send requests over unencrypted non-loopback HTTP")  # noqa: TRY003
         self._headers = {"Authorization": f"Bearer {token}"} if token else None
-        self._timeout = timeout
         self._owned_http_client: httpx.AsyncClient | None = None
         if http_client is None:
             self._owned_http_client = httpx.AsyncClient(timeout=timeout)
@@ -545,11 +543,9 @@ class PowerContextClient:
         try:
             headers = {} if self._headers is None else dict(self._headers)
             span.inject(headers)
-            response = await request_bounded(
-                self._http_client,
+            response = await self._http_client.request(
                 GET_HANDOFF_REPORT.method,
                 f"{self._base_url}{GET_HANDOFF_REPORT.path}",
-                budget_seconds=self._timeout,
                 json=payload,
                 headers=headers,
             )
@@ -1221,11 +1217,9 @@ class PowerContextClient:
             if extra_headers is not None:
                 headers.update(extra_headers)
             span.inject(headers)
-            response = await request_bounded(
-                self._http_client,
+            response = await self._http_client.request(
                 operation.method,
                 f"{self._base_url}{path}",
-                budget_seconds=self._timeout,
                 json=json_payload,
                 headers=headers,
                 params=request_query or None,
