@@ -179,7 +179,7 @@ def test_invalid_explicit_environment_file_fails_before_installation(tmp_path, m
 @pytest.mark.parametrize("endpoint", ["http://127.0.0.1:18000", "https://proxy.example/prefix"])
 def test_all_setup_routes_persist_adapter_endpoint(host, bulk, endpoint, tmp_path, monkeypatch):
     """Both CLI routes apply identical policy and preserve unrelated user preferences."""
-    from powercontext_integrations import system
+    from powercontext_integrations import codex
     from powercontext_integrations.host import HostAdapter, host_adapter
     from powercontext_integrations.transport import client_config_file
 
@@ -192,7 +192,7 @@ def test_all_setup_routes_persist_adapter_endpoint(host, bulk, endpoint, tmp_pat
         """Stand in for an external Agent installer and check its effective endpoint."""
         if "server_url" in host_adapter(host).setup_options:
             assert options["server_url"] == endpoint
-        return system.CodexSetupResult("marketplace", "plugin", "1.0", "data")
+        return codex.CodexSetupResult("marketplace", "plugin", "1.0", "data")
 
     monkeypatch.setattr(
         HostAdapter, "callback", lambda self, prefix, suffix: install if prefix == "install" else lambda **_: {}
@@ -374,7 +374,7 @@ def test_hermes_setup_synchronizes_native_endpoint_and_preserves_preferences(tmp
 
 @pytest.mark.parametrize("failed_file", ["shared", "native"])
 def test_failed_persistence_restores_native_settings(tmp_path, monkeypatch, failed_file):
-    import powercontext_integrations.system as system
+    import powercontext_integrations.native as system
     from powercontext_integrations.transport import SetupTransport, client_config_file, save_setup_transport
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -397,7 +397,7 @@ def test_failed_persistence_restores_native_settings(tmp_path, monkeypatch, fail
 
 
 def test_codex_setup_updates_native_mcp_endpoint_without_touching_headers(tmp_path, monkeypatch):
-    from powercontext_integrations.system import _configure_codex_endpoint
+    from powercontext_integrations.codex import _configure_codex_endpoint
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     path = tmp_path / "plugins/cache/powercontext/powercontext/0.1.0/.mcp.json"

@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto'
 import type { PowerContextClient } from './client.ts'
 import type { ResolvedConfig } from './config.ts'
-import { flushThrough as flushCheckpoint } from './checkpoints.ts'
+import { flushThrough as flushCheckpoint, sourcePosition } from './checkpoints.ts'
 import { writeFailureConfirmation } from './errors.ts'
 import { containsSecret } from './secrets.ts'
 
@@ -43,12 +43,6 @@ export function buildSourceId(scopeId: string, sessionId: string, turnId: string
   return `pi-user-prompt:${createHash('sha256').update(identity).digest('hex')}`
 }
 
-function sourcePosition(value: unknown): number | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const position = (value as { position?: unknown }).position
-  if (typeof position !== 'number' || !Number.isInteger(position) || position < 1) return undefined
-  return position
-}
 
 async function flushThrough(input: CaptureInput, position: number): Promise<'complete' | 'pending' | 'unknown'> {
   try {

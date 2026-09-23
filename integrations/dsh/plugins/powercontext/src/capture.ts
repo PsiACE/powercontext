@@ -1,4 +1,4 @@
-import { flushThrough } from './checkpoints.ts'
+import { flushThrough, sourcePosition } from './checkpoints.ts'
 /*
  * Copyright (c) 2026 OceanBase.
  *
@@ -42,12 +42,6 @@ export function buildSourceId(scopeId: string, sessionId: string, turnId: string
 }
 
 
-function sourcePosition(value: unknown): number | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const position = (value as { position?: unknown }).position
-  if (typeof position !== 'number' || !Number.isInteger(position) || position < 1) return undefined
-  return position
-}
 
 export async function captureUserPrompt(input: CaptureInput): Promise<void> {
   const observation = input.observation

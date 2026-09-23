@@ -25,7 +25,6 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -44,6 +43,7 @@ from powercontext.cli.system import Diagnostic, DiagnosticStatus, SetupError
 from powercontext.paths import powercontext_data_dir
 
 from .hosts import host_adapter
+from .native import _write_bytes_atomically
 from .resources import render_mcp
 
 WORKBUDDY_HOME_ENV = "WORKBUDDY_HOME"
@@ -505,24 +505,6 @@ def _load_json_object(
 
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     _write_bytes_atomically(path, (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
-
-
-def _write_bytes_atomically(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.write(descriptor, content)
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        os.replace(temporary, path)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        with suppress(FileNotFoundError):
-            temporary.unlink()
 
 
 def _read_bytes_or_none(path: Path, *, io_error: Callable[[OSError], SetupError]) -> bytes | None:

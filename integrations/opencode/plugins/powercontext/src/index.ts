@@ -1,4 +1,4 @@
-import { flushThrough } from './checkpoints.ts'
+import { flushThrough, sourcePosition } from './checkpoints.ts'
 /*
  * Copyright (c) 2026 OceanBase.
  *
@@ -108,11 +108,6 @@ function sourceId(scopeId: string, sessionID: string, messageID: string, prompt:
   return `opencode-user-prompt:${createHash('sha256').update(identity).digest('hex')}`
 }
 
-function sourcePosition(value: unknown): number | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const position = (value as { position?: unknown }).position
-  return typeof position === 'number' && Number.isInteger(position) && position > 0 ? position : undefined
-}
 
 
 async function capturePrompt(

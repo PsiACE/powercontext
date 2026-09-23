@@ -24,7 +24,8 @@ from unittest.mock import Mock
 import powercontext_integrations.openclaw as openclaw_cli
 import powercontext_integrations.system as system_cli
 import pytest
-from powercontext_integrations.system import DiagnosticStatus, OpenClawSetupResult, SetupError, doctor_app, setup_app
+from powercontext_integrations.openclaw import OpenClawSetupResult
+from powercontext_integrations.system import DiagnosticStatus, SetupError, doctor_app, setup_app
 from typer.testing import CliRunner
 
 from powercontext.cli.app import create_cli

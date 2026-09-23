@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from powercontext.cli.errors import SetupError
+
 from .host import HOST_ADAPTERS, host_adapter
 
 if TYPE_CHECKING:
@@ -35,22 +37,6 @@ HOST_NAMES: tuple[str, ...] = tuple(host.name for host in HOST_ADAPTERS)
 _HOST_INDEX: dict[str, str] = {str(index): host.name for index, host in enumerate(HOST_ADAPTERS, start=1)}
 _INTEGRATION_KEYS = frozenset({"plugin", "package", "skill", "settings", "mcp", "client", "transport"})
 _PATH_MISSING = "is not installed or is not on PATH"
-
-
-class SetupSelectError(RuntimeError):
-    """Invalid setup select usage or host selection."""
-
-    @classmethod
-    def json_requires_host(cls) -> SetupSelectError:
-        return cls("setup select --json requires --host.")
-
-    @classmethod
-    def tty_requires_host(cls) -> SetupSelectError:
-        return cls("setup select requires --host when stdin is not a TTY.")
-
-    @classmethod
-    def unknown_host(cls, token: str) -> SetupSelectError:
-        return cls(f"unknown host: {token}. Choose from: {', '.join(HOST_NAMES)}.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +159,7 @@ def run_setup_select(
 
     try:
         selected = resolve_selected_hosts(requested=hosts, json_output=json_output)
-    except SetupSelectError as error:
+    except SetupError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from error
     if selected is None:
@@ -200,9 +186,9 @@ def resolve_selected_hosts(*, requested: Sequence[str] | None, json_output: bool
     if requested:
         return normalize_requested_hosts(requested)
     if json_output:
-        raise SetupSelectError.json_requires_host()
+        raise SetupError("setup select --json requires --host.")
     if not stdin_is_tty():
-        raise SetupSelectError.tty_requires_host()
+        raise SetupError("setup select requires --host when stdin is not a TTY.")
     _write_host_catalog()
     return parse_host_selection(sys.stdin.readline())
 
@@ -296,7 +282,7 @@ def write_setup_select_report(report: SetupSelectReport, *, json_output: bool) -
 def _resolve_host_token(token: str) -> str:
     name = _HOST_INDEX.get(token, token)
     if name not in HOST_NAMES:
-        raise SetupSelectError.unknown_host(token)
+        raise SetupError(f"unknown host: {token}. Choose from: {', '.join(HOST_NAMES)}.")
     return name
 
 

@@ -17,12 +17,13 @@ from __future__ import annotations
 import json
 from unittest.mock import Mock
 
+import powercontext_integrations.claude_code as claude_cli
+import powercontext_integrations.codex as codex_cli
 import powercontext_integrations.dsh as dsh_cli
 import powercontext_integrations.hermes as hermes_cli
 import powercontext_integrations.openclaw as openclaw_cli
 import powercontext_integrations.opencode as opencode_cli
 import powercontext_integrations.pi as pi_cli
-import powercontext_integrations.system as system_cli
 import powercontext_integrations.workbuddy as workbuddy_cli
 import pytest
 from powercontext_integrations.host import HOST_ADAPTERS
@@ -118,8 +119,8 @@ def _failed_skill_opencode() -> dict[str, Diagnostic]:
 def _patch_diagnostics(monkeypatch, **replacements: Mock) -> dict[str, Mock]:
     probes = {host: Mock(name=f"run_{host}_diagnostics", return_value=_missing(host)) for host in FIRST_CLASS_HOSTS}
     probes.update(replacements)
-    monkeypatch.setattr(system_cli, "run_codex_diagnostics", probes["codex"])
-    monkeypatch.setattr(system_cli, "run_claude_code_diagnostics", probes["claude-code"])
+    monkeypatch.setattr(codex_cli, "run_codex_diagnostics", probes["codex"])
+    monkeypatch.setattr(claude_cli, "run_claude_code_diagnostics", probes["claude-code"])
     monkeypatch.setattr(dsh_cli, "run_dsh_diagnostics", probes["dsh"])
     monkeypatch.setattr(openclaw_cli, "run_openclaw_diagnostics", probes["openclaw"])
     monkeypatch.setattr(opencode_cli, "run_opencode_diagnostics", probes["opencode"])

@@ -17,13 +17,14 @@ from __future__ import annotations
 import json
 from unittest.mock import Mock
 
+import powercontext_integrations.claude_code as claude_cli
+import powercontext_integrations.codex as codex_cli
 import powercontext_integrations.dsh as dsh_cli
 import powercontext_integrations.hermes as hermes_cli
 import powercontext_integrations.hosts as hosts_cli
 import powercontext_integrations.openclaw as openclaw_cli
 import powercontext_integrations.opencode as opencode_cli
 import powercontext_integrations.pi as pi_cli
-import powercontext_integrations.system as system_cli
 import pytest
 from powercontext_integrations.hosts import parse_host_selection
 from powercontext_integrations.system import Diagnostic, DiagnosticStatus, SetupError, setup_app
@@ -62,8 +63,8 @@ def _patch_installers(monkeypatch, **replacements: Mock) -> dict[str, Mock]:
         "hermes": Mock(name="install_hermes_plugin", return_value=object()),
     }
     installers.update(replacements)
-    monkeypatch.setattr(system_cli, "install_codex_plugin", installers["codex"])
-    monkeypatch.setattr(system_cli, "install_claude_code_plugin", installers["claude-code"])
+    monkeypatch.setattr(codex_cli, "install_codex_plugin", installers["codex"])
+    monkeypatch.setattr(claude_cli, "install_claude_code_plugin", installers["claude-code"])
     monkeypatch.setattr(dsh_cli, "install_dsh_plugin", installers["dsh"])
     monkeypatch.setattr(openclaw_cli, "install_openclaw_plugin", installers["openclaw"])
     monkeypatch.setattr(opencode_cli, "install_opencode_plugin", installers["opencode"])
@@ -81,7 +82,7 @@ def _patch_diagnostics(monkeypatch, **replacements: Mock) -> dict[str, Mock]:
         "hermes": Mock(return_value={"plugin": Diagnostic(DiagnosticStatus.OK, "installed")}),
     }
     diagnostics.update(replacements)
-    monkeypatch.setattr(system_cli, "run_codex_diagnostics", diagnostics["codex"])
+    monkeypatch.setattr(codex_cli, "run_codex_diagnostics", diagnostics["codex"])
     monkeypatch.setattr(dsh_cli, "run_dsh_diagnostics", diagnostics["dsh"])
     monkeypatch.setattr(opencode_cli, "run_opencode_diagnostics", diagnostics["opencode"])
     monkeypatch.setattr(pi_cli, "run_pi_diagnostics", diagnostics["pi"])
@@ -354,7 +355,7 @@ def test_setup_select_passes_server_override_to_openclaw(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("host", "module", "attribute"),
     [
-        ("codex", system_cli, "run_codex_diagnostics"),
+        ("codex", codex_cli, "run_codex_diagnostics"),
         ("dsh", dsh_cli, "run_dsh_diagnostics"),
         ("opencode", opencode_cli, "run_opencode_diagnostics"),
         ("pi", pi_cli, "run_pi_diagnostics"),
@@ -390,7 +391,7 @@ def test_setup_select_fails_a_row_when_post_install_verification_fails(
 def test_setup_select_continues_after_post_install_verification_fails(monkeypatch) -> None:
     installers = _patch_installers(monkeypatch)
     monkeypatch.setattr(
-        system_cli,
+        codex_cli,
         "run_codex_diagnostics",
         Mock(return_value={"plugin": Diagnostic(DiagnosticStatus.FAILED, "plugin is not loaded")}),
     )

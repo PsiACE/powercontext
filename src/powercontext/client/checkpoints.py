@@ -17,6 +17,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+
+
+def source_position(receipt: Mapping[str, object]) -> int | None:
+    """Only an acknowledged, positive Source position can advance a checkpoint."""
+    position = receipt.get("position")
+    return position if type(position) is int and position > 0 else None
 
 
 class Checkpoints:
@@ -28,6 +36,15 @@ class Checkpoints:
     def allows(self, scope_id: str, position: int) -> bool:
         return position > self._unknown.get(scope_id, -1)
 
-    def failed(self, scope_id: str, position: int, error: BaseException) -> None:
-        if isinstance(error, TimeoutError | asyncio.CancelledError) or getattr(error, "outcome", None) == "unknown":
-            self._unknown[scope_id] = max(position, self._unknown.get(scope_id, -1))
+    @contextmanager
+    def attempt(self, scope_id: str, position: int) -> Iterator[bool]:
+        """Keep uncertain writes blocked even when a host exits through cancellation."""
+        allowed = self.allows(scope_id, position)
+        try:
+            yield allowed
+        except BaseException as error:
+            if allowed and (
+                isinstance(error, TimeoutError | asyncio.CancelledError) or getattr(error, "outcome", None) == "unknown"
+            ):
+                self._unknown[scope_id] = max(position, self._unknown.get(scope_id, -1))
+            raise

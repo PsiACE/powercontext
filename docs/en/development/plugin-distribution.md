@@ -9,33 +9,25 @@ PowerContext plugins use the installed client to execute domain operations. Nati
 
 ## Execution
 
-`powercontext.client.integration` accepts an operation ID, arguments, connection, absolute deadline, and optional Scope binding. The client validates requests and responses against its operation contract. Python adapters call it directly; TypeScript and Hermes use the serial JSON Lines worker exposed by `powercontext-hook`.
+`powercontext.client.integration` accepts an operation ID, arguments, connection, absolute deadline, and optional Scope binding. The client validates requests and responses against its operation contract. Native Python hooks call it directly; TypeScript and Hermes use the serial JSON Lines worker exposed by `powercontext-hook`. Bub, framework adapters, and OpenDAL use the typed SDK directly.
 
 ```text
-Native event / custom tool
-              |
-          Host adapter
-              |
-      +-------+-------+
-      |               |
- Python call     TS / Hermes
-      |               |
-      |        JSON Lines worker
-      |               |
-      +-------+-------+
-              |
-          Core Hook
-              |
-         Client SDK
-              |
-       Server HTTP API
+Codex / Claude Code / WorkBuddy -> Shared prompt -> Core
+MiniMax ----------------------------------------> Core
+TS hosts / Hermes -> JSONL worker ---------------> Core
+                                                   |
+Bub / framework adapters / OpenDAL ------------> Client SDK -> HTTP API
 
-Native MCP tool -> host Scope/auth handling -> Server MCP
+Native MCP -> host Scope/auth handling -> Server MCP
 ```
+
+Core bounds Hook responses to 1 MiB, disables redirects, and enforces the request deadline. Ordinary SDK calls retain their HTTP client's transport policy, including large report downloads and explicitly configured redirects.
 
 Adapters return results in the host's native format. Native MCP calls pass through the host's checks and MCP client to Server MCP. Codex binds tool arguments to the current Scope and supplies authorization through a native credential helper. Its adapter owns these steps alongside the shared prompt hooks.
 
 Automatic prompt hooks resolve Scope, prepare context, and capture the prompt when capture is enabled. A checkpoint starts only after the Server acknowledges the Source. Cursor progress, call limits, and the shared deadline bound processing. If a write outcome is unknown, preserve that state and do not retry automatically. Source acceptance does not prove that Memory exists.
+
+Shared checkpoint helpers take progress positions from confirmed Sources and record uncertain writes before propagating errors or cancellation. Python adapters use `Checkpoints.attempt()`; TypeScript adapters use the generated `Checkpoints.run()` and `flushThrough()`. Host code chooses when to checkpoint and owns its native pending-work state.
 
 Adapters control event timing, tool visibility, user confirmation, Scope identity, and output channels. Pi runs checkpoints at lifecycle boundaries. OpenClaw limits tools to eligible sessions, and MiniMax reads its named MCP endpoint with private overrides. DSH uses a separate bounded GET for OpenAPI discovery.
 
@@ -43,7 +35,7 @@ Classify failures through typed results rather than exception text. Preserve rej
 
 `powercontext_integrations.host.HostAdapter` is the common boundary for setup, resource preparation, and doctor. Single-host setup and `setup select` call the same `install()` method: check the installed client, resolve connection policy, run the native installer, verify installation, then save connection settings. Failed verification does not persist the new connection. Each host supplies its native module, accepted options, and whether its installer already verifies the result. Native installers retain their rollback rules and call `prepare()` at the appropriate staging or cache boundary.
 
-Setup, doctor, configuration selection, and distribution read the same Target catalog from the selected repository source. Every target has `powercontext setup <target>` and `powercontext doctor <target>`, including Python packages and portable plugins. Python owns installation and diagnostics. Native callbacks supply installation/discovery and effective configuration; TypeScript only registers commands and forwards configuration to `powercontext-hook --doctor`.
+Setup, doctor, configuration selection, and distribution read the same Target catalog from the selected repository source. Every target has `powercontext setup <target>` and `powercontext doctor <target>`, including Python packages and portable plugins. Python owns installation and diagnostics. `system.py` registers commands, while native modules such as `codex.py` and `claude_code.py` supply installation/discovery and effective configuration; TypeScript only registers commands and forwards configuration to `powercontext-hook --doctor`.
 
 Common diagnostics check client prerequisites and transport policy. Optional `doctor <target> --server` and native `/pc doctor` use the same read-only liveness, readiness, and context-schema checks. Dependency failures remain visible on HTTP 503; a failed liveness probe skips subsequent checks. Diagnostic output excludes private response text. Installation checks and Server probes have distinct inputs: a running host supplies its actual connection, while the CLI reads discoverable configuration. An unreadable native configuration fails instead of guessing an endpoint. Setup failures use `SetupError` with shared constructors for repeated command and input failures.
 
@@ -51,11 +43,12 @@ Common diagnostics check client prerequisites and transport policy. Optional `do
 Repository rules (source / ref)
      Target catalog + templates
           |
+          +-- build -> shared renderer -> native package
+          |
      HostAdapter (Python)
           +-- setup  -> prerequisites -> connection -> generate/install -> verify -> save
           +-- doctor -> prerequisites + native discovery + transport
           |                  +-- optional Server checks
-          +-- build  -> native adapter + generated MCP / Skills / bridge
 
 Host command -> connection -> Client Server checks -> native display
 ```
@@ -65,7 +58,7 @@ Host command -> connection -> Client Server checks -> native display
 - `integrations/agent-plugin/powercontext/` is the editable baseline: standard Skills, workflow references, and MCP configuration. `integrations/agent-plugin/operations.json` selects the minimum shared toolkit; request schemas and descriptions come from the client contract. Other hosts project this baseline rather than define different workflows.
 - `integrations/distribution/powercontext_integrations/assets/` holds native format templates and bindings. `resources.json` supplies native MCP fields and registration formats; `tool-bindings.json` preserves existing tool names. Scope resolution, direct current-work Handoff, Memory inventory, and candidate inspection follow the same methodology.
 - `resources.py` serves setup and distribution. DSH registers baseline references as runtime Skills; other Skill hosts receive files. Native MCP wrappers, endpoint paths, schema metadata, and credential fields are format adaptations. WorkBuddy's settings merge uses the same projection. Host code retains interactive approval and tool visibility.
-- `integrations/distribution/powercontext_integrations/assets/targets/` declares source layout and native events, handlers, operations, effects, and failure behavior. Operation IDs come from the client contract. There is no separate capability manifest or source probe.
+- `integrations/distribution/powercontext_integrations/assets/targets/` declares source layout and native events, handlers, operations, effects, and failure behavior. Operation IDs come from the client contract. Hook declarations describe native bindings; they are not an executable lifecycle plan. Native event APIs remain adapter code. There is no separate capability manifest or source probe.
 - `scripts/build_agent_distributions.py` overlays rendered resources on native adapters and records file hashes. Outside the baseline, Skills, MCP files, tool schemas, guidance, and bridges are generated outputs. Native packages include `tools.generated.json`; SDK adapters read it without embedding duplicate schemas in JavaScript bundles.
 
 ```text
@@ -82,7 +75,7 @@ Agent Plugin baseline + API contract + Target/templates
 
 ## Develop and distribute
 
-Install `powercontext[cli]` and expose `uvx`, `npx`, and `powercontext-hook` on PATH. No additional management package is installed. Setup loads Python rules directly from `integrations/distribution/` in the selected `--source/--ref`. Remote sources use a shared Git checkout; local sources are read in place. An explicit remote setup refreshes only an unmodified managed checkout. Successful setup saves its source alongside the connection and installation location. Doctor reuses that source without fetching; `--source/--ref` can explicitly select another source.
+Install `powercontext[cli]` and expose `uvx`, `npx`, and `powercontext-hook` on PATH. No additional management package is installed. Offline source bundles preserve the repository layout: the marketplace manifest, distribution rules, Agent Plugin baseline, and selected host sources. Select the bundle root with `--source`, not its plugin subdirectory. Setup loads Python rules directly from `integrations/distribution/` in the selected `--source/--ref`. Remote sources use a shared Git checkout; local sources are read in place. An explicit remote setup refreshes only an unmodified managed checkout. Successful setup saves its source alongside the connection and installation location. Doctor reuses that source without fetching; `--source/--ref` can explicitly select another source.
 
 The client retains the source loader, Core Hook, and shared Server diagnostics. Profiles, templates, native installation, and discovery remain repository code. `powercontext-hook --doctor` and the default CLI doctor need no integration source. For development, use the checkout directly:
 

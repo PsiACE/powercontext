@@ -31,7 +31,7 @@ effects = ["context","diagnostic"]
 failure = "continue"
 
 [setup]
-module = "system"
+module = "claude_code"
 options = ["server_url", "capture_prompts", "allow_insecure_http"]
 verifies = true
 executable = "claude"

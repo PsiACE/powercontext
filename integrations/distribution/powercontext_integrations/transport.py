@@ -244,7 +244,7 @@ def save_setup_transport(settings: SetupTransport, *, installation: dict[str, st
 
     from powercontext.cli.system import SetupError
 
-    from .system import _write_bytes_atomically
+    from .native import _write_bytes_atomically
 
     path = client_config_file()
     completed: list[tuple[Path, bytes | None]] = []

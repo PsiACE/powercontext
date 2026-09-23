@@ -53,7 +53,7 @@ effects = ["diagnostic"]
 failure = "continue"
 
 [setup]
-module = "system"
+module = "codex"
 options = ["server_url"]
 executable = "codex"
 

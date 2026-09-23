@@ -297,28 +297,31 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
         state = self._require_state()
         scope_id = state.require_scope_id()
         target_position = state.captured_position
-        if target_position <= state.flushed_position or not self._checkpoints.allows(scope_id, target_position):
+        if target_position <= state.flushed_position:
             return
         try:
-            async with asyncio.timeout(self.settings.timeout):
-                while state.flushed_position < target_position:
-                    previous_position = state.flushed_position
-                    response = await self._toolset._require_client().flush_memory(FlushMemoryRequest(scope_id=scope_id))
-                    state.flushed_position = max(state.flushed_position, response.current_cursor)
-                    if state.flushed_position <= previous_position:
-                        logger.debug(
-                            "PowerContext %s capture flush stopped before target: "
-                            "cursor=%d target=%d reason=no cursor progress",
-                            "final" if final else "checkpoint",
-                            state.flushed_position,
-                            target_position,
+            with self._checkpoints.attempt(scope_id, target_position) as allowed:
+                if not allowed:
+                    return
+                async with asyncio.timeout(self.settings.timeout):
+                    while state.flushed_position < target_position:
+                        previous_position = state.flushed_position
+                        response = await self._toolset._require_client().flush_memory(
+                            FlushMemoryRequest(scope_id=scope_id)
                         )
-                        return
-        except asyncio.CancelledError as exc:
-            self._checkpoints.failed(scope_id, target_position, exc)
+                        state.flushed_position = max(state.flushed_position, response.current_cursor)
+                        if state.flushed_position <= previous_position:
+                            logger.debug(
+                                "PowerContext %s capture flush stopped before target: "
+                                "cursor=%d target=%d reason=no cursor progress",
+                                "final" if final else "checkpoint",
+                                state.flushed_position,
+                                target_position,
+                            )
+                            return
+        except asyncio.CancelledError:
             raise
         except ClientError as exc:
-            self._checkpoints.failed(scope_id, target_position, exc)
             self._auth_reporter.report(exc, "capture flush")
             logger.debug(
                 "PowerContext %s capture flush failed open: %s",
@@ -328,7 +331,6 @@ class PowerContext(AbstractCapability[AgentDepsT], Generic[AgentDepsT]):
             )
             return
         except TimeoutError as exc:
-            self._checkpoints.failed(scope_id, target_position, exc)
             logger.debug(
                 "PowerContext %s capture flush failed open: %s",
                 "final" if final else "checkpoint",

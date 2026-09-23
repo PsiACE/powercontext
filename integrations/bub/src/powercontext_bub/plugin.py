@@ -370,17 +370,16 @@ class PowerContextPlugin:
             return
 
         scope_id = await self._scope_id(state)
-        if scope_id is None or not self._checkpoints.allows(scope_id, target_position):
+        if scope_id is None:
             return
 
         try:
-            async with self._client() as client:
-                response = await client.flush_memory(FlushMemoryRequest(scope_id=scope_id))
-        except asyncio.CancelledError as exc:
-            self._checkpoints.failed(scope_id, target_position, exc)
-            raise
+            with self._checkpoints.attempt(scope_id, target_position) as allowed:
+                if not allowed:
+                    return
+                async with self._client() as client:
+                    response = await client.flush_memory(FlushMemoryRequest(scope_id=scope_id))
         except CLIENT_ERRORS as exc:
-            self._checkpoints.failed(scope_id, target_position, exc)
             self._write_capture_record(
                 event="checkpoint",
                 status="failed",

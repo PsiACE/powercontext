@@ -20,6 +20,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree, which
 from urllib.parse import urlsplit, urlunsplit
@@ -28,7 +29,6 @@ from powercontext.cli.system import Diagnostic, DiagnosticStatus, SetupError
 from powercontext.paths import powercontext_data_dir
 
 from .hosts import host_adapter
-from .system import OpenClawSetupResult
 
 OPENCLAW_PLUGIN_RELATIVE = Path("integrations") / "openclaw" / "plugins" / "memory-powercontext"
 OPENCLAW_PLUGIN_NAME = "memory-powercontext"
@@ -44,6 +44,14 @@ POWERCONTEXT_TOOLS = (
 )
 _GITHUB_REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
 _OPENCLAW_VERSION = re.compile(r"(?:OpenClaw\s+)?(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenClawSetupResult:
+    plugin: str
+    plugin_path: str
+    server_url: str
+    data_dir: str
 
 
 def install_openclaw_plugin(

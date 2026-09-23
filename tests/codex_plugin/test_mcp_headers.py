@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from powercontext_integrations.system import _configure_codex_endpoint
+from powercontext_integrations.codex import _configure_codex_endpoint
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "integrations/codex/plugins/powercontext"
 

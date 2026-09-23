@@ -19,6 +19,12 @@
 import type { PowerContextClient } from './client.{{extension}}'
 import { RequestNotSentError, writeFailureConfirmation } from './errors.{{extension}}'
 
+export function sourcePosition(value: unknown): number | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const position = (value as { position?: unknown }).position
+  return typeof position === 'number' && Number.isSafeInteger(position) && position > 0 ? position : undefined
+}
+
 export class Checkpoints {
   private readonly unknown = new Map<string, number>()
 
@@ -26,10 +32,16 @@ export class Checkpoints {
     return position > (this.unknown.get(scopeId) ?? -1)
   }
 
-  failed(scopeId: string, position: number, error: unknown): void {
-    if ((error as { outcome?: string } | undefined)?.outcome === 'unknown'
-      || writeFailureConfirmation(error) === 'unconfirmed') {
-      this.unknown.set(scopeId, Math.max(position, this.unknown.get(scopeId) ?? -1))
+  async run<T>(scopeId: string, position: number, operation: () => Promise<T>): Promise<T | undefined> {
+    if (!this.allows(scopeId, position)) return undefined
+    try {
+      return await operation()
+    } catch (error) {
+      if ((error as { outcome?: string } | undefined)?.outcome === 'unknown'
+        || writeFailureConfirmation(error) === 'unconfirmed') {
+        this.unknown.set(scopeId, Math.max(position, this.unknown.get(scopeId) ?? -1))
+      }
+      throw error
     }
   }
 }
@@ -42,21 +54,17 @@ export async function flushThrough(
 ): Promise<boolean> {
   let state = checkpoints.get(client)
   if (!state) { state = new Checkpoints(); checkpoints.set(client, state) }
-  if (!state.allows(scopeId, position)) return false
-  let previous = -1
-  for (let attempt = 0; attempt < maxCalls; attempt += 1) {
-    if (signal?.aborted) throw new RequestNotSentError('/v1/memory/flush', signal.reason)
-    try {
+  return await state.run(scopeId, position, async () => {
+    let previous = -1
+    for (let attempt = 0; attempt < maxCalls; attempt += 1) {
+      if (signal?.aborted) throw new RequestNotSentError('/v1/memory/flush', signal.reason)
       const result = await client.request('flush_memory', { scope_id: scopeId }, signal)
       const cursor = (result.value as { current_cursor?: number } | undefined)?.current_cursor
       if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor) || cursor < 0) return false
       if (cursor >= position) return true
       if (cursor <= previous) return false
       previous = cursor
-    } catch (error) {
-      state.failed(scopeId, position, error)
-      throw error
     }
-  }
-  return false
+    return false
+  }) ?? false
 }

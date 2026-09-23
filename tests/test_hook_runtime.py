@@ -16,8 +16,8 @@
 
 import json
 
+import powercontext_integrations.claude_code as claude_cli
 import powercontext_integrations.hook_runtime as hook_runtime
-import powercontext_integrations.system as system_cli
 import pytest
 from powercontext_integrations.host import HOST_ADAPTERS
 from powercontext_integrations.hosts import build_integration_row, diagnose_host
@@ -45,9 +45,9 @@ def test_setup_requires_installed_client_before_creating_files(tmp_path, monkeyp
 
 def test_doctor_fails_when_the_plugin_is_present_but_the_client_is_missing(monkeypatch) -> None:
     monkeypatch.setattr(hook_runtime, "which", lambda _name: None)
-    monkeypatch.setattr(system_cli, "which", lambda _name: "/bin/claude")
+    monkeypatch.setattr(claude_cli, "which", lambda _name: "/bin/claude")
     monkeypatch.setattr(
-        system_cli,
+        claude_cli,
         "_run_claude_json",
         lambda *_args: [{"id": "powercontext@powercontext", "enabled": True}],
     )

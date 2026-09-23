@@ -120,13 +120,24 @@ function writeFailureConfirmation(error) {
 
 //#endregion
 //#region src/checkpoints.ts
+function sourcePosition(value) {
+	if (!value || typeof value !== "object") return void 0;
+	const position = value.position;
+	return typeof position === "number" && Number.isSafeInteger(position) && position > 0 ? position : void 0;
+}
 var Checkpoints = class {
 	unknown = /* @__PURE__ */ new Map();
 	allows(scopeId, position) {
 		return position > (this.unknown.get(scopeId) ?? -1);
 	}
-	failed(scopeId, position, error) {
-		if (error?.outcome === "unknown" || writeFailureConfirmation(error) === "unconfirmed") this.unknown.set(scopeId, Math.max(position, this.unknown.get(scopeId) ?? -1));
+	async run(scopeId, position, operation) {
+		if (!this.allows(scopeId, position)) return void 0;
+		try {
+			return await operation();
+		} catch (error) {
+			if (error?.outcome === "unknown" || writeFailureConfirmation(error) === "unconfirmed") this.unknown.set(scopeId, Math.max(position, this.unknown.get(scopeId) ?? -1));
+			throw error;
+		}
 	}
 };
 const checkpoints = /* @__PURE__ */ new WeakMap();
@@ -136,22 +147,18 @@ async function flushThrough(client, scopeId, position, maxCalls, signal) {
 		state = new Checkpoints();
 		checkpoints.set(client, state);
 	}
-	if (!state.allows(scopeId, position)) return false;
-	let previous = -1;
-	for (let attempt = 0; attempt < maxCalls; attempt += 1) {
-		if (signal?.aborted) throw new RequestNotSentError("/v1/memory/flush", signal.reason);
-		try {
+	return await state.run(scopeId, position, async () => {
+		let previous = -1;
+		for (let attempt = 0; attempt < maxCalls; attempt += 1) {
+			if (signal?.aborted) throw new RequestNotSentError("/v1/memory/flush", signal.reason);
 			const cursor = (await client.request("flush_memory", { scope_id: scopeId }, signal)).value?.current_cursor;
 			if (typeof cursor !== "number" || !Number.isSafeInteger(cursor) || cursor < 0) return false;
 			if (cursor >= position) return true;
 			if (cursor <= previous) return false;
 			previous = cursor;
-		} catch (error) {
-			state.failed(scopeId, position, error);
-			throw error;
 		}
-	}
-	return false;
+		return false;
+	}) ?? false;
 }
 
 //#endregion
@@ -1446,11 +1453,6 @@ function sourceId(scopeId, sessionID, messageID, prompt) {
 		prompt
 	].join("\0");
 	return `opencode-user-prompt:${createHash("sha256").update(identity).digest("hex")}`;
-}
-function sourcePosition(value) {
-	if (!value || typeof value !== "object") return void 0;
-	const position = value.position;
-	return typeof position === "number" && Number.isInteger(position) && position > 0 ? position : void 0;
 }
 async function capturePrompt(runtime, input) {
 	if (!runtime.config.capturePrompts || Buffer.byteLength(input.prompt, "utf8") > MAX_SOURCE_BYTES || containsSecret(input.prompt)) return;

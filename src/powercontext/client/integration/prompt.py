@@ -21,6 +21,7 @@ from hashlib import sha256
 from time import monotonic
 from typing import Any
 
+from powercontext.client.checkpoints import source_position
 from powercontext.client.integration import native
 from powercontext.client.integration.diagnostics import Events
 from powercontext.client.prepared_context import MAX_CONTEXT_BYTES
@@ -174,11 +175,11 @@ def run(
             settings=settings,
             deadline=deadline,
         )
-        position = captured["position"]
+        position = source_position(captured)
     except Exception as error:
         _failure(events, "capture_source", error)
         return context
-    if settings.flush_on_capture:
+    if settings.flush_on_capture and position is not None:
         try:
             flush_through(scope_id, position, settings=settings, deadline=deadline)
         except Exception as error:

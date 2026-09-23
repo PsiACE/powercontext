@@ -259,7 +259,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"integrations/distribution/powercontext_integrations/{host,system,hosts,dsh,hermes,pi,opencode,openclaw,workbuddy,packages,minimax}.py" = ["TRY003"]
+"integrations/distribution/powercontext_integrations/{host,system,hosts,codex,claude_code,native,dsh,hermes,pi,opencode,openclaw,workbuddy,packages,minimax}.py" = ["TRY003"]
 "src/powercontext/cli/{system,git_source,integration_source}.py" = ["TRY003"]
 "examples/jupyter/*.ipynb" = ["S101", "RUF001", "TRY003"]
 "examples/jupyter/_tutorial.py" = ["RUF001"]

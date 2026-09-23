@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from . import commands, trace
-from .checkpoints import Checkpoints
+from .checkpoints import Checkpoints, source_position
 from .client import (
     PowerContextClient,
     PowerContextError,
@@ -819,8 +819,8 @@ class PowerContextMemoryProvider(MemoryProvider):
     def _capture_text(self, scope_id: str, source_id: str, content: str, metadata: dict[str, Any]) -> None:
         try:
             result = self._client.capture_content(scope_id, source_id=source_id, content=content, metadata=metadata)
-            position = result.get("position")
-            if type(position) is int and position > 0:
+            position = source_position(result)
+            if position is not None:
                 self._captured_positions[scope_id] = max(position, self._captured_positions.get(scope_id, 0))
         except PowerContextError as error:
             self._emit_failure_diagnostic("capture_source", error)
@@ -856,12 +856,11 @@ class PowerContextMemoryProvider(MemoryProvider):
         if not self._memory_extraction_supported:
             return
         position = self._captured_positions.get(effective_scope_id, 0)
-        if not self._checkpoints.allows(effective_scope_id, position):
-            return
         try:
-            self._client.flush_memory(effective_scope_id)
+            with self._checkpoints.attempt(effective_scope_id, position) as allowed:
+                if allowed:
+                    self._client.flush_memory(effective_scope_id)
         except PowerContextError as error:
-            self._checkpoints.failed(effective_scope_id, position, error)
             self._emit_failure_diagnostic("session_end_flush", error)
 
     def on_session_switch(
@@ -932,7 +931,7 @@ class PowerContextMemoryProvider(MemoryProvider):
             + hashlib.sha256(json.dumps(idempotency_payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
         )
         try:
-            client.capture_content(
+            captured = client.capture_content(
                 scope_id,
                 source_id=source_id,
                 content=content,
@@ -942,7 +941,10 @@ class PowerContextMemoryProvider(MemoryProvider):
                     "message_count": len(new_entries),
                 },
             )
-            self._flush_memory_if_supported(scope_id=scope_id)
+            position = source_position(captured)
+            if position is not None:
+                self._captured_positions[scope_id] = max(position, self._captured_positions.get(scope_id, 0))
+                self._flush_memory_if_supported(scope_id=scope_id)
         except PowerContextError as error:
             self._emit_failure_diagnostic("pre_compression_capture", error)
             return ""

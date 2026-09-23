@@ -98,7 +98,7 @@ class FakeClient:
 
     def capture_content(self, scope_id, *, source_id, content, metadata):
         self.calls.append(("capture_content", (scope_id, source_id, content), {"metadata": metadata}))
-        return {}
+        return {"position": sum(call[0] == "capture_content" for call in self.calls)}
 
     def flush_memory(self, scope_id):
         self.calls.append(("flush_memory", (scope_id,), {}))
@@ -1315,15 +1315,12 @@ def test_native_worker_uses_the_installed_client_for_stats(hermes_modules):
         thread.join(timeout=1)
 
 
-def test_session_end_does_not_replay_unknown_flushes(hermes_modules, tmp_path):
+@pytest.mark.parametrize("capture_event", ["turn", "pre_compress"])
+def test_session_end_does_not_replay_unknown_flushes(hermes_modules, tmp_path, capture_event):
     plugin, _ = hermes_modules
     client_module = importlib.import_module("plugins.powercontext.client")
 
     class Client(FakeClient):
-        def capture_content(self, scope_id, **kwargs):
-            super().capture_content(scope_id, **kwargs)
-            return {"position": sum(call[0] == "capture_content" for call in self.calls)}
-
         def flush_memory(self, scope_id):
             super().flush_memory(scope_id)
             raise client_module.PowerContextUnknownOutcomeError
@@ -1334,9 +1331,21 @@ def test_session_end_does_not_replay_unknown_flushes(hermes_modules, tmp_path):
     provider.on_session_end([])
     provider.on_session_end([])
     assert sum(call[0] == "flush_memory" for call in client.calls) == 1
-    provider.sync_turn("Next task", "Done", session_id="session-checkpoint")
+    if capture_event == "turn":
+        provider.sync_turn("Next task", "Done", session_id="session-checkpoint")
+    else:
+        provider._config["capture_pre_compress"] = True
+        provider.on_pre_compress([{"role": "user", "content": "Next task"}])
     provider.on_session_end([])
     assert sum(call[0] == "flush_memory" for call in client.calls) == 2
+
+
+def test_pre_compress_does_not_flush_without_a_confirmed_source(provider_and_client, monkeypatch):
+    provider, client = provider_and_client
+    provider._config["capture_pre_compress"] = True
+    monkeypatch.setattr(client, "capture_content", lambda *args, **kwargs: {})
+    provider.on_pre_compress([{"role": "user", "content": "Unconfirmed source"}])
+    assert not any(call[0] == "flush_memory" for call in client.calls)
 
 
 @pytest.mark.parametrize("saved_in_native_config", [True, False])

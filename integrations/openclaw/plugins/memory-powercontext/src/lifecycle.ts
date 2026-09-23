@@ -1,4 +1,4 @@
-import { Checkpoints } from "./checkpoints.js";
+import { Checkpoints, sourcePosition } from "./checkpoints.js";
 /*
  * Copyright (c) 2026 OceanBase.
  *
@@ -130,14 +130,13 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         privacy_class: "private",
       },
     });
-    if (typeof result?.position === "number") captured.set(scopeId, Math.max(result.position, captured.get(scopeId) ?? 0));
+    const position = sourcePosition(result);
+    if (position !== undefined) captured.set(scopeId, Math.max(position, captured.get(scopeId) ?? 0));
   };
 
   const flush = async (scopeId: string) => {
     const position = captured.get(scopeId) ?? 0;
-    if (!checkpoints.allows(scopeId, position)) return;
-    try { await deps.client.post("/v1/memory/flush", { scope_id: scopeId }); }
-    catch (error) { checkpoints.failed(scopeId, position, error); throw error; }
+    await checkpoints.run(scopeId, position, () => deps.client.post("/v1/memory/flush", { scope_id: scopeId }));
   };
   const canExtractMemory = async () => {
     const capabilities = await deps.client.get<unknown>("/v1/capabilities");
