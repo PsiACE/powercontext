@@ -43,5 +43,5 @@ failure = "continue"
 
 [setup]
 module = "opencode"
-options = []
+options = ["server_url"]
 executable = "opencode"

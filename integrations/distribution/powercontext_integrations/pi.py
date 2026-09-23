@@ -61,7 +61,7 @@ class _PiPackageListing:
     scope: str
 
 
-def install_pi_plugin(*, source: str, ref: str) -> PiSetupResult:
+def install_pi_plugin(*, source: str, ref: str, server_url: str = "http://127.0.0.1:8000") -> PiSetupResult:
     """Install the native Pi package from a checkout or Git source."""
 
     pi_executable()
@@ -78,7 +78,6 @@ def install_pi_plugin(*, source: str, ref: str) -> PiSetupResult:
     from .authorization import (
         configure_stored_authorization,
         setup_authorization_value,
-        setup_server_url,
     )
 
     return PiSetupResult(
@@ -87,7 +86,7 @@ def install_pi_plugin(*, source: str, ref: str) -> PiSetupResult:
         data_dir=str(data_dir),
         authorization_state=configure_stored_authorization(
             "pi",
-            server_url=setup_server_url("pi", "http://127.0.0.1:8000"),
+            server_url=server_url,
             value=setup_authorization_value("pi"),
         ),
     )

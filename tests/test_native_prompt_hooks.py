@@ -50,7 +50,7 @@ class Hook:
         body = json.loads(request.content)
         self.requests.append((path, body))
         if self.slow == path:
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.1)
         if path in self.responses:
             response = self.responses[path]
             return response if isinstance(response, httpx.Response) else httpx.Response(200, json=response)
@@ -129,6 +129,13 @@ def hook(request, monkeypatch, tmp_path):
 
 def context(output):
     return output.get("hookSpecificOutput", {}).get("additionalContext")
+
+
+def test_default_budget_allows_recall_taking_more_than_one_second(hook):
+    hook.settings = type(hook.settings)(capture_prompts=False)
+    hook.slow = "/v1/context/prepare"
+
+    assert context(hook.run()[0]) == RECALLED_CONTEXT
 
 
 def test_recall_precedes_capture_and_flush_preserves_native_identity(hook):

@@ -146,6 +146,8 @@ def test_setup_loads_a_new_target_from_source_and_doctor_reuses_it(tmp_path, mon
     (assets / "resources.json").write_text(json.dumps(resources))
     monkeypatch.setenv("POWERCONTEXT_CLIENT_CONFIG_FILE", str(tmp_path / "clients.json"))
     monkeypatch.delenv("POWERCONTEXT_INTEGRATIONS_SOURCE", raising=False)
+    env_file = tmp_path / "selected.env"
+    env_file.write_text("POWERCONTEXT_CLIENT_SERVER_URL=https://memory.example/proxy\n")
     app = create_cli()
     runner = CliRunner()
 
@@ -153,6 +155,8 @@ def test_setup_loads_a_new_target_from_source_and_doctor_reuses_it(tmp_path, mon
         app,
         [
             "setup",
+            "--env-file",
+            str(env_file),
             "evaluation-probe",
             "--source",
             str(source),
@@ -162,6 +166,8 @@ def test_setup_loads_a_new_target_from_source_and_doctor_reuses_it(tmp_path, mon
         ],
     )
     assert setup.exit_code == 0, setup.output
+    installed_mcp = json.loads((tmp_path / "plugin/mcp.json").read_text())
+    assert installed_mcp["mcpServers"]["powercontext"]["url"] == "https://memory.example/proxy/mcp"
     doctor = runner.invoke(app, ["doctor", "evaluation-probe", "--json"])
     assert doctor.exit_code == 0, doctor.output
     assert json.loads(doctor.output)["ok"] is True

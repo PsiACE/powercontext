@@ -29,5 +29,5 @@ failure = "continue"
 
 [setup]
 module = "dsh"
-options = []
+options = ["server_url"]
 executable = "dsh"

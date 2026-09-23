@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 from functools import wraps
+from pathlib import Path
+from typing import Annotated
 
 import typer
 from typer.core import TyperGroup
@@ -70,7 +72,13 @@ class IntegrationGroup(TyperGroup):
             def install(**kwargs):
                 kwargs["source"] = str(root)
                 kwargs["ref"] = ctx.meta.get("integration_selection", {}).get("ref") or DEFAULT_REF
-                return callback(**kwargs)
+                transport = load_rules(root, "transport")
+                env_file = ctx.params.get("env_file")
+                token = transport.setup_environment_file.set(Path(env_file) if env_file is not None else None)
+                try:
+                    return callback(**kwargs)
+                finally:
+                    transport.setup_environment_file.reset(token)
 
             command.callback = install
         return command
@@ -86,5 +94,9 @@ setup_app = typer.Typer(
 
 
 @setup_app.callback()
-def setup() -> None:
+def setup(
+    env_file: Annotated[
+        Path | None, typer.Option(help="Setup environment file; defaults to .env in this directory.")
+    ] = None,
+) -> None:
     """Run a target's shared setup flow in the installed Python environment."""

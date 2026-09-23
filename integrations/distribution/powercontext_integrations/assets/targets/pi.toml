@@ -57,5 +57,5 @@ failure = "continue"
 
 [setup]
 module = "pi"
-options = []
+options = ["server_url"]
 executable = "pi"
