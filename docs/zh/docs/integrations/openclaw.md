@@ -47,9 +47,7 @@ OpenClaw 构建 prompt 前，插件会以默认 8000-byte 预算调用一次 `PO
 幂等的。group、channel 和 incognito 会话会被排除。插件不会同步完整 OpenClaw transcript。Server 不可用、超时、
 重定向或响应不符合契约时，召回、采集和边界 flush 都会正常降级：prompt 不变，普通工作不会被阻塞。
 
-插件暴露五个工具：`powercontext_memory_search`、`powercontext_memory_get`、`powercontext_memory_store`、
-`powercontext_memory_revise` 和 `powercontext_memory_retire`。写工具需要模型显式调用，由 OpenClaw 控制
-side-effecting 工具的执行。
+插件注册统一基准工具集，涵盖 Memory、工作契约、Handoff 和产物审阅。Setup 从同一目录生成工具授权配置，doctor 报告缺失项。写入工具需要模型显式调用；执行权限和会话权限由 OpenClaw 控制。
 
 显式 search 和 get 会直接调用 `/v1/memory/search` 与 `/v1/memory/entries/get`，不会调用
 `/v1/context/prepare`。search 将查询限制为 8192 个字符，并把请求的结果上限约束在 1–50（默认 10）；

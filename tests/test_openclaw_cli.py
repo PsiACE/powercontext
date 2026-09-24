@@ -25,6 +25,7 @@ import powercontext_integrations.openclaw as openclaw_cli
 import powercontext_integrations.system as system_cli
 import pytest
 from powercontext_integrations.openclaw import OpenClawSetupResult
+from powercontext_integrations.resources import render_resources
 from powercontext_integrations.system import DiagnosticStatus, SetupError, doctor_app, setup_app
 from typer.testing import CliRunner
 
@@ -76,14 +77,11 @@ def test_configure_openclaw_preserves_existing_tools_and_adds_missing_tools(monk
 
     allowlist_call = run_openclaw.call_args_list[1]
     assert allowlist_call.args[:3] == ("openclaw", "config", "set")
-    assert json.loads(allowlist_call.args[4]) == [
-        "custom_tool",
-        "powercontext_memory_get",
-        "powercontext_memory_search",
-        "powercontext_memory_store",
-        "powercontext_memory_revise",
-        "powercontext_memory_retire",
-    ]
+    grants = json.loads(allowlist_call.args[4])
+    tools = json.loads(render_resources("openclaw")["tools.generated.json"])["bindings"]
+    assert grants[:2] == ["custom_tool", "powercontext_memory_get"]
+    assert set(grants) == {"custom_tool", *(tool["name"] for tool in tools)}
+    assert len(grants) == len(set(grants))
     assert run_openclaw.call_args_list[-1].args == ("openclaw", "gateway", "restart")
 
 
@@ -278,12 +276,33 @@ def test_run_openclaw_diagnostics_reports_installed_plugin(monkeypatch: pytest.M
     )
     monkeypatch.setattr(openclaw_cli, "openclaw_executable", lambda: "/usr/bin/openclaw")
     monkeypatch.setattr(openclaw_cli, "run_process", run_process)
+    monkeypatch.setattr(openclaw_cli, "read_tools_allowlist", lambda _: list(openclaw_cli.POWERCONTEXT_TOOLS))
 
     diagnostics = openclaw_cli.run_openclaw_diagnostics()
 
     assert diagnostics["openclaw"].status is DiagnosticStatus.OK
     assert diagnostics["plugin"].status is DiagnosticStatus.OK
     assert diagnostics["plugin"].detail == "memory-powercontext is installed and active"
+    assert diagnostics["tools"].status is DiagnosticStatus.OK
+
+
+@pytest.mark.parametrize("grants", [["powercontext_memory_get"], ["powercontext_*"], ["memory-powercontext"]])
+def test_openclaw_doctor_checks_catalog_tool_grants(monkeypatch: pytest.MonkeyPatch, grants) -> None:
+    monkeypatch.setattr(openclaw_cli, "openclaw_executable", lambda: "/usr/bin/openclaw")
+    monkeypatch.setattr(
+        openclaw_cli, "run_openclaw", lambda *args: CompletedProcess(args, 0, _openclaw_plugin_list_output())
+    )
+    monkeypatch.setattr(openclaw_cli, "read_config_value", lambda *_: "memory-powercontext")
+    monkeypatch.setattr(openclaw_cli, "read_tools_allowlist", lambda _: grants)
+
+    tools = openclaw_cli.run_openclaw_diagnostics()["tools"]
+
+    if grants == ["powercontext_memory_get"]:
+        assert tools.status is DiagnosticStatus.DEGRADED
+        assert "powercontext_review_list" in tools.detail
+        assert "powercontext_memory_get" not in tools.detail
+    else:
+        assert tools.status is DiagnosticStatus.OK
 
 
 def test_run_openclaw_diagnostics_reads_memory_slot_when_plugin_list_omits_selection(
@@ -297,6 +316,8 @@ def test_run_openclaw_diagnostics_reads_memory_slot_when_plugin_list_omits_selec
             return CompletedProcess(command, 0, output, "")
         if command[1:4] == ["config", "get", "plugins.slots.memory"]:
             return CompletedProcess(command, 0, json.dumps("memory-powercontext"), "")
+        if command[1:4] == ["config", "get", "tools.alsoAllow"]:
+            return CompletedProcess(command, 0, json.dumps(list(openclaw_cli.POWERCONTEXT_TOOLS)), "")
         raise AssertionError(command)
 
     monkeypatch.setattr(openclaw_cli, "openclaw_executable", lambda: "/usr/bin/openclaw")
@@ -378,6 +399,7 @@ def test_doctor_openclaw_reports_an_installed_plugin_as_json(
     )
     monkeypatch.setattr(openclaw_cli, "openclaw_executable", lambda: "/usr/bin/openclaw")
     monkeypatch.setattr(openclaw_cli, "run_process", run_process)
+    monkeypatch.setattr(openclaw_cli, "read_tools_allowlist", lambda _: list(openclaw_cli.POWERCONTEXT_TOOLS))
 
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "openclaw", "--json"])
 
@@ -385,6 +407,7 @@ def test_doctor_openclaw_reports_an_installed_plugin_as_json(
     report = json.loads(result.output)
     assert report["checks"]["openclaw"]["ok"] is True
     assert report["checks"]["plugin"]["ok"] is True
+    assert report["checks"]["tools"]["ok"] is True
 
 
 def test_doctor_openclaw_exits_nonzero_when_plugin_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:

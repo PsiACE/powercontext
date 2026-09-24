@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // These tests exercise native host behavior; worker.spec.ts covers the real Python boundary.
 import powercontextPi from '../extensions/powercontext.ts'
 import { GUIDANCE } from '../src/guidance.ts'
+import { HOOK_BINDINGS } from '../src/hooks.generated.ts'
 
 type Handler = (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown>
 
@@ -50,6 +51,24 @@ afterEach(() => {
 })
 
 describe('PowerContext Pi extension', () => {
+  it('uses distribution bindings to remove and retarget native hooks', () => {
+    const original = HOOK_BINDINGS.map(binding => ({ ...binding }))
+    try {
+      HOOK_BINDINGS.splice(0, HOOK_BINDINGS.length, {
+        event: 'turn_end', handler: 'extensions/powercontext.ts:agent_end',
+      })
+      expect([...installExtension().keys()]).toEqual(['turn_end'])
+      HOOK_BINDINGS[0]!.handler = 'extensions/powercontext.ts:missing'
+      expect(() => installExtension()).toThrow('Missing native hook')
+    } finally {
+      HOOK_BINDINGS.splice(0, HOOK_BINDINGS.length, ...original)
+    }
+  })
+
+  it('registers the complete hook catalog', () => {
+    expect(new Set(installExtension().keys())).toEqual(new Set(HOOK_BINDINGS.map(binding => binding.event)))
+  })
+
   it('injects prepared context and captures the submitted prompt in the current Scope', async () => {
     vi.stubEnv('POWERCONTEXT_PI_SCOPE_ID', 'project:demo')
     const fetch = scopeAwareFetch(async (url: string, _init?: RequestInit) => {

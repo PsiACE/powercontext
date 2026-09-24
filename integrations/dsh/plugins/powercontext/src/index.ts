@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { createHookRegistry } from './hooks.generated.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { combineSignals, PowerContextClient } from './client.ts'
 import { registerCommands } from './commands.ts'
@@ -87,7 +88,8 @@ function createRuntime(ctx: Context, config: PluginConfig): PluginRuntime {
 }
 
 function registerRecall(ctx: Context, runtime: PluginRuntime, createUserMessage: CreateUserMessage): void {
-  ctx.on('agent/pre-step', (async (payload: {
+  const hooks = createHookRegistry('src/index.ts', ctx.on.bind(ctx))
+  hooks.on('agent/pre-step', (async (payload: {
     agent: { session: { header: { id: string; cwd?: string } } }
     messages: PromptMessage[]
     turn: number
@@ -116,6 +118,7 @@ function registerRecall(ctx: Context, runtime: PluginRuntime, createUserMessage:
       status: runtime.status,
     })
   }) as never)
+  hooks.register()
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {

@@ -20,13 +20,6 @@ kind = "framework_adapter"
 language = "python"
 source = "integrations/langgraph"
 
-[[hooks]]
-event = "recall"
-handler = "src/powercontext_langgraph/recall.py:__call__"
-operations = ["resolve_scope_binding", "prepare_context"]
-effects = ["context"]
-failure = "continue"
-
 [setup]
 options = ["python"]
 package = "powercontext-langgraph"

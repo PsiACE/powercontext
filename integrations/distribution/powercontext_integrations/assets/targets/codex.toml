@@ -26,31 +26,19 @@ command_style = "shell"
 [[hooks]]
 event = "SessionStart"
 handler = "hooks/session_binding.py"
-operations = ["resolve_scope_binding","set_scope_binding"]
-effects = []
-failure = "continue"
 
 [[hooks]]
 event = "PreToolUse"
 handler = "hooks/bind_tools.py"
-operations = ["resolve_scope_binding"]
-effects = ["input_patch"]
-failure = "reject"
 matcher = "mcp__powercontext__.*"
 
 [[hooks]]
 event = "UserPromptSubmit"
 handler = "hooks/recall.py"
-operations = ["prepare_context","capture_content_source","flush_memory"]
-effects = ["context","diagnostic"]
-failure = "continue"
 
 [[hooks]]
 event = "Stop"
 handler = "hooks/token_savings.py"
-operations = ["get_stats"]
-effects = ["diagnostic"]
-failure = "continue"
 
 [setup]
 module = "codex"

@@ -786,6 +786,8 @@ def test_extended_tools_are_registered_and_scope_bound(provider_and_client):
 
     schemas = provider.get_tool_schemas()
     assert "powercontext_list_memory_entries" in {schema["name"] for schema in schemas}
+    catalog = json.loads((HERMES_ROOT / "plugins/powercontext/tools.generated.json").read_text())
+    assert {schema["name"] for schema in schemas} == {tool["name"] for tool in catalog["bindings"]}
 
     result = json.loads(
         provider.handle_tool_call(

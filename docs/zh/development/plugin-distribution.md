@@ -58,7 +58,7 @@ Host command -> connection -> Client Server checks -> native display
 - `integrations/agent-plugin/powercontext/` 是可直接维护的基准，包含标准 Skills、工作流引用和 MCP 配置。`integrations/agent-plugin/operations.json` 选择最小公共工具集，参数 schema 和描述来自客户端契约。其他宿主从基准生成，不再各自定义方法论。
 - `integrations/distribution/powercontext_integrations/assets/` 保存原生格式模板和绑定。`resources.json` 提供 MCP 字段与注册形式，`tool-bindings.json` 保留已有工具名。Scope 解析、当前工作直接 Handoff、Memory 列表和候选读取遵循相同流程。
 - `resources.py` 为 setup 与分发生成同一组资源。DSH 将基准引用注册为运行时 Skill，其他支持 Skill 的宿主生成文件。MCP 的封装、端点路径、schema 元数据和凭据字段仅做原生格式转换；WorkBuddy 合并配置也使用同一生成入口。交互确认与工具可见性由宿主代码控制。
-- `integrations/distribution/powercontext_integrations/assets/targets/` 声明源码布局，以及原生事件、处理器、操作、效果和失败行为。操作 ID 来自客户端契约。Hook 声明描述原生绑定，不是可执行的生命周期计划；原生事件注册仍由适配器完成。不另行维护能力清单或源码探测器。
+- `integrations/distribution/powercontext_integrations/assets/targets/` 声明源码布局与实际参与注册的事件绑定。Setup 与包构建共享命令清单生成入口。TypeScript 适配器收集保留原生类型的回调，生成的注册器解析每个已声明处理器，并按定义的事件注册；缺失处理器会拒绝注册，未声明的回调不会注册。WorkBuddy 将同一绑定写入原生设置，并移除过期的自有事件。Bub、Hermes 与框架回调由宿主类接口发现，Target 不重复维护方法名单。操作选择、输出效果和失败处理由实际处理器执行，不再保留只描述策略的字段。`resources.json` 选择兼容性扩展工具；公共目录驱动原生注册、setup 授权配置、诊断和能力视图。不另行维护能力清单或源码探测器。
 - `scripts/build_agent_distributions.py` 将生成资源叠加到原生适配器并记录文件哈希。除基准包外，Skills、MCP、工具 schema、指引和桥接代码均为生成产物。原生包携带 `tools.generated.json`，SDK 适配器直接读取，避免将重复 schema 嵌入 JavaScript bundle。
 
 ```text
@@ -96,7 +96,7 @@ powercontext doctor langchain --server
 
 Python 包通过 `uvx` 安装到应用解释器，依次选择显式参数、已保存解释器、当前项目的 `.venv`，不会隐式使用 CLI 工具环境。MiniMax 使用原生插件目录，通过 `mcode plugin list` 验证发现；通用插件需要指定目标目录，并在加载它的 Agent 中注册。setup 记录安装位置，后续 doctor 直接复用。多目标选择包含多个目录型目标时，分别安装到 `<destination>/<target>`。
 
-目录命令直接报告构建使用的配置，包括语言和 Hook 操作。它描述已声明的原生绑定，不表示服务当前可用，也不穷举动态授权后的工具。安装状态使用 `powercontext doctor integrations` 检查；当前权限以宿主实际工具目录为准。
+目录命令报告实际 Hook 注册与模型工具使用的绑定，包含兼容性扩展工具。它不根据处理器名称推断操作覆盖，也不把原生类方法描述为生成的 Hook。`--list --format markdown` 输出生成的对照表，`make agent-resources` 同时刷新集成能力页面。MCP 发现、宿主权限和服务可用性仍由运行时决定；安装状态使用 `powercontext doctor integrations` 检查。OpenClaw doctor 按同一目录检查 setup 工具授权配置，不覆盖会话策略。
 
 新增宿主时，实现原生事件、确认和输出适配器，增加 Target 配置并绑定原生格式。复用基准工具集和工作流，在适配边界转换宿主返回封装，不单独维护方法论。
 

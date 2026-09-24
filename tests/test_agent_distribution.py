@@ -21,6 +21,7 @@ from pathlib import PurePosixPath
 
 import pytest
 from agent_distribution import ROOT, assemble, require_runners, write_package
+from powercontext_integrations.host import HostAdapter
 from powercontext_integrations.resources import install_resources, render_resources
 from powercontext_integrations.targets import load_targets
 from typer.testing import CliRunner
@@ -121,6 +122,19 @@ def test_setup_regenerates_resources_and_preserves_private_mcp_configuration(tmp
     install_resources("codex", tmp_path, server_url="https://new.example")
     config["mcpServers"]["powercontext"]["url"] = "https://new.example/mcp/"
     assert json.loads(path.read_text()) == config
+
+
+def test_setup_and_distribution_apply_the_same_changed_hook_binding(tmp_path) -> None:
+    target = next(target for target in load_targets() if target.target == "codex")
+    binding = target.hooks[0].model_copy(update={"event": "Stop", "handler": "hooks/recall.py"})
+    target = target.model_copy(update={"hooks": (binding,)})
+    assert target.hook_file is not None
+    HostAdapter(target).prepare(tmp_path)
+    installed = (tmp_path / target.hook_file).read_bytes()
+    assert installed == assemble(target)[target.hook_file]
+    hooks = json.loads(installed)["hooks"]
+    assert set(hooks) == {"Stop"}
+    assert hooks["Stop"][0]["hooks"][0]["command"].endswith('/hooks/recall.py"')
 
 
 @pytest.mark.parametrize("missing", ["npx", "powercontext-hook"])

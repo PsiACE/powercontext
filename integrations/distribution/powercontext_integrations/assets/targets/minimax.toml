@@ -27,9 +27,6 @@ command_style = "shell"
 [[hooks]]
 event = "UserPromptSubmit"
 handler = "hooks/recall.py"
-operations = ["resolve_scope_binding", "prepare_context"]
-effects = ["context"]
-failure = "continue"
 
 [setup]
 module = "minimax"

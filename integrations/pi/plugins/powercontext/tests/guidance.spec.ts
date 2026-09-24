@@ -18,11 +18,28 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 // These tests exercise native host behavior; worker.spec.ts covers the real Python boundary.
 import { join } from 'node:path'
+import { TOOL_BINDINGS } from '../src/tools.generated.ts'
 import { expect, it, vi } from 'vitest'
 import { Value } from 'typebox/value'
 import type { TSchema } from 'typebox'
 import powercontextPi from '../extensions/powercontext.ts'
 import { GUIDANCE } from '../src/guidance.ts'
+
+it('does not register a compatibility tool removed from the distribution catalog', () => {
+  const index = TOOL_BINDINGS.findIndex(tool => tool.name === 'pc_stats')
+  const [binding] = TOOL_BINDINGS.splice(index, 1)
+  try {
+    const names = new Set<string>()
+    powercontextPi({
+      on: () => undefined, registerCommand: () => undefined,
+      registerTool: (tool: { name: string }) => names.add(tool.name),
+    } as never)
+    expect(names.has('pc_stats')).toBe(false)
+    expect(names.has('pc_remember')).toBe(true)
+  } finally {
+    TOOL_BINDINGS.splice(index, 0, binding!)
+  }
+})
 
 it('routes only to the registered Pi tools without requiring a Skill load', () => {
   const tools: Array<{ name: string; description: string; parameters: unknown }> = []
@@ -31,6 +48,7 @@ it('routes only to the registered Pi tools without requiring a Skill load', () =
     registerTool: (tool: typeof tools[number]) => tools.push(tool),
   } as never)
   const names = new Set(tools.map(tool => tool.name))
+  expect(names).toEqual(new Set(TOOL_BINDINGS.map(tool => tool.name)))
   const finalize = tools.find(tool => tool.name === 'pc_handoff_finalize')!
   const citation = { kind: 'source', source_ref: { name: 'content', source_id: 'boundary' } }
   const draft = { objective: 'Review docs', state: [{ text: 'README checked', citations: [citation] }],

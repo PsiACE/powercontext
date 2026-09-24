@@ -90,13 +90,13 @@ from .helpers import (
 from .helpers import (
     redact_secrets as _redact_secrets,
 )
-from .operations import OPERATION_TOOL_MAP as _OPERATION_TOOL_MAP
 from .powercontext_client_config import (
     load_client_settings,
     normalize_server_url,
     parse_boolean,
     resolve_allow_insecure_http,
 )
+from .standard_tools import TOOL_BINDINGS
 
 try:
     from agent.memory_provider import MemoryProvider, RecallStatus  # ty: ignore[unresolved-import]
@@ -165,13 +165,7 @@ class InvalidScopeBindingError(PowerContextError):
 class PowerContextMemoryProvider(MemoryProvider):
     """Hermes provider backed by a running PowerContext server."""
 
-    _tool_names: ClassVar[set[str]] = {
-        "powercontext_search_memory",
-        "powercontext_get_memory",
-        "powercontext_remember",
-        "powercontext_retire_memory",
-        *_OPERATION_TOOL_MAP,
-    }
+    _tool_names: ClassVar[set[str]] = set(TOOL_BINDINGS)
 
     def __init__(self, config: dict[str, Any] | None = None, *, client_factory=None) -> None:
         self._config = dict(config or {})

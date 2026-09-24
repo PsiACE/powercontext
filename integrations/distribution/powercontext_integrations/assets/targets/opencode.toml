@@ -23,23 +23,18 @@ source = "integrations/opencode/plugins/powercontext"
 [[hooks]]
 event = "chat.message"
 handler = "src/index.ts:chat.message"
-operations = ["resolve_scope_binding", "capture_content_source", "flush_memory", "prepare_context"]
-effects = ["diagnostic"]
-failure = "continue"
 
 [[hooks]]
 event = "experimental.chat.messages.transform"
 handler = "src/index.ts:experimental.chat.messages.transform"
-operations = []
-effects = ["context"]
-failure = "continue"
 
 [[hooks]]
 event = "experimental.chat.system.transform"
 handler = "src/index.ts:experimental.chat.system.transform"
-operations = []
-effects = ["context"]
-failure = "continue"
+
+[[hooks]]
+event = "event"
+handler = "src/index.ts:event"
 
 [setup]
 module = "opencode"

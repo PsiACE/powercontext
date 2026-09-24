@@ -23,9 +23,10 @@ source = "integrations/dsh/plugins/powercontext"
 [[hooks]]
 event = "agent/pre-step"
 handler = "src/index.ts:agent/pre-step"
-operations = ["resolve_scope_binding", "capture_content_source", "flush_memory", "prepare_context"]
-effects = ["context", "diagnostic"]
-failure = "continue"
+
+[[hooks]]
+event = "tools/pre-execute"
+handler = "src/tools.ts:tools/pre-execute"
 
 [setup]
 module = "dsh"

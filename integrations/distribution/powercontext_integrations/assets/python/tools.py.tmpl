@@ -18,6 +18,12 @@ import json
 from pathlib import Path
 
 _DATA = json.loads(Path(__file__).with_name("tools.generated.json").read_text(encoding="utf-8"))
+TOOL_BINDINGS = {tool["name"]: tool["operation"] for tool in _DATA["bindings"]}
+
+
+def select_tools(schemas):
+    by_name = {schema["name"]: schema for schema in schemas}
+    return [by_name[name] for name in TOOL_BINDINGS]
 
 
 def _resolve_schema(value):

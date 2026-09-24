@@ -17,15 +17,19 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tool } from '@opencode-ai/plugin'
+import { TOOL_BINDINGS } from '../src/tools.generated.ts'
 import { expect, it } from 'vitest'
 import { PowerContextPlugin } from '../src/index.ts'
+import { HOOK_BINDINGS } from '../src/hooks.generated.ts'
 
 it('exposes guidance through the actual system transform and resolves its tool names', async () => {
   const hooks = await PowerContextPlugin({ directory: '/fixture', client: { app: { log: async () => ({}) } } } as never)
+  expect(new Set(Object.keys(hooks).filter(name => name !== 'tool'))).toEqual(new Set(HOOK_BINDINGS.map(binding => binding.event)))
   const output = { system: [] as string[] }
   await hooks['experimental.chat.system.transform']?.({ model: {} as never }, output)
   const tools = Object.entries(hooks.tool ?? {}).map(([name, definition]) => ({ name, ...definition }))
   const names = new Set(tools.map(tool => tool.name))
+  expect(names).toEqual(new Set(TOOL_BINDINGS.map(tool => tool.name)))
   const finalize = tools.find(tool => tool.name === 'pc_handoff_finalize')!
   const parameters = tool.schema.object(finalize.args)
   const citation = { kind: 'source', source_ref: { name: 'content', source_id: 'boundary' } }

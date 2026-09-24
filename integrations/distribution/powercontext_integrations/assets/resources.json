@@ -45,7 +45,30 @@
     "skills": {
       "tools": "hermes"
     },
-    "runtime": "python"
+    "runtime": "python",
+    "tool_extensions": [
+      "prepare_context",
+      "capture_content_source",
+      "list_memory_changes",
+      "flush_memory",
+      "get_stats",
+      "activate_handoff",
+      "prepare_handoff",
+      "finalize_handoff",
+      "propose_experience",
+      "generate_experience",
+      "get_experience",
+      "propose_skill",
+      "generate_skill",
+      "get_skill",
+      "scan_external_skills",
+      "list_external_skills",
+      "resolve_external_skill",
+      "import_external_skill",
+      "approve_artifact_candidate",
+      "reject_artifact_candidate",
+      "revise_artifact_candidate"
+    ]
   },
   "minimax": {
     "skills": {},
@@ -66,14 +89,47 @@
     "skills": {
       "tools": "pc"
     },
-    "runtime": "typescript"
+    "runtime": "typescript",
+    "tool_extensions": [
+      "prepare_context",
+      "capture_content_source",
+      "activate_handoff",
+      "prepare_handoff",
+      "finalize_handoff",
+      "generate_experience",
+      "get_experience",
+      "generate_skill",
+      "get_skill"
+    ]
   },
   "pi": {
     "skills": {
       "tools": "pc",
       "agent_metadata": true
     },
-    "runtime": "typescript"
+    "runtime": "typescript",
+    "tool_extensions": [
+      "list_memory_changes",
+      "get_stats",
+      "prepare_context",
+      "capture_content_source",
+      "activate_handoff",
+      "prepare_handoff",
+      "finalize_handoff",
+      "generate_experience",
+      "generate_skill",
+      "get_experience",
+      "get_skill",
+      "search_topic_memory",
+      "get_topic_memory",
+      "approve_artifact_candidate",
+      "reject_artifact_candidate",
+      "revise_artifact_candidate",
+      "scan_external_skills",
+      "list_external_skills",
+      "resolve_external_skill",
+      "import_external_skill"
+    ]
   },
   "workbuddy": {
     "skills": {},
@@ -100,6 +156,17 @@
       "tools": "pc",
       "runtime_skills": true
     },
-    "runtime": "typescript"
+    "runtime": "typescript",
+    "tool_extensions": [
+      "prepare_context",
+      "capture_content_source",
+      "activate_handoff",
+      "prepare_handoff",
+      "finalize_handoff",
+      "generate_experience",
+      "get_experience",
+      "generate_skill",
+      "get_skill"
+    ]
   }
 }

@@ -23,6 +23,7 @@ import { createDiagnosticEmitter, diagnosticWriter, failureEvent } from '../src/
 import { recallBeforeAgentStart, type PluginRuntime } from '../src/recall.ts'
 import { resolveScopeId } from '../src/scope.ts'
 import { registerTools } from '../src/tools.ts'
+import { createHookRegistry } from '../src/hooks.generated.ts'
 import { GUIDANCE } from '../src/guidance.ts'
 
 function createRuntime(): PluginRuntime {
@@ -53,6 +54,7 @@ function createRuntime(): PluginRuntime {
 }
 
 export default function powercontextPi(pi: ExtensionAPI): void {
+  const hooks = createHookRegistry('extensions/powercontext.ts', pi.on.bind(pi))
   let runtime: PluginRuntime | undefined
   try {
     runtime = createRuntime()
@@ -65,7 +67,7 @@ export default function powercontextPi(pi: ExtensionAPI): void {
     registerCommands(pi, runtime)
   }
 
-  pi.on('before_agent_start', async (event, ctx) => {
+  hooks.on('before_agent_start', async (event, ctx) => {
     if (!runtime) return undefined
     const systemPrompt = `${event.systemPrompt}\n\n${GUIDANCE}`
     const recalled = await recallBeforeAgentStart({
@@ -80,23 +82,24 @@ export default function powercontextPi(pi: ExtensionAPI): void {
     return recalled ?? { systemPrompt }
   })
 
-  pi.on('agent_end', (_event, ctx) => {
+  hooks.on('agent_end', (_event, ctx) => {
     void runtime?.flushPending?.(ctx.signal)
   })
 
-  pi.on('session_before_compact', async (event, _ctx) => {
+  hooks.on('session_before_compact', async (event, _ctx) => {
     await runtime?.flushPending?.(event.signal)
   })
 
-  pi.on('session_before_switch', async (_event, ctx) => {
+  hooks.on('session_before_switch', async (_event, ctx) => {
     await runtime?.flushPending?.(ctx.signal)
   })
 
-  pi.on('session_shutdown', async (_event, ctx) => {
+  hooks.on('session_shutdown', async (_event, ctx) => {
     try {
       await runtime?.flushPending?.(ctx.signal)
     } finally {
       if (runtime?.client instanceof PowerContextClient) runtime.client.close()
     }
   })
+  hooks.register()
 }

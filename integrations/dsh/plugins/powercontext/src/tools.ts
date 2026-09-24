@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
+import { createHookRegistry } from './hooks.generated.ts'
 import { invokeOperation, renderToolResult, reportDirectFailure, toolResultSchema, type PluginRuntime, type ToolResult } from './invoke.ts'
-import { STANDARD_TOOLS, toolPayload } from './tools.generated.ts'
+import { STANDARD_TOOLS, selectTools, toolPayload } from './tools.generated.ts'
 import type { JsonObject } from './client.ts'
 import { sessionCwd, UNSCOPED_MESSAGE } from './scope.ts'
 
@@ -276,7 +277,7 @@ export function registerTools(
   runtime: PluginRuntime,
   defineTool: DefineTool,
 ): void {
-  for (const tool of [
+  const tools = [
     ...STANDARD_TOOLS.map(definition => pcTool(defineTool, {
       name: definition.name,
       description: definition.description,
@@ -287,10 +288,12 @@ export function registerTools(
     ...contextTools(runtime, defineTool),
     ...handoffTools(runtime, defineTool),
     ...artifactTools(runtime, defineTool),
-  ]) {
+  ]
+  for (const tool of Object.values(selectTools(Object.fromEntries(tools.map(tool => [tool.name, tool]))))) {
     ctx.tools.register(tool)
   }
-  ctx.on('tools/pre-execute', (async (
+  const hooks = createHookRegistry('src/tools.ts', ctx.on.bind(ctx))
+  hooks.on('tools/pre-execute', (async (
     exec: { name: string },
     next: () => Promise<PreToolDecision>,
   ): Promise<PreToolDecision> => {
@@ -300,4 +303,5 @@ export function registerTools(
       reason: `PowerContext tool "${exec.name}" changes durable project context.`,
     }
   }) as never)
+  hooks.register()
 }

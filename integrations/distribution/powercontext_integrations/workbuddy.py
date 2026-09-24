@@ -45,6 +45,7 @@ from powercontext.paths import powercontext_data_dir
 from .hosts import host_adapter
 from .native import _write_bytes_atomically
 from .resources import render_mcp
+from .targets import Hook
 
 WORKBUDDY_HOME_ENV = "WORKBUDDY_HOME"
 WORKBUDDY_PLUGIN_NAME = "powercontext"
@@ -56,7 +57,6 @@ WORKBUDDY_SKILL_MANIFEST = ".powercontext.json"
 WORKBUDDY_HOOK_DRIVER = "workbuddy_powercontext_hook.py"
 WORKBUDDY_SCOPE_RESOLVER = "powercontext_scope_binding.py"
 WORKBUDDY_HOOK_MODULES = (
-    "workbuddy_powercontext_hook.py",
     "workbuddy_settings.py",
     "scope_context.py",
 )
@@ -227,7 +227,8 @@ def _install_hook_files(plugin_dir: Path, hooks_dir: Path) -> None:
     try:
         hooks_dir.mkdir(parents=True, exist_ok=True)
         source_hooks = plugin_dir / WORKBUDDY_HOOKS_DIRNAME
-        for name in WORKBUDDY_HOOK_MODULES:
+        for name in _hook_files():
+            (hooks_dir / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_hooks / name, hooks_dir / name)
         shutil.copy2(plugin_dir / "scripts" / "workspace_scope.py", hooks_dir / WORKBUDDY_SCOPE_RESOLVER)
     except OSError as error:
@@ -235,7 +236,7 @@ def _install_hook_files(plugin_dir: Path, hooks_dir: Path) -> None:
 
 
 def _merge_workbuddy_settings(settings_file: Path, hooks_dir: Path) -> None:
-    """Register the PowerContext UserPromptSubmit hook without dropping existing settings."""
+    """Apply Target hook bindings without dropping other integrations or user settings."""
 
     settings = _load_json_object(
         settings_file,
@@ -248,11 +249,26 @@ def _merge_workbuddy_settings(settings_file: Path, hooks_dir: Path) -> None:
     if not isinstance(hooks, dict):
         raise SetupError(f"WorkBuddy settings at {settings_file} must contain a JSON object with a hooks mapping.")
     hooks_dict = cast(dict[str, Any], hooks)
-    matchers = hooks_dict.setdefault("UserPromptSubmit", [])
-    if not isinstance(matchers, list):
-        raise SetupError(f"WorkBuddy settings at {settings_file} must contain a JSON object with a hooks mapping.")
-
-    _upsert_powercontext_hook(cast(list[Any], matchers), hooks_dir, settings_file)
+    bindings = host_adapter("workbuddy").target.hooks
+    for event, groups in hooks_dict.items():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if isinstance(group, dict) and isinstance(group.get("hooks"), list):
+                group["hooks"] = [
+                    entry
+                    for entry in group["hooks"]
+                    if not (isinstance(entry, dict) and _is_powercontext_hook(entry))
+                    or any(
+                        hook.event == event and hook.matcher == group.get("matcher") and _matches_hook(entry, hook)
+                        for hook in bindings
+                    )
+                ]
+    for hook in bindings:
+        matchers = hooks_dict.setdefault(hook.event, [])
+        if not isinstance(matchers, list):
+            raise SetupError(f"WorkBuddy settings at {settings_file} must contain a JSON object with a hooks mapping.")
+        _upsert_powercontext_hook(cast(list[Any], matchers), hooks_dir, settings_file, hook)
 
     try:
         _write_json_atomically(settings_file, settings)
@@ -345,12 +361,12 @@ def _install_workbuddy_skill(plugin_dir: Path, skills_dir: Path) -> None:
         raise SetupError(f"Cannot install PowerContext WorkBuddy skill at {target}: {error}") from error
 
 
-def _upsert_powercontext_hook(matchers: list[Any], hooks_dir: Path, settings_file: Path) -> None:
-    """Insert or update the PowerContext command hook inside the UserPromptSubmit matchers."""
+def _upsert_powercontext_hook(matchers: list[Any], hooks_dir: Path, settings_file: Path, hook: Hook) -> None:
+    """Insert or update one Target command binding in its native event group."""
 
     entry: dict[str, Any] = {
         "type": "command",
-        "command": _workbuddy_hook_command(hooks_dir),
+        "command": _workbuddy_hook_command(hooks_dir, Path(hook.handler).relative_to("hooks")),
         "timeout": WORKBUDDY_HOOK_TIMEOUT,
         "statusMessage": WORKBUDDY_HOOK_STATUS_MESSAGE,
     }
@@ -363,16 +379,18 @@ def _upsert_powercontext_hook(matchers: list[Any], hooks_dir: Path, settings_fil
             continue
         if not isinstance(group, list):
             raise SetupError(f"WorkBuddy settings at {settings_file} must contain a JSON object with a hooks mapping.")
+        if matcher_dict.get("matcher") != hook.matcher:
+            continue
         group_list = cast(list[Any], group)
         for index, existing in enumerate(group_list):
-            if isinstance(existing, dict) and _is_powercontext_hook(cast(dict[str, Any], existing)):
+            if isinstance(existing, dict) and _matches_hook(existing, hook):
                 group_list[index] = {**cast(dict[str, Any], existing), **entry}
                 return
-    matchers.append({"hooks": [entry]})
+    matchers.append({"hooks": [entry], **({"matcher": hook.matcher} if hook.matcher is not None else {})})
 
 
-def _workbuddy_hook_command(hooks_dir: Path) -> str:
-    script = hooks_dir / WORKBUDDY_HOOK_DRIVER
+def _workbuddy_hook_command(hooks_dir: Path, driver: str | Path = WORKBUDDY_HOOK_DRIVER) -> str:
+    script = hooks_dir / driver
     return f"powercontext-hook --script {_shell_argument(script.as_posix())}"
 
 
@@ -385,11 +403,23 @@ def _shell_argument(value: str | Path) -> str:
 
 def _is_powercontext_hook(entry: dict[str, Any]) -> bool:
     command = entry.get("command")
-    return isinstance(command, str) and WORKBUDDY_HOOK_DRIVER in command
+    return isinstance(command, str) and (
+        WORKBUDDY_HOOK_DRIVER in command or command.startswith("powercontext-hook --script ")
+    )
+
+
+def _matches_hook(entry: dict[str, Any], hook: Hook) -> bool:
+    command = entry.get("command")
+    return isinstance(command, str) and Path(hook.handler).name in command
+
+
+def _hook_files() -> set[Path]:
+    drivers = {Path(hook.handler).relative_to("hooks") for hook in host_adapter("workbuddy").target.hooks}
+    return {*map(Path, WORKBUDDY_HOOK_MODULES), *drivers}
 
 
 def _hooks_diagnostic(hooks_dir: Path) -> Diagnostic:
-    missing_modules = [name for name in WORKBUDDY_HOOK_MODULES if not (hooks_dir / name).is_file()]
+    missing_modules = [name for name in _hook_files() if not (hooks_dir / name).is_file()]
     if missing_modules or not (hooks_dir / WORKBUDDY_SCOPE_RESOLVER).is_file():
         return Diagnostic(
             status=DiagnosticStatus.FAILED,
@@ -444,19 +474,20 @@ def _settings_have_powercontext_hook(settings: dict[str, Any]) -> bool:
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
         return False
-    hooks_dict = cast(dict[str, Any], hooks)
-    matchers = hooks_dict.get("UserPromptSubmit")
-    if not isinstance(matchers, list):
-        return False
-    for matcher in cast(list[Any], matchers):
-        if not isinstance(matcher, dict):
-            continue
-        group = cast(dict[str, Any], matcher).get("hooks")
-        if not isinstance(group, list):
-            continue
-        if any(isinstance(entry, dict) and _is_powercontext_hook(cast(dict[str, Any], entry)) for entry in group):
-            return True
-    return False
+    for hook in host_adapter("workbuddy").target.hooks:
+        matchers = hooks.get(hook.event)
+        if not isinstance(matchers, list):
+            return False
+        registered = any(
+            isinstance(matcher, dict)
+            and matcher.get("matcher") == hook.matcher
+            and isinstance(matcher.get("hooks"), list)
+            and any(isinstance(entry, dict) and _matches_hook(entry, hook) for entry in matcher["hooks"])
+            for matcher in matchers
+        )
+        if not registered:
+            return False
+    return True
 
 
 def _is_workbuddy_plugin(path: Path) -> bool:

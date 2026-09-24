@@ -26,6 +26,7 @@ import powercontext_integrations.claude_code as claude_cli
 import powercontext_integrations.codex as codex_cli
 import powercontext_integrations.system as system_cli
 import pytest
+from powercontext_integrations.resources import tool_catalog
 from powercontext_integrations.system import Diagnostic, DiagnosticStatus, doctor_app, setup_app
 from typer.testing import CliRunner
 
@@ -44,6 +45,10 @@ from powercontext.service.model import (
 )
 
 _probe_codex_mcp_status = codex_cli._probe_codex_mcp_status
+
+
+def _native_mcp_server():
+    return {"name": "powercontext", "tools": {tool["name"]: {} for tool in tool_catalog("codex")}}
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +84,7 @@ def isolated_codex_plugin_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         codex_cli,
         "_probe_codex_mcp_status",
-        lambda **_kwargs: {"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}},
+        lambda **_kwargs: _native_mcp_server(),
     )
 
 
@@ -184,10 +189,11 @@ def test_codex_diagnostics_verify_native_mcp_tools_without_process_authorization
     assert diagnostics["mcp_configuration"].status is DiagnosticStatus.OK
     assert diagnostics["authorization"].status is DiagnosticStatus.OK
     assert diagnostics["mcp_tools"].status is DiagnosticStatus.OK
-    assert "2 tools" in diagnostics["mcp_tools"].detail
+    assert "14 tools" in diagnostics["mcp_tools"].detail
 
 
-def test_codex_diagnostics_fail_when_required_native_tools_are_missing(monkeypatch) -> None:
+@pytest.mark.parametrize("tools", [{}, {"remember_memory": {}, "search_memory": {}}])
+def test_codex_diagnostics_fail_when_required_native_tools_are_missing(monkeypatch, tools) -> None:
     monkeypatch.setattr(codex_cli, "which", lambda _name: "/usr/bin/codex")
     monkeypatch.setattr(
         codex_cli,
@@ -203,12 +209,14 @@ def test_codex_diagnostics_fail_when_required_native_tools_are_missing(monkeypat
             ]
         },
     )
-    monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", lambda **_kwargs: {"name": "powercontext", "tools": {}})
+    monkeypatch.setattr(
+        codex_cli, "_probe_codex_mcp_status", lambda **_kwargs: {"name": "powercontext", "tools": tools}
+    )
 
     diagnostics = codex_cli.run_codex_diagnostics()
 
     assert diagnostics["mcp_tools"].status is DiagnosticStatus.FAILED
-    assert "remember_memory, search_memory" in diagnostics["mcp_tools"].detail
+    assert "list_artifact_candidates" in diagnostics["mcp_tools"].detail
     assert "POWERCONTEXT_CODEX_AUTHORIZATION" in diagnostics["mcp_tools"].detail
 
 
@@ -423,7 +431,7 @@ def test_codex_diagnostics_use_matching_windows_user_authorization(tmp_path: Pat
         value="Bearer saved-token",
     )
     monkeypatch.setattr(authorization_cli, "read_codex_desktop_authorization", lambda: "Bearer saved-token")
-    probe = Mock(return_value={"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}})
+    probe = Mock(return_value=_native_mcp_server())
     monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", probe)
 
     diagnostics = codex_cli.run_codex_diagnostics()
@@ -462,7 +470,7 @@ def test_codex_diagnostics_prefer_process_authorization_over_stale_stored_creden
         value="Bearer old-token",
     )
     monkeypatch.setenv("POWERCONTEXT_CODEX_AUTHORIZATION", "Bearer replacement-token")
-    probe = Mock(return_value={"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}})
+    probe = Mock(return_value=_native_mcp_server())
     monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", probe)
 
     diagnostics = codex_cli.run_codex_diagnostics()
@@ -552,7 +560,7 @@ def test_codex_diagnostics_probe_lowercase_bearer_header_without_rewriting_it(tm
         "read_codex_desktop_authorization",
         lambda: "Bearer replacement-token",
     )
-    probe = Mock(return_value={"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}})
+    probe = Mock(return_value=_native_mcp_server())
     monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", probe)
 
     diagnostics = codex_cli.run_codex_diagnostics()
@@ -592,7 +600,7 @@ def test_codex_diagnostics_do_not_replace_process_authorization_with_windows_use
     )
     monkeypatch.setenv("POWERCONTEXT_CODEX_AUTHORIZATION", "Bearer replacement-token")
     monkeypatch.setattr(authorization_cli, "read_codex_desktop_authorization", lambda: "Bearer old-token")
-    probe = Mock(return_value={"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}})
+    probe = Mock(return_value=_native_mcp_server())
     monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", probe)
 
     diagnostics = codex_cli.run_codex_diagnostics()
@@ -632,7 +640,7 @@ def test_codex_diagnostics_report_matching_desktop_override_separately_from_stal
     )
     monkeypatch.setenv("POWERCONTEXT_CODEX_AUTHORIZATION", "Bearer replacement-token")
     monkeypatch.setattr(authorization_cli, "read_codex_desktop_authorization", lambda: "Bearer replacement-token")
-    probe = Mock(return_value={"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}})
+    probe = Mock(return_value=_native_mcp_server())
     monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", probe)
 
     diagnostics = codex_cli.run_codex_diagnostics()
@@ -670,7 +678,7 @@ def test_codex_diagnostics_probe_the_native_credential_helper_without_injecting_
     )
     if process_override:
         monkeypatch.setenv("POWERCONTEXT_CODEX_AUTHORIZATION", "Bearer override-test-token")
-    probe = Mock(return_value={"name": "powercontext", "tools": {"remember_memory": {}, "search_memory": {}}})
+    probe = Mock(return_value=_native_mcp_server())
     monkeypatch.setattr(codex_cli, "_probe_codex_mcp_status", probe)
 
     diagnostics = codex_cli.run_codex_diagnostics()

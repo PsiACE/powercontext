@@ -23,37 +23,22 @@ source = "integrations/pi/plugins/powercontext"
 [[hooks]]
 event = "before_agent_start"
 handler = "extensions/powercontext.ts:before_agent_start"
-operations = ["resolve_scope_binding","prepare_context","capture_content_source"]
-effects = ["context","diagnostic"]
-failure = "continue"
 
 [[hooks]]
 event = "agent_end"
 handler = "extensions/powercontext.ts:agent_end"
-operations = ["flush_memory"]
-effects = []
-failure = "continue"
 
 [[hooks]]
 event = "session_before_compact"
 handler = "extensions/powercontext.ts:session_before_compact"
-operations = ["flush_memory"]
-effects = []
-failure = "continue"
 
 [[hooks]]
 event = "session_before_switch"
 handler = "extensions/powercontext.ts:session_before_switch"
-operations = ["flush_memory"]
-effects = []
-failure = "continue"
 
 [[hooks]]
 event = "session_shutdown"
 handler = "extensions/powercontext.ts:session_shutdown"
-operations = ["flush_memory"]
-effects = []
-failure = "continue"
 
 [setup]
 module = "pi"

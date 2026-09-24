@@ -1,3 +1,4 @@
+import { createHookRegistry } from "./hooks.generated.js";
 import { Checkpoints, sourcePosition } from "./checkpoints.js";
 /*
  * Copyright (c) 2026 OceanBase.
@@ -52,6 +53,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       ...extra,
     });
   };
+  const hooks = createHookRegistry("src/lifecycle.ts", api.on.bind(api));
   const checkpoints = new Checkpoints();
   const captured = new Map<string, number>();
   const sessionScopes = new Map<string, Set<string>>();
@@ -152,7 +154,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     return true;
   };
 
-  api.on("before_prompt_build", async (event, ctx) => {
+  hooks.on("before_prompt_build", async (event, ctx) => {
     const config = deps.getConfig();
     const agentId = readAgentId(ctx.agentId);
     if (
@@ -205,7 +207,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     }
   });
 
-  api.on("agent_end", async (event, ctx) => {
+  hooks.on("agent_end", async (event, ctx) => {
     const agentId = readAgentId(ctx.agentId);
     if (!event.success || !agentId) {
       return;
@@ -224,7 +226,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     }
   });
 
-  api.on("before_compaction", async (event, ctx) => {
+  hooks.on("before_compaction", async (event, ctx) => {
     const agentId = readAgentId(ctx.agentId);
     if (!agentId || !deps.isPrivateSession(agentId, ctx.sessionKey)) {
       return;
@@ -264,7 +266,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     }
   });
 
-  api.on("session_end", async (event, ctx) => {
+  hooks.on("session_end", async (event, ctx) => {
     const agentId = readAgentId(ctx.agentId);
     const sessionKey = ctx.sessionKey ?? event.sessionKey;
     if (!agentId || !deps.isPrivateSession(agentId, sessionKey)) {
@@ -301,4 +303,5 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       reportFailure("session_end_flush", error);
     }
   });
+  hooks.register();
 }

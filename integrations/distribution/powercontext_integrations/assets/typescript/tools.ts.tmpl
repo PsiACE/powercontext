@@ -27,9 +27,19 @@ type ToolDefinition = {
   parameters: { type: 'object'; properties: Record<string, any>; required: string[]; [key: string]: any }
   mutates: boolean
 }
-const { definitions: DEFINITIONS, tools: TOOL_DATA } = JSON.parse(
+const { definitions: DEFINITIONS, tools: TOOL_DATA, bindings: TOOL_BINDINGS } = JSON.parse(
   readFileSync(new URL('../tools.generated.json', import.meta.url), 'utf8'),
-) as { definitions: Record<string, any>; tools: ToolDefinition[] }
+) as { definitions: Record<string, any>; tools: ToolDefinition[]; bindings: { name: string; operation: OperationId; origin: string }[] }
+
+export { TOOL_BINDINGS }
+
+export function selectTools<T>(tools: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(TOOL_BINDINGS.map(({ name }) => {
+    const tool = tools[name]
+    if (!Object.hasOwn(tools, name) || tool === undefined) throw new Error(`Missing native tool binding: ${name}`)
+    return [name, tool]
+  }))
+}
 
 function resolveSchema(value: any): any {
   if (Array.isArray(value)) return value.map(resolveSchema)

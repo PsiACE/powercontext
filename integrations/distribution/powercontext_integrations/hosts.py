@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 HOST_NAMES: tuple[str, ...] = tuple(host.name for host in HOST_ADAPTERS)
 _HOST_INDEX: dict[str, str] = {str(index): host.name for index, host in enumerate(HOST_ADAPTERS, start=1)}
-_INTEGRATION_KEYS = frozenset({"plugin", "package", "skill", "settings", "mcp", "client", "transport"})
+_INTEGRATION_KEYS = frozenset({"plugin", "package", "skill", "settings", "mcp", "client", "transport", "tools"})
 _PATH_MISSING = "is not installed or is not on PATH"
 
 

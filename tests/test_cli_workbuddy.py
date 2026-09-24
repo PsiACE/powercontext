@@ -18,6 +18,7 @@ import json
 import os
 import shlex
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -358,6 +359,43 @@ def test_setup_workbuddy_updates_an_existing_powercontext_hook(tmp_path: Path, m
     assert hook["timeout"] == 30
     assert hook["statusMessage"] == "Syncing PowerContext"
     assert hook["custom"] == "preserved"
+
+
+def test_workbuddy_retargets_owned_hooks_and_preserves_other_integrations(tmp_path, monkeypatch) -> None:
+    adapter = workbuddy_cli.host_adapter("workbuddy")
+    binding = adapter.target.hooks[0].model_copy(update={"event": "Stop"})
+    checkpoint = binding.model_copy(update={"handler": "hooks/checkpoint.py", "matcher": "*"})
+    adapter = replace(adapter, target=adapter.target.model_copy(update={"hooks": (binding, checkpoint)}))
+    monkeypatch.setattr(workbuddy_cli, "host_adapter", lambda _: adapter)
+    settings = tmp_path / "settings.json"
+    other = {"type": "command", "command": "other-hook"}
+    settings.write_text(
+        json.dumps({
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            other,
+                            {"type": "command", "command": "powercontext-hook --script workbuddy_powercontext_hook.py"},
+                        ]
+                    }
+                ]
+            }
+        })
+    )
+
+    workbuddy_cli._merge_workbuddy_settings(settings, tmp_path / "hooks")
+    workbuddy_cli._merge_workbuddy_settings(settings, tmp_path / "hooks")
+    installed = json.loads(settings.read_text())
+
+    assert installed["hooks"]["UserPromptSubmit"][0]["hooks"] == [other]
+    assert installed["hooks"]["Stop"][0]["hooks"][0]["command"] == _expected_hook_command(tmp_path / "hooks")
+    assert len(installed["hooks"]["Stop"]) == 2
+    assert installed["hooks"]["Stop"][1]["matcher"] == "*"
+    assert installed["hooks"]["Stop"][1]["hooks"][0]["command"].endswith("/checkpoint.py")
+    assert workbuddy_cli._settings_have_powercontext_hook(installed)
+    installed["hooks"]["Stop"].pop()
+    assert not workbuddy_cli._settings_have_powercontext_hook(installed)
 
 
 def test_setup_workbuddy_rolls_back_json_changes_on_failure(tmp_path: Path, monkeypatch) -> None:

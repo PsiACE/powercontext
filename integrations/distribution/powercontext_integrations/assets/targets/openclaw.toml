@@ -23,30 +23,18 @@ source = "integrations/openclaw/plugins/memory-powercontext"
 [[hooks]]
 event = "before_prompt_build"
 handler = "src/lifecycle.ts:before_prompt_build"
-operations = ["resolve_scope_binding", "prepare_context"]
-effects = ["context"]
-failure = "continue"
 
 [[hooks]]
 event = "agent_end"
 handler = "src/lifecycle.ts:agent_end"
-operations = ["resolve_scope_binding", "capture_content_source"]
-effects = []
-failure = "continue"
 
 [[hooks]]
 event = "before_compaction"
 handler = "src/lifecycle.ts:before_compaction"
-operations = ["capture_content_source", "get_capabilities", "flush_memory"]
-effects = []
-failure = "continue"
 
 [[hooks]]
 event = "session_end"
 handler = "src/lifecycle.ts:session_end"
-operations = ["get_capabilities", "flush_memory"]
-effects = []
-failure = "continue"
 
 [setup]
 module = "openclaw"

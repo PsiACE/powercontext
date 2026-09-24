@@ -20,20 +20,6 @@ kind = "framework_adapter"
 language = "python"
 source = "integrations/langchain"
 
-[[hooks]]
-event = "wrap_model_call"
-handler = "src/powercontext_langchain/middleware.py:wrap_model_call"
-operations = ["prepare_context"]
-effects = ["context"]
-failure = "continue"
-
-[[hooks]]
-event = "after_agent"
-handler = "src/powercontext_langchain/middleware.py:after_agent"
-operations = ["capture_content_source"]
-effects = []
-failure = "continue"
-
 [setup]
 options = ["python"]
 package = "powercontext-langchain"

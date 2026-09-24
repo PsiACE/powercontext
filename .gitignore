@@ -269,6 +269,7 @@ integrations/pi/plugins/powercontext/*.tgz
 /integrations/minimax/plugins/powercontext/powercontext.mcp.json
 /integrations/dsh/plugins/powercontext/src/domain-skills.ts
 /integrations/*/plugins/*/src/tools.generated.ts
+/integrations/*/plugins/*/src/hooks.generated.ts
 /integrations/claude-code/plugins/powercontext/scripts/workspace_scope.py
 /integrations/workbuddy/plugins/powercontext/scripts/workspace_scope.py
 /integrations/*/plugins/*/skills/powercontext-project-context/

@@ -70,9 +70,7 @@ source id, so repeated captures are idempotent. Group, channel, and incognito se
 synchronizes the complete OpenClaw transcript. Recall, capture, and boundary flushing fail open: an unavailable
 Server, timeout, redirect, or invalid response leaves the prompt unchanged and never blocks ordinary work.
 
-The plugin exposes five tools: `powercontext_memory_search`, `powercontext_memory_get`,
-`powercontext_memory_store`, `powercontext_memory_revise`, and `powercontext_memory_retire`. Mutating tools
-(`store`, `revise`, `retire`) are marked side-effecting in the plugin manifest.
+The plugin registers the shared baseline toolkit for Memory, work contracts, Handoff, and artifact review. Setup derives tool grants from the same catalog, and doctor reports missing grants. Mutating tools require an explicit model call; OpenClaw controls execution and session permissions.
 
 It also registers the `/pc` command for WebUI and other OpenClaw command surfaces. `/pc` and `/pc help` show the
 available controls; `/pc status` checks Server readiness and capabilities. The agent tools add a high-level Work

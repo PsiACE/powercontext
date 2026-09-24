@@ -1,4 +1,3 @@
-import { flushThrough, sourcePosition } from './checkpoints.ts'
 /*
  * Copyright (c) 2026 OceanBase.
  *
@@ -15,6 +14,8 @@ import { flushThrough, sourcePosition } from './checkpoints.ts'
  * limitations under the License.
  */
 
+import { selectHooks } from './hooks.generated.ts'
+import { flushThrough, sourcePosition } from './checkpoints.ts'
 import { createHash } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { type Plugin, type PluginInput, type PluginModule, tool } from '@opencode-ai/plugin'
@@ -26,7 +27,7 @@ import type { JsonObject } from './client.ts'
 import type { OperationId } from './operations.generated.ts'
 import type { PreparedContext } from './client.ts'
 import { resolveScopeId } from './scope.ts'
-import { STANDARD_TOOLS, STANDARD_TOOL_ARGS, toolPayload } from './tools.generated.ts'
+import { STANDARD_TOOLS, STANDARD_TOOL_ARGS, selectTools, toolPayload } from './tools.generated.ts'
 import { containsSecret } from './secrets.ts'
 
 import { GUIDANCE } from './guidance.ts'
@@ -310,7 +311,7 @@ function operationTool(
 }
 
 function createTools(runtime: Runtime) {
-  return {
+  return selectTools({
     ...Object.fromEntries(STANDARD_TOOLS.map(definition => [definition.name, operationTool(runtime, {
       description: definition.description,
       args: STANDARD_TOOL_ARGS[definition.operation]!,
@@ -435,7 +436,7 @@ function createTools(runtime: Runtime) {
       operationId: 'get_skill',
       payload: (args) => ({ artifact: args.artifact }),
     }),
-  }
+  })
 }
 
 export const PowerContextPlugin: Plugin = async (input) => {
@@ -499,7 +500,7 @@ export const PowerContextPlugin: Plugin = async (input) => {
     },
   }
   await signalActivationProbe(runtime)
-  return hooks
+  return { tool: hooks.tool, ...selectHooks('src/index.ts', hooks) }
 }
 
 const plugin = { id: PLUGIN_NAME, server: PowerContextPlugin } satisfies PluginModule

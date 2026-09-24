@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { TOOL_BINDINGS } from '../src/tools.generated.ts'
 import { expect, it } from 'vitest'
 import { PowerContextClient } from '../src/client.ts'
 import { resolveConfig } from '../src/config.ts'
@@ -36,6 +37,7 @@ it('exposes independently available guidance whose tool references resolve in th
   // No Skill has been loaded or even registered at this point.
   expect(sections.length).toBeGreaterThan(0)
   const names = new Set(tools.map(tool => tool.name))
+  expect(names).toEqual(new Set(TOOL_BINDINGS.map(tool => tool.name)))
   for (const name of (sections.map(section => section.text).join('\n') + tools.map(tool => tool.description).join('\n')).match(/\bpc_[a-z_]+\b/g) ?? []) {
     expect(names.has(name), `unavailable tool referenced in DSH guidance: ${name}`).toBe(true)
   }

@@ -37,26 +37,13 @@ class SetupSpec(BaseModel):
 
 
 class Hook(BaseModel):
-    """Native timing, domain operations, host effects and failure are independent."""
+    """Bind an adapter handler to a native registration event."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event: str = Field(min_length=1)
     handler: str = Field(min_length=1)
-    operations: tuple[str, ...]
-    effects: tuple[Literal["context", "input_patch", "diagnostic"], ...] = ()
-    failure: Literal["continue", "reject"] = "continue"
     matcher: str | None = None
-
-    @model_validator(mode="after")
-    def reject_requires_patch(self) -> Self:
-        if self.failure == "reject" and "input_patch" not in self.effects:
-            raise ValueError("reject requires an input_patch effect")  # noqa: TRY003
-        if "input_patch" in self.effects and self.failure != "reject":
-            raise ValueError("input_patch must fail closed")  # noqa: TRY003
-        if len(self.effects) != len(set(self.effects)):
-            raise ValueError("duplicate effects")  # noqa: TRY003
-        return self
 
 
 class Target(BaseModel):
@@ -82,6 +69,11 @@ class Target(BaseModel):
         bindings = {(hook.event, hook.handler, hook.matcher) for hook in self.hooks}
         if len(bindings) != len(self.hooks):
             raise ValueError("duplicate hook registration")  # noqa: TRY003
+        if self.language == "typescript":
+            if len({hook.event for hook in self.hooks}) != len(self.hooks):
+                raise ValueError("duplicate native hook event")  # noqa: TRY003
+            if any(hook.matcher is not None or ":" not in hook.handler for hook in self.hooks):
+                raise ValueError("native hooks require source:handler bindings without matchers")  # noqa: TRY003
         return self
 
     @field_validator("source", "resource_dir", "hook_file", "hook_manifest")
@@ -95,21 +87,11 @@ class Target(BaseModel):
 
 
 def load_targets() -> list[Target]:
-    from powercontext.http._generated import operations
-
-    operation_ids = {
-        value.operation_id for value in vars(operations).values() if isinstance(value, operations.Operation)
-    }
     targets = []
     for path in sorted(ASSETS.joinpath("targets").glob("*.toml")):
         target = Target.model_validate(tomllib.loads(path.read_text()))
         if path.stem != target.target:
             message = f"invalid target source or identity: {path}"
             raise ValueError(message)
-        for hook in target.hooks:
-            unknown = set(hook.operations) - operation_ids
-            if unknown:
-                message = f"{target.target}: unknown OpenAPI operations: {sorted(unknown)}"
-                raise ValueError(message)
         targets.append(target)
     return sorted(targets, key=lambda target: target.order)

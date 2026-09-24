@@ -83,41 +83,16 @@ def assemble(target: Target, *, root: Path = ROOT) -> dict[str, bytes]:
     }
     files.update({
         (PurePosixPath(target.resource_dir) / name).as_posix(): content
-        for name, content in render_resources(target.target, root / target.source / target.resource_dir).items()
+        for name, content in render_resources(
+            target.target, root / target.source / target.resource_dir, target=target
+        ).items()
     })
-    files.update(hook_files(target, root=root))
     files["distribution.json"] = _json({
         "schema_version": 1,
         "target": target.model_dump(mode="json"),
         "required_executables": ["uvx", "npx"] + (["powercontext-hook"] if target.language != "none" else []),
         "files": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())},
     })
-    return files
-
-
-def hook_files(target: Target, *, root: Path = ROOT) -> dict[str, bytes]:
-    """Render the same native registrations for repository installs and assembled packages."""
-
-    if target.hook_file is None:
-        return {}
-    hooks: dict[str, list[object]] = {}
-    for hook in target.hooks:
-        prefix = "${" + target.root_variable + "}"
-        args = ["--script", f"{prefix}/{hook.handler}"]
-        command: dict[str, object] = {"type": "command", "timeout": 10}
-        if target.command_style == "argv":
-            command.update(command="powercontext-hook", args=args)
-        else:
-            command["command"] = "powercontext-hook " + " ".join(f'"{arg}"' for arg in args)
-        entry: dict[str, object] = {"hooks": [command]}
-        if hook.matcher:
-            entry["matcher"] = hook.matcher
-        hooks.setdefault(hook.event, []).append(entry)
-    files = {target.hook_file: _json({"hooks": hooks})}
-    if target.hook_manifest:
-        manifest = json.loads((root / target.source / target.hook_manifest).read_bytes())
-        manifest["hooks"] = [target.hook_file]
-        files[target.hook_manifest] = _json(manifest)
     return files
 
 

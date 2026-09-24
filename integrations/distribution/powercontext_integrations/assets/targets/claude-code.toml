@@ -26,9 +26,6 @@ command_style = "argv"
 [[hooks]]
 event = "UserPromptSubmit"
 handler = "hooks/user_prompt_submit.py"
-operations = ["prepare_context","capture_content_source","flush_memory"]
-effects = ["context","diagnostic"]
-failure = "continue"
 
 [setup]
 module = "claude_code"

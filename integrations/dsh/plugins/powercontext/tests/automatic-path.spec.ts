@@ -17,6 +17,7 @@ import { InvalidResponseError } from '../src/errors.ts'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { HOOK_BINDINGS } from '../src/hooks.generated.ts'
 import { apply } from '../src/index.ts'
 import type { PluginConfig } from '../src/config.ts'
 import type { PreStepDecision, PromptMessage } from '../src/recall.ts'
@@ -52,6 +53,7 @@ async function fixture(
   const requests: Array<{ path: string; body: Record<string, unknown> }> = []
   const logger = { warn: vi.fn(), debug: vi.fn() }
   type Hook = (payload: unknown, next: () => Promise<PreStepDecision>) => Promise<PreStepDecision>
+  const registered = new Set<string>()
   let hook: Hook | undefined
   const registry = { register: () => () => {}, section: () => () => {} }
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
@@ -62,7 +64,7 @@ async function fixture(
   await apply({
     tools: registry,
     get: () => registry,
-    on: (name: string, listener: Hook) => { if (name === 'agent/pre-step') hook = listener },
+    on: (name: string, listener: Hook) => { registered.add(name); if (name === 'agent/pre-step') hook = listener },
     logger,
   } as unknown as Context, {
     baseUrl: 'http://127.0.0.1:8765',
@@ -70,6 +72,7 @@ async function fixture(
     requestTimeoutMs: 200,
     ...config,
   })
+  expect(registered).toEqual(new Set(HOOK_BINDINGS.map(binding => binding.event)))
   if (!hook) throw new Error('automatic hook was not registered')
   const run = (options: {
     signal?: AbortSignal; next?: () => Promise<PreStepDecision>; messages?: PromptMessage[]; cwd?: string

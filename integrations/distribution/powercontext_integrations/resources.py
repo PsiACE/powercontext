@@ -19,7 +19,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from .targets import Target
 
 ASSETS = Path(__file__).with_name("assets")
 BASE_PLUGIN = ASSETS.parents[2] / "agent-plugin/powercontext"
@@ -116,7 +119,34 @@ def render_mcp(host: str, *, server_url: str | None = None) -> dict[str, Any]:
     )
 
 
-def render_resources(host: str, directory: Path | None = None, *, server_url: str | None = None) -> dict[str, bytes]:
+def tool_catalog(host: str) -> list[dict[str, str]]:
+    """Select baseline and compatibility tools for registration and installation."""
+    from powercontext.client.operations import OPERATIONS
+
+    profile = json.loads((ASSETS / "resources.json").read_text(encoding="utf-8")).get(host, {})
+    if "skills" not in profile:
+        return []
+    aliases = _tool_bindings(profile["skills"])
+    baseline = json.loads((BASE_PLUGIN.parent / "operations.json").read_text())
+    extensions = profile.get("tool_extensions", [])
+    catalog = []
+    for origin, operations in (("baseline", baseline), ("extension", extensions)):
+        for operation in operations:
+            if operation not in OPERATIONS or operation not in aliases:
+                raise ValueError(f"{host}: unknown tool operation or binding: {operation}")  # noqa: TRY003
+            catalog.append({"name": aliases[operation], "operation": operation, "origin": origin})
+    if len({tool["name"] for tool in catalog}) != len(catalog):
+        raise ValueError(f"{host}: duplicate tool binding")  # noqa: TRY003
+    return catalog
+
+
+def render_resources(
+    host: str, directory: Path | None = None, *, server_url: str | None = None, target: Target | None = None
+) -> dict[str, bytes]:
+    from .targets import load_targets
+
+    if target is None:
+        target = next(target for target in load_targets() if target.target == host)
     profile = json.loads((ASSETS / "resources.json").read_text(encoding="utf-8")).get(host, {})
     files = _render_skills(profile["skills"]) if "skills" in profile else {}
     if profile.get("runtime") != "typescript":
@@ -131,9 +161,10 @@ def render_resources(host: str, directory: Path | None = None, *, server_url: st
             "python/scope.py.tmpl", {**variables, "integration": host}
         ).encode()
     if profile.get("runtime") in {"python", "typescript"}:
-        definitions, schemas = _tool_definitions(profile["skills"])
+        catalog = tool_catalog(host)
+        definitions, schemas = _tool_definitions(profile["skills"], catalog)
         files["tools.generated.json"] = (
-            json.dumps({"definitions": schemas, "tools": definitions}, indent=2) + "\n"
+            json.dumps({"definitions": schemas, "tools": definitions, "bindings": catalog}, indent=2) + "\n"
         ).encode()
     if profile.get("runtime") == "python":
         from powercontext.client import checkpoints
@@ -168,6 +199,10 @@ def render_resources(host: str, directory: Path | None = None, *, server_url: st
             f"src/{name}": _render(f"typescript/{template}.ts.tmpl", variables).encode()
             for template, name in TYPESCRIPT_FILES.items()
         })
+        files["src/hooks.generated.ts"] = _render(
+            "typescript/hooks.ts.tmpl",
+            {"hooks": json.dumps([{"event": hook.event, "handler": hook.handler} for hook in target.hooks], indent=2)},
+        ).encode()
         files["src/tools.generated.ts"] = _render(
             "typescript/tools.ts.tmpl",
             {
@@ -183,10 +218,39 @@ def render_resources(host: str, directory: Path | None = None, *, server_url: st
                 "typescript/guidance.ts.tmpl", {"guidance": json.dumps(guidance)}
             ).encode()
 
+    files.update(command_hook_resources(target, directory))
     return files
 
 
-def _tool_definitions(settings: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def command_hook_resources(target: Target, directory: Path | None = None) -> dict[str, bytes]:
+    """Project command registrations for both setup and standalone packages."""
+    if target.hook_file is None:
+        return {}
+    hooks: dict[str, list[object]] = {}
+    for hook in target.hooks:
+        prefix = "${" + target.root_variable + "}"
+        args = ["--script", f"{prefix}/{hook.handler}"]
+        command: dict[str, object] = {"type": "command", "timeout": 10}
+        if target.command_style == "argv":
+            command.update(command="powercontext-hook", args=args)
+        else:
+            command["command"] = "powercontext-hook " + " ".join(f'"{arg}"' for arg in args)
+        entry: dict[str, object] = {"hooks": [command]}
+        if hook.matcher:
+            entry["matcher"] = hook.matcher
+        hooks.setdefault(hook.event, []).append(entry)
+    files = {target.hook_file: (json.dumps({"hooks": hooks}, indent=2) + "\n").encode()}
+    if target.hook_manifest:
+        source = directory if directory is not None else ASSETS.parents[3] / target.source
+        manifest = json.loads((source / target.hook_manifest).read_bytes())
+        manifest["hooks"] = [target.hook_file]
+        files[target.hook_manifest] = (json.dumps(manifest, indent=2) + "\n").encode()
+    return files
+
+
+def _tool_definitions(
+    settings: dict[str, Any], catalog: list[dict[str, str]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from powercontext.client.operations import OPERATIONS, WRITE_OPERATIONS
     from powercontext.http._generated.schema import OPENAPI_SCHEMA
 
@@ -194,7 +258,10 @@ def _tool_definitions(settings: dict[str, Any]) -> tuple[list[dict[str, Any]], d
     definitions = []
     schemas = {}
     paths = cast(dict[str, Any], OPENAPI_SCHEMA["paths"])
-    for name in json.loads((BASE_PLUGIN.parent / "operations.json").read_text()):
+    for binding in catalog:
+        if binding["origin"] != "baseline":
+            continue
+        name = binding["operation"]
         operation = OPERATIONS[name]
         schema = operation.request_type.model_json_schema(by_alias=True)
         schemas.update(schema.pop("$defs", {}))
@@ -214,10 +281,17 @@ def _tool_definitions(settings: dict[str, Any]) -> tuple[list[dict[str, Any]], d
     return definitions, schemas
 
 
-def install_resources(host: str, directory: Path, *, server_url: str | None = None, preserve_mcp: bool = True) -> None:
+def install_resources(
+    host: str,
+    directory: Path,
+    *,
+    server_url: str | None = None,
+    preserve_mcp: bool = True,
+    target: Target | None = None,
+) -> None:
     """Materialize only this plugin's resources; host settings and credentials stay separate."""
 
-    for name, content in render_resources(host, directory, server_url=server_url).items():
+    for name, content in render_resources(host, directory, server_url=server_url, target=target).items():
         path = directory / name
         if preserve_mcp and name.endswith("mcp.json") and path.exists():
             if server_url is None:

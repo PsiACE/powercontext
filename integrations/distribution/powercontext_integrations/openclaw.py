@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from shutil import rmtree, which
 from urllib.parse import urlsplit, urlunsplit
@@ -35,13 +36,7 @@ OPENCLAW_PLUGIN_NAME = "memory-powercontext"
 OPENCLAW_PACKAGE_NAME = "@oceanbase/openclaw-memory-powercontext"
 OPENCLAW_CHECKOUT_ROOT = "openclaw"
 OPENCLAW_MIN_VERSION = (2026, 8, 1, 2)
-POWERCONTEXT_TOOLS = (
-    "powercontext_memory_search",
-    "powercontext_memory_get",
-    "powercontext_memory_store",
-    "powercontext_memory_revise",
-    "powercontext_memory_retire",
-)
+POWERCONTEXT_TOOLS = host_adapter("openclaw").tool_names
 _GITHUB_REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
 _OPENCLAW_VERSION = re.compile(r"(?:OpenClaw\s+)?(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?")
 
@@ -369,7 +364,7 @@ def run_openclaw_diagnostics() -> dict[str, Diagnostic]:
                 detail="plugin list is unavailable",
             ),
         }
-    return {
+    diagnostics = {
         "openclaw": Diagnostic(status=DiagnosticStatus.OK, detail=executable),
         "plugin": Diagnostic(
             status=DiagnosticStatus.OK if installed else DiagnosticStatus.FAILED,
@@ -380,6 +375,21 @@ def run_openclaw_diagnostics() -> dict[str, Diagnostic]:
             ),
         ),
     }
+    if installed:
+        try:
+            grants = read_tools_allowlist(executable)
+            all_tools = any(
+                grant in {OPENCLAW_PLUGIN_NAME, "group:plugins"} for grant in grants if isinstance(grant, str)
+            )
+            configured = [
+                name
+                for name in POWERCONTEXT_TOOLS
+                if all_tools or any(isinstance(grant, str) and fnmatchcase(name, grant) for grant in grants)
+            ]
+            diagnostics["tools"] = host_adapter("openclaw").check_tools(configured)
+        except SetupError:
+            diagnostics["tools"] = Diagnostic(DiagnosticStatus.FAILED, "Could not read configured tool grants")
+    return diagnostics
 
 
 def openclaw_plugin_installed(output: str, *, active_memory_plugin: object | None = None) -> bool:

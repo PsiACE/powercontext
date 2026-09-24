@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import { resolvePowerContextConfig } from "./config.js";
 import { PowerContextRequestError, type PowerContextClient } from "./http.js";
 import { registerPowerContextLifecycle } from "./lifecycle.js";
+import { HOOK_BINDINGS } from "./hooks.generated.js";
 import { scopeBindingKeys, type ScopeBindingKey } from "./scope.js";
 
 type Hook = (event: unknown, context: unknown) => unknown;
@@ -143,6 +144,10 @@ function createLifecycleHarness() {
 }
 
 describe("PowerContext lifecycle", () => {
+  it("registers the complete hook catalog", () => {
+    expect(new Set(createLifecycleHarness().hooks.keys())).toEqual(new Set(HOOK_BINDINGS.map(binding => binding.event)));
+  });
+
   it("flushes every project observed by a session", async () => {
     const harness = createLifecycleHarness();
     const sessionContext = {

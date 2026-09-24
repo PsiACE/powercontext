@@ -23,9 +23,6 @@ source = "integrations/workbuddy/plugins/powercontext"
 [[hooks]]
 event = "UserPromptSubmit"
 handler = "hooks/workbuddy_powercontext_hook.py"
-operations = ["prepare_context","capture_content_source","flush_memory"]
-effects = ["context"]
-failure = "continue"
 
 [setup]
 module = "workbuddy"

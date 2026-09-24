@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from functools import partial
 from importlib import import_module
@@ -57,7 +58,26 @@ class HostAdapter:
     def prepare(self, directory: Path, *, server_url: str | None = None) -> None:
         from .resources import install_resources
 
-        install_resources(self.name, directory, server_url=server_url)
+        install_resources(self.name, directory, server_url=server_url, target=self.target)
+
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        from .resources import tool_catalog
+
+        return tuple(tool["name"] for tool in tool_catalog(self.name))
+
+    def check_tools(self, configured: Collection[str]) -> Diagnostic:
+        from powercontext.cli.system import Diagnostic, DiagnosticStatus
+
+        missing = sorted(set(self.tool_names) - set(configured))
+        return Diagnostic(
+            status=DiagnosticStatus.DEGRADED if missing else DiagnosticStatus.OK,
+            detail=(
+                f"Missing configured tool grants: {', '.join(missing)}"
+                if missing
+                else f"All {len(self.tool_names)} catalog tools have setup grants; session policy still applies"
+            ),
+        )
 
     def diagnose(self, *, server: bool = False, **options) -> dict[str, Diagnostic]:
         from .hook_runtime import hook_client_diagnostic

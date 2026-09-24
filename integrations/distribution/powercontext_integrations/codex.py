@@ -43,7 +43,7 @@ from .native import _required_string, _write_bytes_atomically
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 PLUGIN_NAME = "powercontext"
-_CODEX_REQUIRED_MCP_TOOLS = frozenset({"remember_memory", "search_memory"})
+_CODEX_REQUIRED_MCP_TOOLS = frozenset(host_adapter("codex").tool_names)
 _CODEX_APP_SERVER_TIMEOUT_SECONDS = 15.0
 
 

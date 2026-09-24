@@ -21,6 +21,35 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFile, spawn } from "node:child_process";
 
+//#region src/hooks.generated.ts
+const HOOK_BINDINGS = [
+	{
+		"event": "chat.message",
+		"handler": "src/index.ts:chat.message"
+	},
+	{
+		"event": "experimental.chat.messages.transform",
+		"handler": "src/index.ts:experimental.chat.messages.transform"
+	},
+	{
+		"event": "experimental.chat.system.transform",
+		"handler": "src/index.ts:experimental.chat.system.transform"
+	},
+	{
+		"event": "event",
+		"handler": "src/index.ts:event"
+	}
+];
+function selectHooks(source, handlers) {
+	return Object.fromEntries(HOOK_BINDINGS.filter((binding) => binding.handler.startsWith(`${source}:`)).map((binding) => {
+		const name = binding.handler.slice(source.length + 1);
+		const handler = handlers[name];
+		if (!Object.hasOwn(handlers, name) || handler === void 0) throw new Error(`Missing native hook: ${binding.handler}`);
+		return [binding.event, handler];
+	}));
+}
+
+//#endregion
 //#region src/errors.ts
 const PLUGIN_NAME = "powercontext-opencode";
 const PLUGIN_VERSION = "0.0.1";
@@ -1329,7 +1358,14 @@ async function resolveScopeId(client, input, signal) {
 
 //#endregion
 //#region src/tools.generated.ts
-const { definitions: DEFINITIONS, tools: TOOL_DATA } = JSON.parse(readFileSync(new URL("../tools.generated.json", import.meta.url), "utf8"));
+const { definitions: DEFINITIONS, tools: TOOL_DATA, bindings: TOOL_BINDINGS } = JSON.parse(readFileSync(new URL("../tools.generated.json", import.meta.url), "utf8"));
+function selectTools(tools) {
+	return Object.fromEntries(TOOL_BINDINGS.map(({ name }) => {
+		const tool$1 = tools[name];
+		if (!Object.hasOwn(tools, name) || tool$1 === void 0) throw new Error(`Missing native tool binding: ${name}`);
+		return [name, tool$1];
+	}));
+}
 function resolveSchema(value) {
 	if (Array.isArray(value)) return value.map(resolveSchema);
 	if (!value || typeof value !== "object") return value;
@@ -1645,7 +1681,7 @@ function operationTool(runtime, definition) {
 	});
 }
 function createTools(runtime) {
-	return {
+	return selectTools({
 		...Object.fromEntries(STANDARD_TOOLS.map((definition) => [definition.name, operationTool(runtime, {
 			description: definition.description,
 			args: STANDARD_TOOL_ARGS[definition.operation],
@@ -1758,7 +1794,7 @@ function createTools(runtime) {
 			operationId: "get_skill",
 			payload: (args) => ({ artifact: args.artifact })
 		})
-	};
+	});
 }
 const PowerContextPlugin = async (input) => {
 	let runtime;
@@ -1822,7 +1858,10 @@ const PowerContextPlugin = async (input) => {
 		}
 	};
 	await signalActivationProbe(runtime);
-	return hooks;
+	return {
+		tool: hooks.tool,
+		...selectHooks("src/index.ts", hooks)
+	};
 };
 const plugin = {
 	id: PLUGIN_NAME,

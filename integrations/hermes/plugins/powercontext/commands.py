@@ -27,8 +27,8 @@ from .helpers import (
     as_int,
     citation_from_args,
 )
-from .operations import OPERATION_REQUIRED_FIELDS, OPERATION_TOOL_MAP
-from .standard_tools import get_standard_tool_schemas
+from .operations import OPERATION_REQUIRED_FIELDS
+from .standard_tools import TOOL_BINDINGS, get_standard_tool_schemas, select_tools
 
 try:
     from tools.registry import tool_error  # ty: ignore[unresolved-import]
@@ -758,7 +758,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             ("candidate_id", "expected_version", "proposal", "source_refs", "artifact_refs"),
         ),
     ])
-    return schemas
+    return select_tools(schemas)
 
 
 def _search_memory_tool(provider: Any, args: dict[str, Any]) -> str:
@@ -809,10 +809,10 @@ def _dispatch_tool_call(provider: Any, tool_name: str, args: dict[str, Any]) -> 
         return _get_memory_tool(provider, args)
     if tool_name == "powercontext_remember":
         return _remember_tool(provider, args)
-    if tool_name in OPERATION_TOOL_MAP:
-        result = request_operation(provider, OPERATION_TOOL_MAP[tool_name], args)
-        return json.dumps(result, ensure_ascii=False)
-    return _retire_memory_tool(provider, args)
+    if tool_name == "powercontext_retire_memory":
+        return _retire_memory_tool(provider, args)
+    result = request_operation(provider, TOOL_BINDINGS[tool_name], args)
+    return json.dumps(result, ensure_ascii=False)
 
 
 def handle_tool_call(provider: Any, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:

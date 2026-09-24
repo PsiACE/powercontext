@@ -22,6 +22,36 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+//#region src/hooks.generated.ts
+const HOOK_BINDINGS = [{
+	"event": "agent/pre-step",
+	"handler": "src/index.ts:agent/pre-step"
+}, {
+	"event": "tools/pre-execute",
+	"handler": "src/tools.ts:tools/pre-execute"
+}];
+function selectHooks(source, handlers) {
+	return Object.fromEntries(HOOK_BINDINGS.filter((binding) => binding.handler.startsWith(`${source}:`)).map((binding) => {
+		const name$1 = binding.handler.slice(source.length + 1);
+		const handler = handlers[name$1];
+		if (!Object.hasOwn(handlers, name$1) || handler === void 0) throw new Error(`Missing native hook: ${binding.handler}`);
+		return [binding.event, handler];
+	}));
+}
+function createHookRegistry(source, register) {
+	const handlers = {};
+	return {
+		on: ((name$1, ...args) => {
+			handlers[name$1] = args;
+		}),
+		register() {
+			const selected = selectHooks(source, handlers);
+			for (const [event, args] of Object.entries(selected)) register(event, ...args);
+		}
+	};
+}
+
+//#endregion
 //#region src/errors.ts
 const REQUEST_ID_HEADER = "X-PowerContext-Request-ID";
 const MAX_RESPONSE_BYTES = 1048576;
@@ -2459,7 +2489,14 @@ function registerSkill(ctx) {
 
 //#endregion
 //#region src/tools.generated.ts
-const { definitions: DEFINITIONS, tools: TOOL_DATA } = JSON.parse(readFileSync(new URL("../tools.generated.json", import.meta.url), "utf8"));
+const { definitions: DEFINITIONS, tools: TOOL_DATA, bindings: TOOL_BINDINGS } = JSON.parse(readFileSync(new URL("../tools.generated.json", import.meta.url), "utf8"));
+function selectTools(tools) {
+	return Object.fromEntries(TOOL_BINDINGS.map(({ name: name$1 }) => {
+		const tool = tools[name$1];
+		if (!Object.hasOwn(tools, name$1) || tool === void 0) throw new Error(`Missing native tool binding: ${name$1}`);
+		return [name$1, tool];
+	}));
+}
 function resolveSchema(value) {
 	if (Array.isArray(value)) return value.map(resolveSchema);
 	if (!value || typeof value !== "object") return value;
@@ -2805,7 +2842,7 @@ function artifactTools(runtime, defineTool) {
 	];
 }
 function registerTools(ctx, runtime, defineTool) {
-	for (const tool of [
+	const tools = [
 		...STANDARD_TOOLS.map((definition) => pcTool(defineTool, {
 			name: definition.name,
 			description: definition.description,
@@ -2816,14 +2853,17 @@ function registerTools(ctx, runtime, defineTool) {
 		...contextTools(runtime, defineTool),
 		...handoffTools(runtime, defineTool),
 		...artifactTools(runtime, defineTool)
-	]) ctx.tools.register(tool);
-	ctx.on("tools/pre-execute", (async (exec, next) => {
+	];
+	for (const tool of Object.values(selectTools(Object.fromEntries(tools.map((tool$1) => [tool$1.name, tool$1]))))) ctx.tools.register(tool);
+	const hooks = createHookRegistry("src/tools.ts", ctx.on.bind(ctx));
+	hooks.on("tools/pre-execute", (async (exec, next) => {
 		if (!MUTATING_TOOL_NAMES.has(exec.name)) return next();
 		return {
 			kind: "ask",
 			reason: `PowerContext tool "${exec.name}" changes durable project context.`
 		};
 	}));
+	hooks.register();
 }
 
 //#endregion
@@ -2878,7 +2918,8 @@ function createRuntime(ctx, config) {
 	};
 }
 function registerRecall(ctx, runtime, createUserMessage) {
-	ctx.on("agent/pre-step", (async (payload, next) => {
+	const hooks = createHookRegistry("src/index.ts", ctx.on.bind(ctx));
+	hooks.on("agent/pre-step", (async (payload, next) => {
 		const deadline = AbortSignal.timeout(runtime.config.timeoutMs);
 		const signal = combineSignals([payload.signal, deadline]);
 		return runRecallPreStep({
@@ -2910,6 +2951,7 @@ function registerRecall(ctx, runtime, createUserMessage) {
 			status: runtime.status
 		});
 	}));
+	hooks.register();
 }
 async function apply(ctx, config) {
 	const toolsMod = await loadPeer("@deepseek-ai/dsh-tools");
