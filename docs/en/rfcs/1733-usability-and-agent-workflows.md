@@ -6,7 +6,7 @@ description: A common direction for installation, operations, staged configurati
 - Proposal Name: `usability_and_agent_workflows`
 - Start Date: 2026-09-24
 - Status: Proposed
-- RFC PR: Not created
+- RFC PR: [oceanbase/powercontext#1733](https://github.com/oceanbase/powercontext/pull/1733)
 
 # Summary
 

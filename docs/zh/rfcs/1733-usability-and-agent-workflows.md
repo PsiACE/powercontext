@@ -6,7 +6,7 @@ description: 安装维护、分步配置、场景 Skills 与本地 Client 的共
 - Proposal Name: `usability_and_agent_workflows`
 - Start Date: 2026-09-24
 - Status: Proposed
-- RFC PR: 尚未创建
+- RFC PR: [oceanbase/powercontext#1733](https://github.com/oceanbase/powercontext/pull/1733)
 
 # Summary
 
