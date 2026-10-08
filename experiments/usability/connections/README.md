@@ -1,6 +1,13 @@
 # Connection and project identity evidence
 
-Baseline: [`f28f8edf`](https://github.com/PsiACE/powercontext/commit/f28f8edf). Run from that checkout:
+Baseline: [`f28f8edf`](https://github.com/PsiACE/powercontext/commit/f28f8edf). The executable reproduction checkout is [`cce34000`](https://github.com/PsiACE/powercontext/commit/cce34000), which contains both harnesses and unchanged baseline runtime source. Run in an isolated worktree at that exact commit; running this harness against a feature checkout measures that checkout rather than the baseline:
+
+```sh
+git worktree add --detach "$HOME/.cache/powercontext-usability/baseline" cce34000
+cd "$HOME/.cache/powercontext-usability/baseline"
+```
+
+Then run:
 
 ```sh
 uv run --locked python experiments/usability/connections/run.py \

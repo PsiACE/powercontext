@@ -226,3 +226,36 @@ def test_project_key_keeps_checkout_subdirectory_and_separate_worktrees_distinct
     subprocess.run([git, "-C", str(checkout), "worktree", "add", "-qb", "other", str(worktree)], check=True)
     assert project_binding_key(checkout) == project_binding_key(subdirectory)
     assert project_binding_key(checkout) != project_binding_key(worktree)
+
+
+def test_connection_cli_errors_are_actionable_without_echoing_inputs():
+    from typer.testing import CliRunner
+
+    from powercontext.cli.connections import connection_app
+
+    result = CliRunner().invoke(connection_app, ["inspect", "--host", "private-fixture-host"])
+    assert result.exit_code == 1
+    assert "unsupported_host" in result.stdout
+    assert "next_action" in result.stdout
+    assert "private-fixture-host" not in result.output
+    invalid = CliRunner().invoke(
+        connection_app,
+        ["configure", "--server-url", "https://private-fixture-secret@example.com", "--expected-revision", "missing"],
+    )
+    assert invalid.exit_code == 1
+    assert "invalid_endpoint" in invalid.stdout
+    assert "private-fixture-secret" not in invalid.output
+
+
+def test_native_claude_option_selection_and_endpoint_bound_consent(monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_SERVER_URL", "https://option.example")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_ALLOW_INSECURE_HTTP", "true")
+    monkeypatch.setenv("POWERCONTEXT_CLAUDE_BASE_URL", "https://ignored.example")
+    view = inspect_connection("claude-code")
+    assert view["server_url"] == "https://option.example"
+    assert view["server_url_source"] == "CLAUDE_PLUGIN_OPTION_SERVER_URL"
+    assert view["consent_source"] == "CLAUDE_PLUGIN_OPTION_ALLOW_INSECURE_HTTP"
+    monkeypatch.setenv("POWERCONTEXT_CLAUDE_SERVER_URL", "https://overridden.example")
+    view = inspect_connection("claude-code")
+    assert view["server_url"] == "https://overridden.example"
+    assert not view["allow_insecure_http"]

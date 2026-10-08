@@ -35,6 +35,8 @@ description: 解释保存的 Client 端点，并显式管理现有 Codex 检出�
 
 验证来源优先级、同端点与换端点许可、环境冲突、缺失令牌引用、并发修订冲突、跨进程读回、worktree 身份，以及通过实际 API 执行绑定、解绑与端点切换。原生宿主激活不属于此契约。
 
+检查报告 Client/setup 的传输策略，不代表原生 MCP 注册的权威状态。`selection_scope` 为 `client_transport_policy`，`native_host_configuration` 为 `unobserved`；Codex 等宿主可另行配置 MCP 端点，激活状态仍未知。
+
 # Drawbacks
 
 文件锁只协调合作写入者。原生宿主可能需要显式重载，环境凭证引用依赖进程环境。项目操作目前仅针对 Codex 工作区键。

@@ -182,8 +182,8 @@ jobs:
           tests/builtin/test_native_code_multilanguage.py
           tests/e2e/test_native_code_multilanguage.py
 
-      - name: Verify revision-checked local configuration writes
-        run: uv run --locked --no-sync pytest -q tests/test_config_operations.py
+      - name: Verify revision-checked local and Client configuration writes
+        run: uv run --locked --no-sync pytest -q tests/test_config_operations.py tests/test_client_connections.py
 
       - name: Exercise fixtures without Windows long-path support
         shell: pwsh
