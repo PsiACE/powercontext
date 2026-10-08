@@ -34,7 +34,7 @@
       }
     },
     {
-      "id": "missing-setup-select",
+      "id": "runtime-without-optional-setup",
       "args": [
         "--no-hosts"
       ],
@@ -42,11 +42,9 @@
         "setup select"
       ],
       "expected": {
-        "exit_code": 1,
+        "exit_code": 0,
         "runtime_installed": true,
-        "server_extra": true,
-        "verification_failed": true,
-        "error_contains": "Package installed, but"
+        "server_extra": true
       }
     },
     {
