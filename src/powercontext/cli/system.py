@@ -36,7 +36,6 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-import click
 import typer
 from pydantic import ValidationError
 
@@ -607,7 +606,7 @@ def setup_dsh(
     try:
         if profile is None:
             profile = (
-                DshProfile(typer.prompt("DSH profile", default="web", type=click.Choice(["web", "desktop"])))
+                DshProfile(typer.prompt("DSH profile (web/desktop)", default="web", type=DshProfile))
                 if not json_output and stdin_is_tty()
                 else DshProfile.WEB
             )
