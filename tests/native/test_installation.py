@@ -112,7 +112,7 @@ def reinstall_offline(
     if not interactive:
         run(installer, root, env, "reinstall-offline")
         return
-    # Regression: a piped installer must still allow terminal input at Agent selection.
+    # A piped default install succeeds without implicitly opening Agent selection.
     controller = """import errno, os, pty, sys
 pid, terminal = pty.fork()
 if pid == 0:
@@ -141,7 +141,8 @@ sys.exit(os.waitstatus_to_exitcode(status))
         env,
         "reinstall-offline",
     )
-    assert "Select hosts" in output
+    assert "Runtime installed:" in output
+    assert "Select hosts" not in output
 
 
 def utilities_without_python_or_uv(root: Path, system_path: str) -> Path:
