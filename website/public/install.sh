@@ -180,13 +180,10 @@ url_available() {
     fi
 }
 
-index_has_version() {
+index_available() {
+    # Probe transport availability only; uv interprets the Simple API and versions.
     if ! download "${1%/}/powercontext/" "$TEMP_DIR/index.html"; then
-        printf 'Package index is unreachable: %s\n' "$1" >&2
-        return 1
-    fi
-    if [[ "$VERSION" != latest ]] && ! grep -Eq "powercontext-${VERSION//./\\.}(-|\.)" "$TEMP_DIR/index.html"; then
-        printf 'Package index does not list PowerContext %s: %s\n' "$VERSION" "$1" >&2
+        printf 'Package mirror is unreachable: %s\n' "$1" >&2
         return 1
     fi
 }
@@ -205,20 +202,19 @@ check_index() {
         return
     fi
 
-    local selected_index
-    local indexes=(https://pypi.org/simple)
+    INDEX_URL=https://pypi.org/simple
     if [[ "$REGION" == cn ]]; then
-        indexes=(https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.org/simple)
-    fi
-    for selected_index in "${indexes[@]}"; do
-        printf 'Checking package index: %s\n' "$selected_index"
-        if index_has_version "$selected_index"; then
-            INDEX_URL=$selected_index
-            printf 'Package index: %s\n' "$INDEX_URL"
-            return
+        local mirror=https://pypi.tuna.tsinghua.edu.cn/simple
+        printf 'Checking package mirror availability: %s\n' "$mirror"
+        if index_available "$mirror"; then
+            INDEX_URL=$mirror
+        else
+            printf '%s\n' 'Automatic package mirror unavailable; using PyPI.'
         fi
-    done
-    fail "No reachable package index lists PowerContext $VERSION. Check connectivity, the version, or use --index-url URL."
+    fi
+    # A reachable mirror may be stale or incompatible. Let uv report that failure
+    # without retrying a tool installation or changing the requested requirement.
+    printf 'Package index: %s\n' "$INDEX_URL"
 }
 
 ensure_uv() {
