@@ -147,6 +147,17 @@ d=ServiceDefinition(ownership=OWNERSHIP_MARKER,definition_version=DEFINITION_VER
 try:
  a.write(a.render(d));a.reload()
  started=service_operation(a,'start');assert started['manager']=='active',started
+ content=a.artifact_path.read_bytes()
+ a.artifact_path.unlink()
+ assert a.loaded_registration().state is ManagerOwnershipState.OWNED
+ try:
+  repair(a,exact='0.1.0',profile='client',index=None)
+ except ServiceError as error:
+  assert 'stop the owned Server' in str(error),str(error)
+ else:
+  raise AssertionError('active loaded service with missing artifact allowed repair')
+ finally:
+  a.write(content)
  try:
   repair(a,exact='0.1.0',profile='client',index=None)
  except ServiceError as error:

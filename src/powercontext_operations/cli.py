@@ -137,10 +137,14 @@ def repair(adapter: NativeServiceAdapter, *, exact: str, profile: str, index: st
     selected_bin = tool_bin(uv)
     with service_lock(adapter.lock_path):
         registration = adapter.inspect()
-        if registration.state is RegistrationState.INSTALLED:
-            require_owned(adapter)
-            if adapter.manager_state() is not ManagerState.INACTIVE:
-                raise ServiceError("stop the owned Server explicitly before package repair")  # noqa: TRY003
+        loaded = adapter.loaded_registration()
+        if registration.state not in (RegistrationState.INSTALLED, RegistrationState.NOT_INSTALLED):
+            raise ServiceError("refusing package repair: service artifact ownership is invalid or unknown")  # noqa: TRY003
+        if loaded.state not in (ManagerOwnershipState.OWNED, ManagerOwnershipState.NOT_LOADED):
+            raise ServiceError("refusing package repair: loaded manager ownership is foreign or unknown")  # noqa: TRY003
+        # The manager can retain an owned job after its on-disk artifact is deleted.
+        if loaded.state is ManagerOwnershipState.OWNED and adapter.manager_state() is not ManagerState.INACTIVE:
+            raise ServiceError("stop the owned Server explicitly before package repair")  # noqa: TRY003
         extras = "cli,server" if profile == "local" else "cli"
         command = [uv, "tool", "install", "--reinstall", f"powercontext[{extras}]=={exact}"]
         if index:
