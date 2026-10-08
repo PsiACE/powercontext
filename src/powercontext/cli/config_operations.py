@@ -31,6 +31,7 @@ from pydantic_settings import BaseSettings, EnvSettingsSource
 from typing_extensions import override
 
 from powercontext.client.settings import ClientSettings, normalize_server_url
+from powercontext.client.transport_policy import normalize_client_url
 from powercontext.local_config import (
     ConfigurationConflictError,
     configuration_lock,
@@ -142,8 +143,10 @@ def _view(path: Path, target: str, values: Mapping[str, str], revision: str) -> 
             item["value"] = field.info.default
         else:
             try:
+                if name in {"server_url", "public_url"}:
+                    normalize_client_url(value)
                 item["value"] = field.adapter.dump_python(field.adapter.validate_python(value), mode="json")
-            except ValidationError:
+            except ValueError:
                 item["state"] = "invalid"
         view[name] = item
     known = {field.environment for field in fields.values()}
