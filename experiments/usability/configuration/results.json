@@ -1,0 +1,22 @@
+{
+  "baseline": "f28f8edf",
+  "cases": [
+    {
+      "case": "atomic_replace_without_revision",
+      "first_change_preserved": false,
+      "document_readable": true
+    },
+    {
+      "case": "heuristic_redaction_without_public_allowlist",
+      "unknown_private_value_visible": true
+    },
+    {
+      "case": "settings_without_change_field_validation",
+      "misspelled_field_accepted": true
+    },
+    {
+      "case": "shell_free_parser",
+      "expansion_rejected": true
+    }
+  ]
+}
