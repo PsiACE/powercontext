@@ -55,7 +55,7 @@ Codex 和 Claude Code 使用现有原生通道发送不包含内容的 `capture_
 
 生成的 HTTP 契约保持不变。符合契约的 Server 响应保持现有行为。缺字段、多字段、类型错误或引用其他 Source 的响应在检查点前被拒绝。无需持久配置或用户数据迁移。Source 接受并不代表已生成 Memory 或完成合成。取消、响应丢失或验证失败使写入结果不确定，重放前需要现有显式检查。
 
-# Acceptance
+## Acceptance
 
 `tests/fixtures/hooks/capture_receipts.json` 通过三个宿主的实际适配器子进程和回环 HTTP 服务执行。案例覆盖有效和重复回执、缺状态或字段、拒绝状态、Source 身份或类型不匹配、布尔值或零位置、多余字段、格式错误的 JSON、响应丢失以及关闭捕获。断言保护退出行为、空注入、确认后的检查点、稳定重试身份和不含内容的原生诊断。Claude 还在不加载 site-packages 时执行；其他宿主已有依赖保持不变。
 
