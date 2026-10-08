@@ -5,7 +5,7 @@ description: 发现、检查、预览并应用类型化的本地 .env 修改，�
 
 - Proposal Name: `agent_operable_configuration`
 - Start Date: 2026-10-09
-- Status: Implemented
+- Status: Proposed
 - RFC PR: Not opened
 - Related RFC: [RFC 1733](1733-usability-and-agent-workflows.md)
 
@@ -45,6 +45,8 @@ Client 操作仅需 `[cli]`；Server 操作需要 Server extras。Client 激活�
 
 验证类型发现、未知字段拒绝、预览无副作用、局部保留、私密值隐藏、无效组合、过期及并发冲突、0600 读回、多行语法和准确激活状态。通过公共 CLI 与跨进程写入验收；真实网络、模型和宿主需要独立验收。
 
+Linux 验收执行真实跨进程并发及新安装 `[cli]` wheel，使用 Typer 0.27.3，不含 Click 或 SQLAlchemy。Windows 可移植性工作流已纳入配置测试；本地尚未观察 Windows/macOS 执行。
+
 # Drawbacks
 
 可写范围是明确的公共标量字段。提供方与数据库编辑仍使用现有配置接口。Unix 写入权限为 0600；Windows 依赖文件系统 ACL，不声称执行 Unix 权限。锁仅协调使用此协议的写入方。修改的赋值会规范化，其余注释和多行赋值保持原样。
@@ -65,4 +67,3 @@ Client 操作仅需 `[cli]`；Server 操作需要 Server extras。Client 激活�
 
 提供方拥有的编辑接口与独立授权的在线检查可在实际需求出现后扩展。原生秘密存储、运行实例激活观察仍属于独立工作。
 
-Linux 验收执行真实跨进程并发及新安装 `[cli]` wheel，使用 Typer 0.27.3，不含 Click 或 SQLAlchemy。Windows 可移植性工作流已纳入配置测试；本地尚未观察 Windows/macOS 执行。
