@@ -165,7 +165,7 @@ function Select-Index {
 }
 
 function Install-UvIfMissing {
-    $Command = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    $Command = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     $UserUv = Join-Path $HOME '.local\bin\uv.exe'
     if ($env:UV_INSTALL_DIR) { $UserUv = Join-Path $env:UV_INSTALL_DIR 'uv.exe' }
     if ($Command) { $Uv = $Command.Source }

@@ -179,6 +179,8 @@ def test_install_configure_remember_and_reinstall(tmp_path: Path, environment: s
     env.update(
         HOME=str(home_dir),
         USERPROFILE=str(home_dir),
+        # These subprocesses write UTF-8 log files, rather than a Windows console.
+        PYTHONIOENCODING="utf-8",
         UV_TOOL_DIR=str(tmp_path / "tools"),
         UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
         UV_CACHE_DIR=str(tmp_path / "cache"),
@@ -292,6 +294,7 @@ def test_latest_exact_versions_and_client_profile(tmp_path: Path) -> None:
         if not key.startswith(("UV_", "PIP_", "PYTHON", "POWERCONTEXT_")) and key != "VIRTUAL_ENV"
     }
     env.update(
+        PYTHONIOENCODING="utf-8",
         UV_NO_CONFIG="1",
         UV_TOOL_DIR=str(tmp_path / "tools"),
         UV_TOOL_BIN_DIR=str(tmp_path / "bin with spaces"),
