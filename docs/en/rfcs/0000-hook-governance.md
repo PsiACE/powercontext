@@ -55,7 +55,7 @@ Native event IDs are used when available. Existing content-hash fallback can ded
 
 The generated HTTP contract remains unchanged. Server responses already satisfying it retain behavior. Malformed, extra-field, wrong-type or unrelated-Source responses are rejected before checkpoints. No persistent configuration or user data migration is needed. Capture acknowledgement is Source acceptance, not generated Memory or completed synthesis. Cancellation, lost responses and failed validation leave the write outcome uncertain; existing explicit inspection is required before replay.
 
-# Acceptance
+## Acceptance
 
 `tests/fixtures/hooks/capture_receipts.json` is executed through actual copied adapter subprocesses and a loopback HTTP fixture for all three hosts. Cases cover accepted and repeated receipts, missing status/fields, rejected status, mismatched Source identity/type, boolean/zero positions, extra fields, malformed JSON, lost acknowledgement and capture opt-out. Assertions protect exit behavior, empty injection, receipt-gated checkpoints, stable retry identity and content-free native diagnostics. Claude also executes without site packages; existing dependency requirements for other hosts remain intact.
 
