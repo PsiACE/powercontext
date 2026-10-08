@@ -31,3 +31,11 @@ package into a pending managed Skill candidate without model generation. `mode: 
 adaptation and requires Skill generation to be configured. Import requires contribution access to the bound Scope.
 Neither mode installs, publishes, approves or executes a Skill. An external entrypoint is local to its registered
 host; never present it as an executable path on another machine.
+
+## Export, install and execute are separate results
+
+Approval produces an exact Artifact revision. A requested export uses the supported exact package export/download
+path and reports its verified destination. Installation uses the selected host's native Skill operation and preserves
+unrelated user files. Loading or selecting the Skill does not establish that its commands ran. Report the actual
+installation or execution result separately. Hosts without review decision tools leave approval incomplete or use
+an already supported authorized human/CLI path; candidate inspection grants no decision authority.

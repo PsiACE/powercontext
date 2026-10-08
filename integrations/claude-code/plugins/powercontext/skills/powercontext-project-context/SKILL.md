@@ -1,6 +1,6 @@
 ---
 name: powercontext-project-context
-description: PowerContext memory search/save, inventory, work handoff and candidate review (搜索记忆、记住、盘点、交接、审查候选). Use for explicit requests or missing project history; ordinary coding and current-context summaries need no Skill detour.
+description: PowerContext memory search/save, inventory, work handoff, Experience/Skill synthesis and candidate review (搜索记忆、记住、盘点、交接、经验、技能、审查候选). Use for explicit requests or missing project history; ordinary coding and current-context summaries need no Skill detour.
 ---
 
 # PowerContext routing
@@ -16,6 +16,8 @@ Read only the relevant reference when its workflow detail is needed; self-contai
 | Save, correct, retire / 记住、纠正、停用记忆 | `remember_memory` for explicit save; [Scope and Memory](references/scope-memory.md). |
 | Transfer or resume work / 交接、接续工作 | `handoff_current_work`; [Work Handoff](references/work-handoff.md). Ordinary transfer is temporary; durable commit needs explicit intent. |
 | Inspect candidates / 审查候选 | `list_artifact_candidates`; [Review and publication](references/review-publication.md). Inspection grants no decision authority. |
+| Distill Experience / 提炼经验 | Select evidence, generate or propose, then authorized review; [Experience and Skills](references/experience-skills.md). Missing model capability differs from missing proposal capability. |
+| Create, import or use Skills / 创建、导入、使用技能 | Exact evidence/candidate/revision/package/installation/execution stages; [Experience and Skills](references/experience-skills.md). Use only the current catalog. |
 
 Before the first data operation, resolve the host/Server Scope as described in [Scope and Memory](references/scope-memory.md); reuse the returned ID, never guess one.
 

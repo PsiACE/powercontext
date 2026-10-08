@@ -40,7 +40,9 @@ loading a Skill first. Use the host's actual names and permission channels. A re
 does not grant access here; missing tools leave a precise incomplete stage.
 
 The installation entry includes a missing-command bootstrap branch, official installation sources, local/Client-only
-selection, and separate configuration/connection/host verification. When available, use the standalone
+selection, and separate configuration/connection/host verification. Prefer published Bash/PowerShell scripts
+advertised by the installation guide; development-branch assets do not prove deployed website availability. Older
+releases use the guide's existing uv path. When available, use the standalone
 `powercontext-ops` entry for local inspection and explicit repair. Whole-environment loss follows external bootstrap.
 Loading the maintenance Skill itself does not make an unavailable command executable.
 
@@ -53,7 +55,7 @@ Loading the maintenance Skill itself does not make an unavailable command execut
 | Save context | Explicit Memory write; Source capture is separate | Actual citation; supported exact readback when needed |
 | Find context | Search, inventory, and exact read are distinct | Returned hits/references or accurate empty/denied/unavailable result |
 | Temporary transfer | Inspect current work and produce complete prepared carrier | Complete prepared value, generation receipts, evidence and omissions |
-| Durable milestone | Commit only with explicit retention intent | Exact committed revision and receipt; preparation is not commit |
+| Durable milestone | Commit only with explicit retention intent | Exact committed revision; preserve generation receipts; preparation is not commit |
 | Continue | Read full carrier, verify current state/evidence/capability/authority | Receiver state; acknowledgement is not executed work |
 | Experience/Skill synthesis | Select exact evidence; model generation or caller-content proposal | Pending candidate/version or explicit no-op |
 | Review | Inspect current proposal; authorized decision with current version | Exact approved revision or rejected/revised candidate state |
@@ -78,10 +80,14 @@ approval requests or inferred extra authority.
 Author the maintenance entry under `skills/powercontext-install/` as a self-contained native Skill folder, independently
 of Runtime installation. Product content uses the existing Agent Plugin authoritative resources and explicit host
 projections. Equal content may be shared; names, bindings, available operations, and approval channels remain target
-specific. Preserve specialized Codex and Hermes guidance and OpenClaw's restricted catalog. Distribution generation
-is a separate delivery; this design uses existing native packaging and resource checks.
+specific. Preserve specialized Codex and Hermes guidance and OpenClaw's restricted catalog. Shared product projections depend on distribution commit `19a7d559` plus its strict-path correction `c6b1f537`: edit only canonical/override resources and
+explicit manifest mappings, then regenerate through `make plugin-skills`. The standalone maintenance folder is
+independently loadable. It discovers installed help before using optional Ops commands; Memory/Handoff workflows
+do not depend on the Ops feature or other usability themes.
 
-Each content release records its supported CLI/capability baseline through the distribution's versioned manifest.
+The checked-in `integrations/distribution/skills/targets.json` records `contract_baseline.repository_commit` and
+its capability-manifest path, plus the optional maintenance-entry condition. Update that explicit metadata when
+authoring against a different contract baseline; it is not an automatically inferred release-support claim.
 References describe only operations actually shipped for that target. Structured scenario fixtures contain ordinary
 user requests, actual catalogs, expected operation/result stages, and qualification limits; they are evaluation input,
 not a workflow execution language. A valid frontmatter or reachable reference proves packaging, not good behavior.
@@ -126,6 +132,6 @@ selected native distribution channel; packaging must include all reachable refer
 
 # Future possibilities
 
-Add references for new operations only when the relevant host exposes them. A distribution generator can share
+Add references for new operations only when the relevant host exposes them. The declared distribution generator shares
 byte-identical resources while retaining explicit host overlays. Real model/host evaluations can measure routing and
 result reporting without expanding the Skill's authority.

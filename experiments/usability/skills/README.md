@@ -7,10 +7,15 @@ operations establish those distinctions; a generic tool catalog does not by itse
 ## Reproduce
 
 ```bash
+mkdir -p "$HOME/.cache/powercontext-usability/skills/scratch"
+git worktree add --detach "$HOME/.cache/powercontext-usability/skills/baseline" \
+  5d5813a8a4ffb446ff26ab05fae60eb1b08a72fb
+cd "$HOME/.cache/powercontext-usability/skills/baseline"
+TMPDIR="$HOME/.cache/powercontext-usability/skills/scratch" uv sync --locked
 python experiments/usability/skills/run.py \
-  --python /home/psiace/.lody/repos/local---0b794dd4dd93/worktrees/script-installation/.venv/bin/python \
-  --scratch /home/psiace/.cache/powercontext-usability/skills \
-  --output experiments/usability/skills/results.json
+  --python "$PWD/.venv/bin/python" \
+  --scratch "$HOME/.cache/powercontext-usability/skills/scratch" \
+  --output "$HOME/.cache/powercontext-usability/skills/baseline-results.json"
 ```
 
 The selected interpreter needs existing Runtime/test dependencies. Source baseline is pinned to
@@ -64,3 +69,26 @@ is an implementation boundary, not permission granted by a Markdown Skill.
 These source observations motivate precise local package/result identity. PowerContext's existing domain owners
 already separate candidate approval, Artifact revision, package projection, installation, and usage; Skills should
 explain those operations rather than duplicate them. No Magpie native execution is claimed.
+
+## Final native resources and workflow qualification
+
+`skills/powercontext-install/` is an independently loadable native Skill folder. It starts with the published
+installation guide, prefers Bash/PowerShell scripts only when advertised and available, and retains the guide's uv
+path for older releases. Installed help/capabilities gate optional new Ops commands. Native project resources use
+the declared canonical/override distribution manifest; `make plugin-skills` renders applicable host projections.
+The manifest records Runtime contract baseline `f28f8edf` and the optional maintenance-entry condition.
+
+`qualify.py` executes the final projection check, seven actual CLI discovery cases, and six public state workflows
+in one pytest run. From the selected product branch, run `uv sync --locked` and use `--python "$PWD/.venv/bin/python"`
+with scratch/results under `$HOME/.cache/powercontext-usability/skills/`. Reproduce with `python experiments/usability/skills/qualify.py --python <configured-python>
+--scratch <cache>/skills-qualification --output <results.json>`. Source drift from the pinned Runtime baseline is
+rejected; intentional Skill/distribution changes are hashed in `qualification.json`. Memory direct write, temporary
+and durable Handoff, Experience revise/approve/reject, exact Skill replacement lineage, archive download/readback,
+usage idempotency, digest conflict and deprecated-revision gates executed successfully. These are controlled
+Runtime/HTTP behavior tests with configured fixtures, not real model routing or native Agent execution.
+
+Optional maintenance commands have separate actual-wheel and real-Linux-manager evidence in Ops commit
+`4995cf4cd92caa1ff854e99be477b5469b7840c7`; the Skill branch does not pretend older Runtime wheels contain them.
+Independent GPT-6.1 Sol scenario text review is recorded separately at `090a3cce` under
+`experiments/usability/skills-review/`, including the missing fresh-install path and its resolved bootstrap branch.
+Text review establishes the guidance interpretation under selected catalogs, not live host discovery or execution.
