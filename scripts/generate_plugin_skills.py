@@ -35,7 +35,7 @@ MANIFEST = ROOT / "integrations/distribution/skills/targets.json"
 
 def relative_path(value: str) -> Path:
     path = PurePosixPath(value)
-    if not value or path.is_absolute() or ".." in path.parts or "\\" in value:
+    if not value or path.is_absolute() or ".." in path.parts or "\\" in value or ":" in value:
         raise ValueError(f"Expected contained relative resource path: {value}")  # noqa: TRY003
     return Path(path)
 
