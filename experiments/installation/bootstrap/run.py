@@ -41,8 +41,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", default="8b2ea957", help="Git revision containing the installer")
     baseline = parser.parse_args().baseline
-    revision = subprocess.check_output(["git", "rev-parse", baseline], cwd=ROOT, text=True).strip()  # noqa: S603
-    source = subprocess.check_output(["git", "show", f"{revision}:website/public/install.sh"], cwd=ROOT, text=True)  # noqa: S603
+    revision = subprocess.check_output([shutil.which("git"), "rev-parse", baseline], cwd=ROOT, text=True).strip()  # noqa: S603
+    source = subprocess.check_output([shutil.which("git"), "show", f"{revision}:website/public/install.sh"], cwd=ROOT, text=True)  # noqa: S603
     results = []
     with tempfile.TemporaryDirectory(prefix="boundary-", dir=CACHE) as directory:
         work = Path(directory)
