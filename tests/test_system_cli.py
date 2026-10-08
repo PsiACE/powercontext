@@ -32,7 +32,7 @@ from powercontext.cli.app import create_cli
 from powercontext.cli.system import Diagnostic, DiagnosticStatus, doctor_app, setup_app
 from powercontext.paths import default_scheduler_path
 from powercontext.server.settings import ServerSettings
-from powercontext.service.model import (
+from powercontext_operations.model import (
     DefinitionState,
     LivenessState,
     ManagerOwnershipState,

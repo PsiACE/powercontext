@@ -70,3 +70,25 @@ History inspected includes [startup hardening](https://github.com/LodyAI/Lody/co
 and [release-version identity](https://github.com/LodyAI/Lody/commit/60ce0f34c98a2bca8700c073082c4b0ae7424d62).
 These are source/history observations, not executed Lody daemon qualification. PowerContext already has native user
 service managers and exact ownership metadata; importing Lody's daemon supervisor would solve a different problem.
+
+## Installed implementation qualification
+
+`qualify.py` executes 14 cases recorded in `qualification.json`. Build the selected branch wheel with `uv build
+--wheel --out-dir <scratch>/wheels`, then run `python experiments/usability/operations/qualify.py --wheel <wheel>
+--scratch <scratch>/qualification --output <results.json>`. It creates disposable environments and one uniquely
+named Linux user unit, verifies the identifier is unoccupied, and removes that unit on exit. It does not modify the
+normal `powercontext.service` registration.
+
+The actual built PowerContext wheel is installed without dependencies into a selected disposable manual venv.
+Runtime help fails while installed Ops status, doctor and native log-location reporting work. Offline unavailable
+repair fails and the invoking environment remains usable. A separate controlled wheel with the production Ops
+namespace and a broken fixture Runtime verifies exact named-uv repair into the explicitly different selected tool
+installation. This does not qualify release dependency resolution or program rollback.
+
+The real running Linux user systemd manager loads the exact production-rendered ownership metadata and executes
+a controlled sleeping fixture process: start becomes active, active repair is refused, explicit stop becomes
+inactive, and uninstall removes the owned artifact and manager registration. This is actual native manager
+execution with a fixture process, not a live PowerContext Server, Windows Task Scheduler or macOS launchd claim.
+Data evidence is checked unchanged after every command. Affected service, environment, configuration, diagnostic
+and Ops public behavior tests passed 327 cases with nine platform skips. Focused Ops tests cover foreign refusal,
+missing interpreter, unpinned/source rejection and stop-failure retention. Whole environment/interpreter deletion still requires bootstrap recovery.

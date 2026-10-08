@@ -25,7 +25,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
-from powercontext.service.model import (
+from powercontext_operations.model import (
     DEFINITION_VERSION,
     DefinitionState,
     ManagerOwnershipState,
@@ -200,7 +200,7 @@ def definition_state(
     ):
         return DefinitionState.STALE
     if definition.env_file is not None:
-        from powercontext.service.environment import environment_identity_is_current
+        from powercontext_operations.environment import environment_identity_is_current
 
         if not environment_identity_is_current(definition.env_file):
             return DefinitionState.STALE

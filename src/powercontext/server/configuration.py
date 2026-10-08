@@ -27,9 +27,9 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSettingsSource, SettingsError
 from typing_extensions import override
 
-from powercontext.cli.env_file import EnvironmentFileError, environment_context, read_environment_file
 from powercontext.paths import POWERCONTEXT_HOME_ENV
 from powercontext.server.settings import ServerSettings
+from powercontext_operations.env_file import EnvironmentFileError, environment_context, read_environment_file
 
 DEFAULT_SERVER_ENV_FILE = Path(".env")
 _SERVER_ENVIRONMENT_PREFIX = "POWERCONTEXT_SERVER_"

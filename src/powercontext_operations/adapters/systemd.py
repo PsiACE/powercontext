@@ -25,8 +25,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from powercontext.service.adapters.base import atomic_write, decode_metadata, encode_metadata, inspect_artifact
-from powercontext.service.model import (
+from powercontext_operations.adapters.base import atomic_write, decode_metadata, encode_metadata, inspect_artifact
+from powercontext_operations.model import (
     DEFINITION_VERSION,
     OWNERSHIP_MARKER,
     ManagerOwnershipState,

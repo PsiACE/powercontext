@@ -1,0 +1,104 @@
+{
+  "wheel": "powercontext-1.2.1.dev45+g3f2e7323a.d20261008-py3-none-any.whl",
+  "qualification": "actual wheel without dependencies; controlled wheel repair; real Linux manager with fixture process",
+  "cases": [
+    {
+      "name": "actual_wheel_create_manual_env",
+      "exit": 0,
+      "elapsed_ms": 55.39,
+      "stdout": "",
+      "stderr": "Using CPython 3.14.7 interpreter at: /usr/bin/python\nCreating virtual environment at: actual-env\nActivate with: source actual-env/bin/activate\n"
+    },
+    {
+      "name": "actual_wheel_install_without_dependencies",
+      "exit": 0,
+      "elapsed_ms": 106.63,
+      "stdout": "",
+      "stderr": "Using Python 3.14.7 environment at: actual-env\nResolved 1 package in 1ms\nPrepared 1 package in 9ms\nInstalled 1 package in 60ms\n + powercontext==1.2.1.dev45+g3f2e7323a.d20261008 (from file:///home/psiace/.cache/powercontext-usability/operations/wheels/powercontext-1.2.1.dev45+g3f2e7323a.d20261008-py3-none-any.whl)\n"
+    },
+    {
+      "name": "actual_wheel_runtime_dependencies_broken",
+      "exit": 1,
+      "elapsed_ms": 27.92,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"<scratch>/actual-env/bin/powercontext\", line 4, in <module>\n    from powercontext.cli.app import main\n  File \"<scratch>/actual-env/lib64/python3.14/site-packages/powercontext/__init__.py\", line 17, in <module>\n    from powercontext.artifacts import (\n    ...<7 lines>...\n    )\n  File \"<scratch>/actual-env/lib64/python3.14/site-packages/powercontext/artifacts/__init__.py\", line 17, in <module>\n    from powercontext.artifacts.models import (\n    ...<6 lines>...\n    )\n  File \"<scratch>/actual-env/lib64/python3.14/site-packages/powercontext/artifacts/models.py\", line 21, in <module>\n    from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator\nModuleNotFoundError: No module named 'pydantic'\n"
+    },
+    {
+      "name": "actual_wheel_installed_ops_status",
+      "exit": 0,
+      "elapsed_ms": 75.05,
+      "stdout": "{\"artifact\": \"<scratch>/config/systemd/user/powercontext.service\", \"detail\": \"systemd --user is available\", \"log_location\": \"journalctl --user --unit powercontext.service\", \"manager\": \"inactive\", \"manager_ownership\": \"not_loaded\", \"operations_python\": \"<scratch>/actual-env/bin/python\", \"package_version\": \"1.2.1.dev45+g3f2e7323a.d20261008\", \"registered_package_version\": null, \"registered_python\": null, \"registered_python_exists\": null, \"registration\": \"not_installed\", \"server_liveness\": \"unknown\", \"support\": \"supported\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "actual_wheel_installed_ops_doctor",
+      "exit": 0,
+      "elapsed_ms": 86.24,
+      "stdout": "{\"artifact\": \"<scratch>/config/systemd/user/powercontext.service\", \"detail\": \"systemd --user is available\", \"log_location\": \"journalctl --user --unit powercontext.service\", \"manager\": \"inactive\", \"manager_ownership\": \"not_loaded\", \"operations_python\": \"<scratch>/actual-env/bin/python\", \"package_version\": \"1.2.1.dev45+g3f2e7323a.d20261008\", \"registered_package_version\": null, \"registered_python\": null, \"registered_python_exists\": null, \"registration\": \"not_installed\", \"runtime\": {\"cli_ready\": false, \"python\": \"<scratch>/actual-env/bin/python\"}, \"server_liveness\": \"unknown\", \"support\": \"supported\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "actual_wheel_installed_ops_logs",
+      "exit": 0,
+      "elapsed_ms": 56.1,
+      "stdout": "{\"artifact\": \"<scratch>/config/systemd/user/powercontext.service\", \"detail\": \"systemd --user is available\", \"log_location\": \"journalctl --user --unit powercontext.service\", \"manager\": \"inactive\", \"manager_ownership\": \"not_loaded\", \"operations_python\": \"<scratch>/actual-env/bin/python\", \"package_version\": \"1.2.1.dev45+g3f2e7323a.d20261008\", \"registered_package_version\": null, \"registered_python\": null, \"registered_python_exists\": null, \"registration\": \"not_installed\", \"server_liveness\": \"unknown\", \"support\": \"supported\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "actual_wheel_owned_service_absent_refuses_stop",
+      "exit": 1,
+      "elapsed_ms": 48.18,
+      "stdout": "",
+      "stderr": "refusing service mutation: no valid owned registration\n"
+    },
+    {
+      "name": "actual_wheel_offline_unavailable_repair_retains_launchers",
+      "exit": 1,
+      "elapsed_ms": 85.57,
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext[cli]==99.0.0 and you require\n      powercontext[cli]==99.0.0, we can conclude that your requirements are\n      unsatisfiable.\nuv package repair failed; service registration and data were retained\n"
+    },
+    {
+      "name": "actual_wheel_ops_still_usable_after_repair_failure",
+      "exit": 0,
+      "elapsed_ms": 48.32,
+      "stdout": "{\"artifact\": \"<scratch>/config/systemd/user/powercontext.service\", \"detail\": \"systemd --user is available\", \"log_location\": \"journalctl --user --unit powercontext.service\", \"manager\": \"inactive\", \"manager_ownership\": \"not_loaded\", \"operations_python\": \"<scratch>/actual-env/bin/python\", \"package_version\": \"1.2.1.dev45+g3f2e7323a.d20261008\", \"registered_package_version\": null, \"registered_python\": null, \"registered_python_exists\": null, \"registration\": \"not_installed\", \"server_liveness\": \"unknown\", \"support\": \"supported\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "controlled_wheel_exact_named_uv_repair",
+      "exit": 0,
+      "elapsed_ms": 141.99,
+      "stdout": "{\"bin_directory\": \"<scratch>/bin\", \"operations_launcher\": \"<scratch>/bin/powercontext-ops\", \"package_version\": \"0.1.0\", \"profile\": \"client\", \"runtime_cli_ready\": false, \"runtime_launcher\": \"<scratch>/bin/powercontext\", \"service_action\": \"none\", \"target\": \"uv-tool\"}\n",
+      "stderr": "Resolved 1 package in 0.81ms\nPrepared 1 package in 2ms\nInstalled 1 package in 5ms\n + powercontext==0.1.0\nInstalled 2 executables: powercontext, powercontext-ops\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, run `export PATH=\"<scratch>/bin:$PATH\"` or `uv tool update-shell`.\n"
+    },
+    {
+      "name": "controlled_wheel_exact_repaired_ops_version",
+      "exit": 0,
+      "elapsed_ms": 30.77,
+      "stdout": "0.1.0\n",
+      "stderr": ""
+    },
+    {
+      "name": "controlled_wheel_create_explicit_native_fixture_env",
+      "exit": 0,
+      "elapsed_ms": 20.94,
+      "stdout": "",
+      "stderr": "Using CPython 3.14.7 interpreter at: /usr/bin/python\nCreating virtual environment at: native-env\nActivate with: source native-env/bin/activate\n"
+    },
+    {
+      "name": "controlled_wheel_install_native_fixture_env",
+      "exit": 0,
+      "elapsed_ms": 36.14,
+      "stdout": "",
+      "stderr": "Using Python 3.14.7 environment at: native-env\nResolved 1 package in 0.70ms\nPrepared 1 package in 2ms\nInstalled 1 package in 5ms\n + powercontext==0.1.0 (from file://<scratch>/powercontext-0.1.0-py3-none-any.whl)\n"
+    },
+    {
+      "name": "actual_systemd_controlled_process_owned_start_stop_uninstall",
+      "exit": 0,
+      "elapsed_ms": 547.12,
+      "stdout": "{\"start\": {\"package_version\": \"0.1.0\", \"operations_python\": \"<scratch>/native-env/bin/python\", \"support\": \"supported\", \"registration\": \"installed\", \"artifact\": \"/home/psiace/.config/systemd/user/powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"manager_ownership\": \"owned\", \"manager\": \"active\", \"registered_python\": \"<scratch>/native-env/bin/python\", \"registered_package_version\": \"0.1.0\", \"registered_python_exists\": true, \"log_location\": \"journalctl --user --unit powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"server_liveness\": \"unknown\", \"detail\": \"systemd --user is available\"}, \"restart\": {\"package_version\": \"0.1.0\", \"operations_python\": \"<scratch>/native-env/bin/python\", \"support\": \"supported\", \"registration\": \"installed\", \"artifact\": \"/home/psiace/.config/systemd/user/powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"manager_ownership\": \"owned\", \"manager\": \"active\", \"registered_python\": \"<scratch>/native-env/bin/python\", \"registered_package_version\": \"0.1.0\", \"registered_python_exists\": true, \"log_location\": \"journalctl --user --unit powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"server_liveness\": \"unknown\", \"detail\": \"systemd --user is available\"}, \"stop\": {\"package_version\": \"0.1.0\", \"operations_python\": \"<scratch>/native-env/bin/python\", \"support\": \"supported\", \"registration\": \"installed\", \"artifact\": \"/home/psiace/.config/systemd/user/powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"manager_ownership\": \"owned\", \"manager\": \"inactive\", \"registered_python\": \"<scratch>/native-env/bin/python\", \"registered_package_version\": \"0.1.0\", \"registered_python_exists\": true, \"log_location\": \"journalctl --user --unit powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"server_liveness\": \"unknown\", \"detail\": \"systemd --user is available\"}, \"uninstall\": {\"package_version\": \"0.1.0\", \"operations_python\": \"<scratch>/native-env/bin/python\", \"support\": \"supported\", \"registration\": \"not_installed\", \"artifact\": \"/home/psiace/.config/systemd/user/powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"manager_ownership\": \"not_loaded\", \"manager\": \"inactive\", \"registered_python\": null, \"registered_package_version\": null, \"registered_python_exists\": null, \"log_location\": \"journalctl --user --unit powercontext-ops-experiment-1f32920cd4d5479c93609858e501f768.service\", \"server_liveness\": \"unknown\", \"detail\": \"systemd --user is available\"}}\n",
+      "stderr": ""
+    }
+  ]
+}

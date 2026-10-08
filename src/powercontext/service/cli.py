@@ -27,7 +27,7 @@ from powercontext.cli.inference_notice import write_inference_capability_notice
 from powercontext.server import cli as _server_role_dependency
 from powercontext.server.configuration import ServerConfigurationError, server_settings_context
 from powercontext.service.controller import ServiceController
-from powercontext.service.model import ServiceError, ServiceStatus
+from powercontext_operations.model import ServiceError, ServiceStatus
 
 del _server_role_dependency
 

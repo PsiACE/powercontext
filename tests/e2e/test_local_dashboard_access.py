@@ -25,9 +25,9 @@ from fastmcp.client.transports import StreamableHttpTransport
 from typer.testing import CliRunner
 
 from powercontext.cli.config import app as config_app
-from powercontext.cli.env_file import parse_environment
 from powercontext.server.configuration import server_settings_context
 from powercontext.server.factory import create_server_app
+from powercontext_operations.env_file import parse_environment
 
 
 @pytest.mark.parametrize("require_authentication", [False, True], ids=["anonymous-default", "authenticated"])

@@ -1492,7 +1492,7 @@ def _local_service_diagnostics(server_url: str) -> dict[str, Diagnostic]:
         return {}
 
     from powercontext.service.controller import ServiceController
-    from powercontext.service.model import (
+    from powercontext_operations.model import (
         DefinitionState,
         ManagerState,
         RegistrationState,

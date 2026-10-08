@@ -21,8 +21,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from powercontext.service.adapters.launchd import LaunchdUserAdapter
-from powercontext.service.model import ServiceError, SupportState
+from powercontext_operations.adapters.launchd import LaunchdUserAdapter
+from powercontext_operations.model import ServiceError, SupportState
 from tests.native import test_personal_service_lifecycle as lifecycle
 
 

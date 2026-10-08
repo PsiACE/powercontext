@@ -24,12 +24,12 @@ from unittest.mock import Mock
 
 import pytest
 
-import powercontext.service.environment as service_environment
+import powercontext_operations.environment as service_environment
 from powercontext.service import launcher as service_launcher
-from powercontext.service._windows_command import run_windows_command
-from powercontext.service.adapters.base import definition_state
-from powercontext.service.environment import ProtectedEnvironmentFileError, load_protected_environment_file
-from powercontext.service.model import (
+from powercontext_operations._windows_command import run_windows_command
+from powercontext_operations.adapters.base import definition_state
+from powercontext_operations.environment import ProtectedEnvironmentFileError, load_protected_environment_file
+from powercontext_operations.model import (
     DEFINITION_VERSION,
     OWNERSHIP_MARKER,
     DefinitionState,
@@ -131,7 +131,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from powercontext.service.environment import ProtectedEnvironmentFileError, load_protected_environment_file
+from powercontext_operations.environment import ProtectedEnvironmentFileError, load_protected_environment_file
 
 code_page = int(sys.argv[2])
 if code_page:
