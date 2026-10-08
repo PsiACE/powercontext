@@ -15,7 +15,7 @@ Use the installation script on the machine running your Agent. It provisions uv 
 the latest stable CLI and Client without local Server dependencies:
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --profile client --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --profile client
 ```
 
 For Windows PowerShell, exact versions, and mirrors, see [Install and run](../get-started/install-and-run.md).

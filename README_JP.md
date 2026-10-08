@@ -29,13 +29,13 @@ PowerContext は、会話をまたいでもコンテキストを作業ととも�
 推奨のインストールスクリプトは、必要に応じて uv と Python を用意します。Agent 連携には Git と Agent CLI が必要です：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 Windows では PowerShell を使用します：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1)))"
 ```
 
 表示された PATH 設定を実行してから、設定を続けます：
