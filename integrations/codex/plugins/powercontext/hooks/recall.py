@@ -266,7 +266,7 @@ def _capture_prompt(
         metadata["session_id"] = session_id
     if turn_id is not None:
         metadata["turn_id"] = turn_id
-    return _post_json(
+    response = _post_json(
         "/v1/sources/content",
         {
             "scope_id": scope_id,
@@ -277,6 +277,16 @@ def _capture_prompt(
         settings=settings,
         deadline=deadline,
     )
+
+    # A position alone does not acknowledge this exact capture.
+    if (
+        set(response) != {"status", "source", "position"}
+        or response.get("status") != "accepted"
+        or response.get("source") != {"name": "content", "source_id": source_id}
+    ):
+        raise TypeError
+    _source_position(response)
+    return response
 
 
 def _flush_through(
