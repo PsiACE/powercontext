@@ -1,3 +1,17 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run real uv package-resolution and recovery ablations using local synthetic wheels."""
 
 # Assertions are experiment acceptance checks; subprocess inputs are controlled fixture paths.
@@ -59,15 +73,22 @@ def main() -> None:
         wheel(packages, "1.0.0")
         wheel(packages, "2.0.0")
         wheel(packages, "3.0.0rc1")
-        environment = {key: value for key, value in os.environ.items() if not key.startswith(("UV_", "PIP_"))}
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("UV_", "PIP_", "PYTHON")) and key != "VIRTUAL_ENV"
+        }
         environment.update(
+            HOME=str(root),
+            USERPROFILE=str(root),
+            PYTHONIOENCODING="utf-8",
             UV_TOOL_DIR=str(root / "tools"),
             UV_TOOL_BIN_DIR=str(root / "bin"),
             UV_CACHE_DIR=str(root / "cache"),
             UV_NO_CONFIG="1",
         )
 
-        def install(requirement: str, *flags: str) -> subprocess.CompletedProcess:
+        def install(requirement: str, *flags: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 [
                     uv,
@@ -88,8 +109,14 @@ def main() -> None:
                 check=False,
             )
 
-        def executable() -> subprocess.CompletedProcess:
-            return subprocess.run([str(root / "bin" / "powercontext")], text=True, capture_output=True, check=False)
+        def executable() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [str(root / "bin" / "powercontext")],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
 
         for label, flags, expected in [
             ("latest_without_stable_policy", (), "2.0.0"),
