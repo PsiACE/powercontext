@@ -686,7 +686,7 @@ def test_capture_prompt_is_idempotent_and_preserves_provenance(
         deadline: float,
     ) -> dict[str, object]:
         requests.append((path, payload))
-        return {"position": 1}
+        return {"status": "accepted", "source": {"name": "content", "source_id": payload["source_id"]}, "position": 1}
 
     monkeypatch.setattr(recall_module, "_post_json", post)
     hook_payload = {
@@ -711,7 +711,15 @@ def test_capture_prompt_is_idempotent_and_preserves_provenance(
         deadline=10.0,
     )
 
-    assert first == second == {"position": 1}
+    assert (
+        first
+        == second
+        == {
+            "status": "accepted",
+            "source": {"name": "content", "source_id": requests[0][1]["source_id"]},
+            "position": 1,
+        }
+    )
     assert requests[0] == requests[1]
     path, payload = requests[0]
     assert path == "/v1/sources/content"

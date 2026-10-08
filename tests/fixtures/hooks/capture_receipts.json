@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "accepted",
+      "receipt": "accepted",
+      "checkpoint": true
+    },
+    {
+      "id": "accepted-repeat",
+      "receipt": "accepted",
+      "repetitions": 2,
+      "checkpoint": true
+    },
+    {
+      "id": "position-only",
+      "receipt": "position_only",
+      "checkpoint": false
+    },
+    {
+      "id": "missing-status",
+      "receipt": "missing_status",
+      "checkpoint": false
+    },
+    {
+      "id": "rejected",
+      "receipt": "rejected",
+      "checkpoint": false
+    },
+    {
+      "id": "wrong-source",
+      "receipt": "wrong_source",
+      "checkpoint": false
+    },
+    {
+      "id": "wrong-source-type",
+      "receipt": "wrong_type",
+      "checkpoint": false
+    },
+    {
+      "id": "boolean-position",
+      "receipt": "boolean_position",
+      "checkpoint": false
+    },
+    {
+      "id": "zero-position",
+      "receipt": "zero_position",
+      "checkpoint": false
+    },
+    {
+      "id": "extra-field",
+      "receipt": "extra_field",
+      "checkpoint": false
+    },
+    {
+      "id": "capture-opt-out",
+      "receipt": "accepted",
+      "capture": false,
+      "checkpoint": false
+    },
+    {
+      "id": "malformed-json",
+      "receipt": "malformed_json",
+      "checkpoint": false
+    },
+    {
+      "id": "lost-acknowledgement",
+      "receipt": "lost_response",
+      "checkpoint": false,
+      "diagnostic": "server_unavailable"
+    }
+  ]
+}

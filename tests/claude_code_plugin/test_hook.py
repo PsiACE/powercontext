@@ -376,7 +376,7 @@ def test_capture_prompt_is_idempotent_and_is_not_a_task_outcome(
         deadline: float,
     ) -> dict[str, object]:
         requests.append((path, payload))
-        return {"position": 1}
+        return {"status": "accepted", "source": {"name": "content", "source_id": payload["source_id"]}, "position": 1}
 
     monkeypatch.setattr(hook_module, "_post_json", post)
     payload = {"session_id": "session-1", "prompt_id": "prompt-2"}
