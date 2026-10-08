@@ -8,10 +8,15 @@ for the demonstrated import failure.
 ## Reproduce
 
 ```bash
+mkdir -p "$HOME/.cache/powercontext-usability/operations/scratch"
+git worktree add --detach "$HOME/.cache/powercontext-usability/operations/baseline" \
+  3f2e7323a9cf52d0bda936a108123b1f9bff29e4
+cd "$HOME/.cache/powercontext-usability/operations/baseline"
+TMPDIR="$HOME/.cache/powercontext-usability/operations/scratch" uv sync --locked
 python experiments/usability/operations/run.py \
-  --python /home/psiace/.lody/repos/local---0b794dd4dd93/worktrees/script-installation/.venv/bin/python \
-  --scratch /home/psiace/.cache/powercontext-usability/operations \
-  --output experiments/usability/operations/results.json
+  --python "$PWD/.venv/bin/python" \
+  --scratch "$HOME/.cache/powercontext-usability/operations/scratch" \
+  --output "$HOME/.cache/powercontext-usability/operations/baseline-results.json"
 ```
 
 The selected Python must provide the existing Runtime/test dependencies. The harness pins source baseline
@@ -73,7 +78,9 @@ service managers and exact ownership metadata; importing Lody's daemon superviso
 
 ## Installed implementation qualification
 
-`qualify.py` executes 14 cases recorded in `qualification.json`. Build the selected branch wheel with `uv build
+`qualify.py` executes 14 cases recorded in `qualification.json`. In a checkout of the selected feature commit,
+run `uv sync --locked` first. Use `$HOME/.cache/powercontext-usability/operations/` for scratch and result files.
+Build the selected branch wheel with `uv build
 --wheel --out-dir <scratch>/wheels`, then run `python experiments/usability/operations/qualify.py --wheel <wheel>
 --scratch <scratch>/qualification --output <results.json>`. It creates disposable environments and one uniquely
 named Linux user unit, verifies the identifier is unoccupied, and removes that unit on exit. It does not modify the
@@ -86,9 +93,11 @@ namespace and a broken fixture Runtime verifies exact named-uv repair into the e
 installation. This does not qualify release dependency resolution or program rollback.
 
 The real running Linux user systemd manager loads the exact production-rendered ownership metadata and executes
-a controlled sleeping fixture process: start becomes active, active repair is refused, explicit stop becomes
+a controlled sleeping fixture process: start/restart become active, active repair is refused even when the owned artifact is deleted while the job
+remains loaded, explicit stop becomes
 inactive, and uninstall removes the owned artifact and manager registration. This is actual native manager
 execution with a fixture process, not a live PowerContext Server, Windows Task Scheduler or macOS launchd claim.
 Data evidence is checked unchanged after every command. Affected service, environment, configuration, diagnostic
 and Ops public behavior tests passed 327 cases with nine platform skips. Focused Ops tests cover foreign refusal,
-missing interpreter, unpinned/source rejection and stop-failure retention. Whole environment/interpreter deletion still requires bootstrap recovery.
+missing interpreter, unpinned/source rejection and stop-failure retention. Eleven focused Ops cases include
+three regressions that prohibit package mutation for active/foreign/unknown loaded managers with no artifact. Whole environment/interpreter deletion still requires bootstrap recovery.
