@@ -315,7 +315,8 @@ main() {
     [[ "$PROFILE" != client ]] || requirement='powercontext[cli]'
     local install_args=(tool install --python "$PYTHON_BIN" --no-python-downloads)
     if [[ "$VERSION" == latest ]]; then
-        install_args+=(--upgrade --prerelease disallow)
+        # An installed prerelease otherwise remains eligible even with prereleases disallowed.
+        install_args+=(--upgrade --reinstall-package powercontext --prerelease disallow)
     else
         requirement="$requirement==$VERSION"
     fi
