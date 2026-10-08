@@ -5,7 +5,7 @@ description: 解释保存的 Client 端点，并显式管理现有 Codex 检出�
 
 - Proposal Name: `client_connections_and_project_bindings`
 - Start Date: 2026-10-09
-- Status: Implemented
+- Status: Proposed
 - RFC PR: Not opened
 - Related RFC: [RFC 1733](1733-usability-and-agent-workflows.md)
 
@@ -37,6 +37,10 @@ description: 解释保存的 Client 端点，并显式管理现有 Codex 检出�
 
 检查报告 Client/setup 的传输策略，不代表原生 MCP 注册的权威状态。`selection_scope` 为 `client_transport_policy`，`native_host_configuration` 为 `unobserved`；Codex 等宿主可另行配置 MCP 端点，激活状态仍未知。
 
+验收包括持久化、冲突、凭证与进程内实际 SQLite/HTTP API 绑定。独立构建的 `[cli]` wheel 使用 Typer 0.27.3，未安装 Click 或 SQLAlchemy，通过了原生并发配置及重启读回场景。未执行原生 Agent、Windows 或 macOS。
+
+所有连接与项目命令成功时输出 JSON，诊断写入 stderr。
+
 # Drawbacks
 
 文件锁只协调合作写入者。原生宿主可能需要显式重载，环境凭证引用依赖进程环境。项目操作目前仅针对 Codex 工作区键。
@@ -57,6 +61,3 @@ description: 解释保存的 Client 端点，并显式管理现有 Codex 检出�
 
 有明确消费者及原生验收时，可扩展命名连接、其他宿主绑定键和原生秘密存储。
 
-验收包括持久化、冲突、凭证与进程内实际 SQLite/HTTP API 绑定。独立构建的 `[cli]` wheel 使用 Typer 0.27.3，未安装 Click 或 SQLAlchemy，通过了原生并发配置及重启读回场景。未执行原生 Agent、Windows 或 macOS。
-
-所有连接与项目命令成功时输出 JSON，诊断写入 stderr。
