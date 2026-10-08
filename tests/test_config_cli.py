@@ -478,7 +478,7 @@ def test_show_redacts_standard_credential_container_variables(tmp_path: Path) ->
     assert shown.exit_code == 0
     assert "OTEL_EXPORTER_OTLP_HEADERS=<redacted>" in shown.output
     assert "demo-secret" not in shown.output
-    assert "PLAIN=value" in shown.output
+    assert "PLAIN=<redacted>" in shown.output
 
 
 def test_init_records_generated_credential_names_for_show_redaction(
@@ -513,7 +513,7 @@ def test_init_records_generated_credential_names_for_show_redaction(
     assert shown.exit_code == 0
     assert "SERVICE_CREDENTIAL=<redacted>" in shown.output
     assert "custom-secret" not in shown.output
-    assert "AWS_PROFILE=development" in shown.output
+    assert "AWS_PROFILE=<redacted>" in shown.output
 
 
 def test_managed_marker_text_inside_a_credential_is_not_treated_as_structure(tmp_path: Path) -> None:

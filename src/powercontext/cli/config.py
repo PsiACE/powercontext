@@ -17,20 +17,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
 import shutil
 import sys
 import tempfile
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Never
+from typing import TYPE_CHECKING, Annotated, Any, Never
 from urllib.parse import urlsplit
 
 import typer
@@ -315,29 +316,112 @@ def init_command(
     _print_next_steps(output)
 
 
+def _structured_operation(operation: Callable[[], dict[str, Any]]) -> None:
+    """Keep stdout machine-readable and exclude arbitrary exception payloads."""
+    from powercontext.local_config import ConfigurationConflictError
+
+    try:
+        result = operation()
+    except (ValueError, OSError, UnicodeError) as error:
+        conflict = isinstance(error, ConfigurationConflictError)
+        result = {
+            "schema_version": 1,
+            "error": {
+                "category": "revision_conflict" if conflict else "invalid_configuration",
+                "next_action": "Inspect again and regenerate the request"
+                if conflict
+                else "Check config schema, resource syntax, and controlled credential inputs",
+            },
+        }
+        typer.echo(json.dumps(result))
+        typer.echo("Configuration operation failed; no successful apply was reported.", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(result, ensure_ascii=False))
+
+
+@app.command("schema")
+def schema_command(
+    target: Annotated[str, typer.Option(help="Settings owner: server or client.")] = "server",
+    json_output: Annotated[bool, typer.Option("--json", help="Print the public JSON schema.")] = False,
+) -> None:
+    """List the bounded writable fields and owning validation constraints."""
+    from powercontext.cli.config_operations import configuration_schema
+
+    _structured_operation(lambda: configuration_schema(target))
+
+
 @app.command("show")
 def show_command(
     env_file: Annotated[Path, typer.Option(help="Environment file to inspect.")] = Path(".env"),
+    target: Annotated[str, typer.Option(help="Settings owner: server or client.")] = "server",
+    json_output: Annotated[bool, typer.Option("--json", help="Print safe structured field inspection.")] = False,
 ) -> None:
-    """Print effective assignments with credentials redacted."""
+    """Inspect public fields; credentials and unknown assignments remain private."""
+    from powercontext.cli.config_operations import inspect_configuration
 
+    if json_output:
+        _structured_operation(lambda: inspect_configuration(env_file, target))
+        return
+    try:
+        view = inspect_configuration(env_file, target)
+    except (ValueError, OSError, UnicodeError):
+        _fail("Configuration inspection failed; check resource syntax and target")
     try:
         content = env_file.read_text(encoding="utf-8")
         values = parse_environment(content, source=str(env_file))
-        recorded = _managed_metadata(content).get("credentials", "")
+        _managed_metadata(content)
     except (ConfigError, EnvironmentFileError, OSError, UnicodeError) as error:
         _fail(str(error))
-    recorded_credentials = {name for name in recorded.split(",") if name}
+    public = {field["environment"]: field for field in view["fields"].values() if "value" in field}
     for name in sorted(values):
-        value = "<redacted>" if _is_secret_name(name) or name in recorded_credentials else values[name]
+        # Unrecognized assignments remain present but their values are never public.
+        value = values[name] if name in public else "<redacted>"
         typer.echo(f"{name}={value}")
+
+
+@app.command("plan")
+def plan_command(
+    request_file: Annotated[Path, typer.Option(help="JSON change document; '-' reads standard input.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Print the private JSON plan.")] = False,
+) -> None:
+    """Preview a revision-checked change without writing."""
+    from powercontext.cli.config_operations import plan_configuration, read_change
+
+    _structured_operation(
+        lambda: plan_configuration(
+            read_change(sys.stdin.read() if str(request_file) == "-" else request_file.read_text(encoding="utf-8"))
+        )
+    )
+
+
+@app.command("apply")
+def apply_command(
+    request_file: Annotated[Path, typer.Option(help="Authorized JSON change document; '-' reads standard input.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Print the saved JSON result.")] = False,
+) -> None:
+    """Apply an explicitly supplied change after validation and revision comparison."""
+    from powercontext.cli.config_operations import apply_configuration, read_change
+
+    _structured_operation(
+        lambda: apply_configuration(
+            read_change(sys.stdin.read() if str(request_file) == "-" else request_file.read_text(encoding="utf-8"))
+        )
+    )
 
 
 @app.command("validate")
 def validate_command(
     env_file: Annotated[Path, typer.Option(help="Environment file to validate.")] = Path(".env"),
+    target: Annotated[str, typer.Option(help="Settings owner: server or client.")] = "server",
+    json_output: Annotated[bool, typer.Option("--json", help="Static JSON validation without runtime probes.")] = False,
 ) -> None:
     """Validate syntax, configured model adapters, and Server settings."""
+
+    if json_output or target == "client":
+        from powercontext.cli.config_operations import validate_resource
+
+        _structured_operation(lambda: validate_resource(env_file, target))
+        return
 
     try:
         content = env_file.read_text(encoding="utf-8")
