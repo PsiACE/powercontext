@@ -1,3 +1,17 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Native installer conformance with real uv and offline synthetic distributions."""
 
 import csv
@@ -9,6 +23,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -78,15 +93,19 @@ def executable_path(directory: Path, uv: str, windows: bool, include_git: bool) 
             shutil.copy2(executable, destination)
         else:
             destination.symlink_to(executable)
+    git = shutil.which("git")
+    if include_git and not git:
+        pytest.skip("explicit-host contract requires Git discovery")
     if not windows:
         for name in ("curl", "wget", "uname", "mktemp", "rm", "dirname", "cat", "sh", "readlink"):
             executable = shutil.which(name)
             if executable:
                 (tools / name).symlink_to(executable)
-        if include_git:
-            (tools / "git").symlink_to(shutil.which("git"))
-    elif include_git:
-        shutil.copy2(shutil.which("git"), tools / "git.exe")
+        if include_git and git:
+            (tools / "git").symlink_to(git)
+    elif include_git and git:
+        # Presence check only: synthetic host setup never executes Git.
+        shutil.copy2(git, tools / "git.exe")
     if windows:
         return os.pathsep.join((
             str(tools),
@@ -97,7 +116,7 @@ def executable_path(directory: Path, uv: str, windows: bool, include_git: bool) 
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
-def test_installation_contract(case: dict, tmp_path: Path) -> None:
+def test_installation_contract(case: dict[str, Any], tmp_path: Path) -> None:
     uv = shutil.which("uv")
     if not uv:
         pytest.skip("native installation contract requires real uv")
@@ -119,9 +138,12 @@ def test_installation_contract(case: dict, tmp_path: Path) -> None:
         "Provides-Extra: cli\nProvides-Extra: server\nRequires-Dist: contract-server==1.2.0; extra == 'server'\n",
     )
     environment = {
-        key: value for key, value in os.environ.items() if not key.startswith(("UV_", "POWERCONTEXT_", "PIP_"))
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("UV_", "POWERCONTEXT_", "PIP_", "PYTHON", "CONTRACT_")) and key != "VIRTUAL_ENV"
     }
     environment.update({
+        "PYTHONIOENCODING": "utf-8",
         "HOME": str(tmp_path),
         "USERPROFILE": str(tmp_path),
         "TMPDIR": str(tmp_path),
