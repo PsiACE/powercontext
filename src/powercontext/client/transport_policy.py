@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
@@ -78,6 +81,11 @@ def load_client_settings(host: str) -> dict[str, Any]:
         return {}
     except (OSError, ValueError) as error:
         raise ValueError("Cannot read PowerContext Client configuration") from error  # noqa: TRY003
+    return parse_client_settings(raw, host)
+
+
+def parse_client_settings(raw: Any, host: str) -> dict[str, Any]:
+    """Validate one host entry from an already captured v1 document."""
     if (
         not isinstance(raw, dict)
         or type(raw.get("version")) is not int
@@ -95,6 +103,15 @@ def load_client_settings(host: str) -> dict[str, Any]:
         if not isinstance(saved["allow_insecure_http"], bool):
             raise ValueError("Saved PowerContext allow_insecure_http must be a JSON boolean")  # noqa: TRY003
         result["allow_insecure_http"] = saved["allow_insecure_http"]
+    if "api_token_env" in saved:
+        reference = saved["api_token_env"]
+        if (
+            host != "client"
+            or not isinstance(reference, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", reference) is None
+        ):
+            raise ValueError("Client token reference must be an environment variable name for the client entry")  # noqa: TRY003
+        result["api_token_env"] = reference
     return result
 
 
@@ -110,19 +127,26 @@ def _environment_consent(host: str) -> str | None:
     return None
 
 
-def resolve_client_transport(
+@dataclass(frozen=True)
+class ClientTransportResolution:
+    """A non-secret endpoint snapshot with the source of each transport choice."""
+
+    server_url: str
+    allow_insecure_http: bool
+    server_url_source: str
+    consent_source: str
+
+
+def inspect_client_transport(
     host: str,
     *,
+    saved_settings: Mapping[str, Any] | None = None,
     server_url: str | None = None,
     allow_insecure_http: bool | None = None,
-) -> tuple[str, bool]:
-    """Resolve constructor, host environment, common environment, then saved settings.
-
-    This validates URL syntax and consent values. The caller applies the plaintext
-    guard so a separately vouched custom transport can retain its own security policy.
-    """
-
-    saved = load_client_settings(host)
+) -> ClientTransportResolution:
+    """Resolve one snapshot and explain precedence without reading credential values."""
+    saved = load_client_settings(host) if saved_settings is None else dict(saved_settings)
+    source = "explicit" if server_url is not None else "default"
     if server_url is None:
         keys = [_prefix(host) + "BASE_URL", _prefix(host) + "SERVER_URL"]
         if host in {"dsh", "pi", "opencode", "openclaw"}:
@@ -130,19 +154,35 @@ def resolve_client_transport(
         keys.append("POWERCONTEXT_CLIENT_SERVER_URL")
         for key in keys:
             if os.environ.get(key):
-                server_url = os.environ[key]
+                server_url, source = os.environ[key], key
                 break
-    normalized = normalize_client_url(
-        server_url if server_url is not None else saved.get("server_url", _DEFAULT_SERVER_URL)
-    )
+        if server_url is None and saved.get("server_url"):
+            server_url, source = saved["server_url"], "saved"
+    normalized = normalize_client_url(server_url if server_url is not None else _DEFAULT_SERVER_URL)
     if allow_insecure_http is not None:
-        return normalized, parse_client_boolean(allow_insecure_http)
-    environment = _environment_consent(host)
-    if environment is not None:
-        return normalized, parse_client_boolean(environment)
+        return ClientTransportResolution(normalized, parse_client_boolean(allow_insecure_http), source, "explicit")
+    for key in (_prefix(host) + "ALLOW_INSECURE_HTTP", "POWERCONTEXT_CLIENT_ALLOW_INSECURE_HTTP"):
+        if key in os.environ:
+            return ClientTransportResolution(normalized, parse_client_boolean(os.environ[key]), source, key)
     if saved.get("server_url") and _endpoint(normalized) == _endpoint(saved["server_url"]):
-        return normalized, saved.get("allow_insecure_http", False)
-    return normalized, False
+        return ClientTransportResolution(
+            normalized,
+            saved.get("allow_insecure_http", False),
+            source,
+            "saved" if "allow_insecure_http" in saved else "default",
+        )
+    return ClientTransportResolution(normalized, False, source, "default")
+
+
+def resolve_client_transport(
+    host: str,
+    *,
+    server_url: str | None = None,
+    allow_insecure_http: bool | None = None,
+) -> tuple[str, bool]:
+    """Resolve constructor, host environment, common environment, then saved settings."""
+    resolved = inspect_client_transport(host, server_url=server_url, allow_insecure_http=allow_insecure_http)
+    return resolved.server_url, resolved.allow_insecure_http
 
 
 class ClientTransportSettings(BaseSettings):
@@ -212,10 +252,13 @@ class ClientTransportSettings(BaseSettings):
 
 
 __all__ = [
+    "ClientTransportResolution",
     "ClientTransportSettings",
     "client_config_file",
+    "inspect_client_transport",
     "load_client_settings",
     "normalize_client_url",
     "parse_client_boolean",
+    "parse_client_settings",
     "resolve_client_transport",
 ]

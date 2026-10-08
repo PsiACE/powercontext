@@ -15,6 +15,14 @@
 """Python Client SDK package for the public PowerContext HTTP API."""
 
 from powercontext.client.client import PowerContextClient
+from powercontext.client.connections import (
+    bind_project,
+    configure_connection,
+    inspect_connection,
+    inspect_project,
+    project_binding_key,
+    unbind_project,
+)
 from powercontext.client.errors import (
     ClientError,
     ForbiddenResponseError,
@@ -55,5 +63,11 @@ __all__ = [
     "TransportError",
     "UnauthorizedResponseError",
     "UnavailableResponseError",
+    "bind_project",
+    "configure_connection",
+    "inspect_connection",
+    "inspect_project",
+    "project_binding_key",
     "require_remote_skill_server_url",
+    "unbind_project",
 ]
