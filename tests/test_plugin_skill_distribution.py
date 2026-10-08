@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from hashlib import sha256
@@ -30,6 +31,7 @@ TARGETS = json.loads(MANIFEST.read_text())["targets"]
 
 @pytest.mark.parametrize("host", TARGETS)
 def test_complete_native_skill_projection(host: str, tmp_path: Path) -> None:
+    tmp_path = tmp_path.resolve()
     target = TARGETS[host]
     files = render_skill(ROOT, target)
     checked_in = ROOT / target["destination"]
@@ -64,6 +66,7 @@ def test_incomplete_reference_rejected_before_output(tmp_path: Path) -> None:
 
 
 def test_refresh_and_explicit_retirement_preserve_foreign_files(tmp_path: Path) -> None:
+    tmp_path = tmp_path.resolve()
     files = render_skill(ROOT, TARGETS["claude-code"])
     destination = tmp_path / "plugin/skills/powercontext-project-context"
     write_output(destination, files, [])
@@ -83,6 +86,7 @@ def test_refresh_and_explicit_retirement_preserve_foreign_files(tmp_path: Path) 
 
 
 def test_symlink_destination_rejected_before_publication(tmp_path: Path) -> None:
+    tmp_path = tmp_path.resolve()
     outside = tmp_path / "outside"
     outside.mkdir()
     destination = tmp_path / "skill"
@@ -103,7 +107,9 @@ def test_resource_path_escape_rejected(tmp_path: Path, unsafe: str) -> None:
         render_skill(tmp_path, target)
 
 
-def test_cli_rejects_symlink_above_skill_directory(tmp_path: Path) -> None:
+@pytest.mark.parametrize("override_temp", [False, True])
+def test_cli_rejects_symlink_above_skill_directory(tmp_path: Path, override_temp: bool) -> None:
+    tmp_path = tmp_path.resolve()
     outside = tmp_path / "foreign"
     outside.mkdir()
     alias = tmp_path / "output"
@@ -111,12 +117,15 @@ def test_cli_rejects_symlink_above_skill_directory(tmp_path: Path) -> None:
         alias.symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("native symlinks unavailable")
+    (outside / "temp").mkdir()
+    environment = {**os.environ, "TMPDIR": str(alias / "temp")} if override_temp else dict(os.environ)
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts/generate_plugin_skills.py"), "--target", "codex", "--output", str(alias)],
+        env=environment,
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode != 0
     assert "symlink output" in result.stderr
-    assert not list(outside.iterdir())
+    assert list(outside.iterdir()) == [outside / "temp"]
