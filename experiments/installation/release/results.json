@@ -1,0 +1,55 @@
+{
+  "uv": "uv 0.11.14 (x86_64-unknown-linux-gnu)",
+  "cases": [
+    {
+      "case": "latest_without_stable_policy",
+      "install_status": 0,
+      "version": "2.0.0"
+    },
+    {
+      "case": "latest_with_stable_policy",
+      "install_status": 0,
+      "version": "2.0.0"
+    },
+    {
+      "case": "prerelease_only_without_stable_policy",
+      "install_status": 0,
+      "version": "3.0.0rc1"
+    },
+    {
+      "case": "prerelease_only_with_stable_policy",
+      "install_status": 1
+    },
+    {
+      "case": "unavailable_exact_without_custom_rollback",
+      "install_status": 1,
+      "version": "1.0.0",
+      "uv_receipt_preserved": true
+    },
+    {
+      "case": "local_file_hash_fragment_is_not_enforced",
+      "install_status": 0,
+      "executable_status": 1,
+      "hash_mismatch_reported": false
+    },
+    {
+      "case": "package_identity_without_executable_check",
+      "install_status": 0,
+      "executable_status": 1,
+      "diagnostic": "RuntimeError: synthetic startup failure",
+      "previous_executable_replaced": true
+    },
+    {
+      "case": "distribution_identity_without_reported_version_comparison",
+      "distribution_version": "5.0.0",
+      "reported_version": "1.0.0",
+      "install_status": 0,
+      "exact_version_check_rejects": true
+    },
+    {
+      "case": "explicit_retry_without_custom_receipt",
+      "install_status": 0,
+      "version": "1.0.0"
+    }
+  ]
+}
