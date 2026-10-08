@@ -5,7 +5,7 @@ description: Install the latest or an exact release with Bash and PowerShell, in
 
 - Proposal Name: `script_installation`
 - Start Date: 2026-10-09
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR: [oceanbase/powercontext#1892](https://github.com/oceanbase/powercontext/pull/1892)
 - Related RFCs: [RFC 1733](1733-usability-and-agent-workflows.md), [RFC 1299](1299_local_server_availability_and_service_installation.md)
 
 # Summary
