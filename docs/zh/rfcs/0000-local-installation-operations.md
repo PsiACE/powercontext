@@ -19,7 +19,7 @@ description: Runtime 导入失败时仍可检查环境、管理自有原生服�
 
 RFC 1299 已规定精确的原生资源归属、先停止后删除、分别报告注册、管理器与存活状态，并保留业务数据。当前原生模型与适配器使用标准库，但其父包和普通 CLI 会导入 Runtime 依赖；Service 控制器在执行状态查询前也会导入 Server 配置。现有重试引导模块已展示独立命名空间可在 Runtime 缺失时运行。
 
-[运维实验](../../../experiments/usability/operations/README.md) 执行 Server 停止与导入故障场景，比较同一环境中的独立兄弟入口，并检查自有、外部及缺失注册。消融证明小型导入边界可行。安装后的真实构建 wheel 在 Runtime 依赖缺失时仍可运行运维入口；另行标注的受控 wheel 验证具名 uv 修复及真实 Linux systemd 对夹具进程的归属、启动、停止和卸载。既有行为测试保护删除及部分失败。这些结果不证明 macOS 或 Windows 上真实 PowerContext Server 的完整生命周期；相关声明仍须匹配平台验收。
+[运维实验](https://github.com/PsiACE/powercontext/blob/aa6aaa97baf9adc9c9ca3a1643ee719b853ea47c/experiments/usability/operations/README.md) 执行 Server 停止与导入故障场景，比较同一环境中的独立兄弟入口，并检查自有、外部及缺失注册。消融证明小型导入边界可行。安装后的真实构建 wheel 在 Runtime 依赖缺失时仍可运行运维入口；另行标注的受控 wheel 验证具名 uv 修复及真实 Linux systemd 对夹具进程的归属、启动、停止和卸载。既有行为测试保护删除及部分失败。这些结果不证明 macOS 或 Windows 上真实 PowerContext Server 的完整生命周期；相关声明仍须匹配平台验收。
 
 # Guide-level explanation
 

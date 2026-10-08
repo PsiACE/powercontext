@@ -27,7 +27,7 @@ and retained data. Current native models/adapters use the standard library, but 
 import Runtime dependencies. The Service controller also imports Server configuration before executing status.
 The existing retry bootstrap already demonstrates a separate namespace surviving absent Runtime imports.
 
-The [operations experiment](../../../experiments/usability/operations/README.md) executes stopped-Server and
+The [operations experiment](https://github.com/PsiACE/powercontext/blob/aa6aaa97baf9adc9c9ca3a1643ee719b853ea47c/experiments/usability/operations/README.md) executes stopped-Server and
 broken-import failures, a same-environment sibling-entry ablation, and exact owned/foreign/missing definition inspection.
 The installed-wheel qualification verifies the actual built wheel with Runtime dependencies absent. A separately
 labeled controlled wheel verifies named uv repair and real Linux systemd ownership/start/stop/uninstall using a
