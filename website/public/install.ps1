@@ -125,15 +125,12 @@ function Test-DownloadUrl([string]$Url) {
     catch { return $false }
 }
 
-function Test-IndexVersion([string]$Url) {
+function Test-IndexAvailable([string]$Url) {
     $IndexFile = Join-Path $TempDir 'index.html'
+    # Probe transport availability only; uv interprets the Simple API and versions.
     try { Save-Download ($Url.TrimEnd('/') + '/powercontext/') $IndexFile }
     catch {
-        Write-Host "Package index is unreachable: $Url"
-        return $false
-    }
-    if ($Version -ne 'latest' -and (Get-Content -LiteralPath $IndexFile -Raw) -notmatch ('powercontext-' + [regex]::Escape($Version) + '(-|\.)')) {
-        Write-Host "Package index does not list PowerContext ${Version}: $Url"
+        Write-Host "Package mirror is unreachable: $Url"
         return $false
     }
     return $true
@@ -147,18 +144,17 @@ function Select-Index {
     if ($env:PIP_INDEX_URL -or $env:PIP_EXTRA_INDEX_URL) {
         Write-Host 'uv does not read pip index settings. Use --index-url or uv configuration.'
     }
-    if ($IndexUrl) {
-        # uv owns index authentication and package resolution, including private indexes.
-    }
-    else {
-        $Indexes = @('https://pypi.org/simple')
-        if ($Region -eq 'cn') { $Indexes = @('https://pypi.tuna.tsinghua.edu.cn/simple', 'https://pypi.org/simple') }
-        foreach ($Candidate in $Indexes) {
-            Write-Host "Checking package index: $Candidate"
-            if (Test-IndexVersion $Candidate) { $IndexUrl = $Candidate; break }
+    if (-not $IndexUrl) {
+        $IndexUrl = 'https://pypi.org/simple'
+        if ($Region -eq 'cn') {
+            $Mirror = 'https://pypi.tuna.tsinghua.edu.cn/simple'
+            Write-Host "Checking package mirror availability: $Mirror"
+            if (Test-IndexAvailable $Mirror) { $IndexUrl = $Mirror }
+            else { Write-Host 'Automatic package mirror unavailable; using PyPI.' }
         }
-        if (-not $IndexUrl) { throw "No reachable package index lists PowerContext $Version. Use --index-url to select one." }
     }
+    # A reachable mirror may be stale or incompatible. Let uv report that failure
+    # without retrying a tool installation or changing the requested requirement.
     Write-Host "Package index: $IndexUrl"
     $env:UV_DEFAULT_INDEX = $IndexUrl
     return $IndexUrl
