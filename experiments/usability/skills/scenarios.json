@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "qualification": "Human/agent text-review inputs, not executable workflow or native-host evidence.",
+  "scenarios": [
+    {
+      "id": "ordinary-current-context",
+      "request": "Summarize the changes already shown in this conversation.",
+      "catalog": "current context sufficient",
+      "evidence": "No storage call required."
+    },
+    {
+      "id": "memory-save",
+      "request": "Remember this API decision for this project.",
+      "catalog": "memory_write + exact read",
+      "evidence": "Actual returned citation; Source capture alone insufficient."
+    },
+    {
+      "id": "empty-search",
+      "request": "Find the previous decision about retries.",
+      "catalog": "memory_read search",
+      "evidence": "Empty result preserved; no automatic inventory/Scope switch."
+    },
+    {
+      "id": "temporary-transfer",
+      "request": "Hand off the current task to the next session.",
+      "catalog": "handoff",
+      "evidence": "Complete temporary carrier and receipts; no durable commit inferred."
+    },
+    {
+      "id": "durable-unknown",
+      "request": "Keep this verified milestone permanently. The commit request timed out.",
+      "catalog": "handoff commit/read",
+      "evidence": "Unknown commit reconciled through supported read/status before retry."
+    },
+    {
+      "id": "restricted-review",
+      "request": "Review this generated Skill candidate.",
+      "catalog": "candidate inspection only",
+      "evidence": "Inspection result; approval/installation remain incomplete without supported authority."
+    },
+    {
+      "id": "remote-external-import",
+      "request": "Import this registered external Skill from our remote Server.",
+      "catalog": "external resolve/import",
+      "evidence": "Exact ID/fingerprint pending candidate; no workstation path/installation claim."
+    },
+    {
+      "id": "fresh-install",
+      "request": "Install PowerContext locally; neither PowerContext nor uv is present.",
+      "catalog": "shell + official installation sources",
+      "evidence": "Bootstrap prerequisites and local profile; configuration/service/host verification distinct."
+    }
+  ]
+}

@@ -1,0 +1,226 @@
+{
+  "baseline": "f28f8edfcb2972ac322f4f12b1f224226a9a40ab",
+  "qualification": "Actual CLI help and Runtime/HTTP SQLite behavior tests. No live model routing, native host discovery, or execution success claim.",
+  "host_contracts": [
+    {
+      "id": "codex",
+      "kind": "agent_host",
+      "availability": "master_only",
+      "capabilities": [
+        "memory_read",
+        "memory_write",
+        "source_capture",
+        "context_injection",
+        "flush_or_checkpoint",
+        "work_contract",
+        "handoff",
+        "acknowledge",
+        "task_outcome",
+        "candidate_review",
+        "experience_read_or_generate",
+        "skill_read_or_generate",
+        "external_skill",
+        "scope_organization",
+        "artifact_publication",
+        "persistent_scope_binding"
+      ],
+      "profiles": [
+        "minimal",
+        "recommended",
+        "full"
+      ],
+      "toolsets": [
+        "server-mcp",
+        "prompt-hooks"
+      ],
+      "evidence": {
+        "implementation": [
+          "integrations/codex/plugins/powercontext/.mcp.json",
+          "integrations/codex/plugins/powercontext/hooks/recall.py"
+        ],
+        "documentation": [
+          "docs/en/docs/integrations/codex.md",
+          "docs/zh/docs/integrations/codex.md"
+        ],
+        "tests": [
+          "tests/codex_plugin/test_contract.py",
+          "tests/e2e/test_codex_service_chain.py",
+          "tests/e2e/test_mcp_full_profile.py"
+        ]
+      }
+    },
+    {
+      "id": "dsh",
+      "kind": "agent_host",
+      "availability": "master_only",
+      "capabilities": [
+        "memory_read",
+        "memory_write",
+        "source_capture",
+        "context_injection",
+        "flush_or_checkpoint",
+        "handoff",
+        "experience_read_or_generate",
+        "skill_read_or_generate",
+        "candidate_review",
+        "external_skill",
+        "slash_command"
+      ],
+      "profiles": [
+        "minimal"
+      ],
+      "toolsets": [
+        "dsh-tools",
+        "dsh-command"
+      ],
+      "evidence": {
+        "implementation": [
+          "integrations/dsh/plugins/powercontext/src/tools.ts",
+          "integrations/dsh/plugins/powercontext/src/commands.ts"
+        ],
+        "documentation": [
+          "docs/en/docs/integrations/dsh.md",
+          "docs/zh/docs/integrations/dsh.md"
+        ],
+        "tests": [
+          "integrations/dsh/plugins/powercontext/tests/plugin-surfaces.spec.ts"
+        ]
+      }
+    },
+    {
+      "id": "hermes",
+      "kind": "agent_host",
+      "availability": "master_only",
+      "capabilities": [
+        "memory_read",
+        "memory_write",
+        "source_capture",
+        "context_injection",
+        "flush_or_checkpoint",
+        "work_contract",
+        "handoff",
+        "acknowledge",
+        "task_outcome",
+        "experience_read_or_generate",
+        "skill_read_or_generate",
+        "candidate_review",
+        "external_skill",
+        "slash_command",
+        "persistent_scope_binding"
+      ],
+      "profiles": [
+        "minimal",
+        "recommended",
+        "full"
+      ],
+      "toolsets": [
+        "hermes-operations",
+        "hermes-command"
+      ],
+      "evidence": {
+        "implementation": [
+          "integrations/hermes/plugins/powercontext/operations.py",
+          "integrations/hermes/plugins/powercontext/commands.py"
+        ],
+        "documentation": [
+          "docs/en/docs/integrations/hermes.md",
+          "docs/zh/docs/integrations/hermes.md"
+        ],
+        "tests": [
+          "tests/integrations/test_hermes_provider.py"
+        ]
+      }
+    },
+    {
+      "id": "openclaw",
+      "kind": "agent_host",
+      "availability": "master_only",
+      "capabilities": [
+        "memory_read",
+        "memory_write",
+        "source_capture",
+        "context_injection",
+        "flush_or_checkpoint",
+        "pre_compaction_capture"
+      ],
+      "profiles": [
+        "minimal"
+      ],
+      "toolsets": [
+        "openclaw-tools",
+        "openclaw-lifecycle"
+      ],
+      "evidence": {
+        "implementation": [
+          "integrations/openclaw/plugins/memory-powercontext/src/tools.ts",
+          "integrations/openclaw/plugins/memory-powercontext/src/lifecycle.ts"
+        ],
+        "documentation": [
+          "docs/en/docs/integrations/openclaw.md",
+          "docs/zh/docs/integrations/openclaw.md"
+        ],
+        "tests": [
+          "integrations/openclaw/plugins/memory-powercontext/src/lifecycle.test.ts"
+        ]
+      }
+    }
+  ],
+  "results": [
+    {
+      "name": "public_cli_candidate_approve",
+      "exit": 0,
+      "elapsed_ms": 1423.15,
+      "stdout": "                                                                                \n Usage: -c candidate approve [OPTIONS] {candidate_id}                           \n                                                                                \n Approve one exact pending Candidate version.                                   \n                                                                                \n╭─ Arguments ──────────────────────────────────────────────────────────────────╮\n│ *    candidate_id      <str>  Candidate identity. [required]                 │\n╰──────────────────────────────────────────────────────────────────────────────╯\n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ *  --scope-id                  <str>               Application scope         │\n│                                                    containing the Candidate. │\n│                                                    [required]                │\n│ *  --expected-version          <int range> [x>=1]  Exact reviewed Candidate  │\n│                                                    version.                  │\n│                                                    [required]                │\n│    --help              -h                          Show this message and     │\n│                                                    exit.                     │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "public_cli_candidate_show",
+      "exit": 0,
+      "elapsed_ms": 1368.56,
+      "stdout": "                                                                                \n Usage: -c candidate show [OPTIONS] {candidate_id}                              \n                                                                                \n Show the current exact Candidate version and evidence.                         \n                                                                                \n╭─ Arguments ──────────────────────────────────────────────────────────────────╮\n│ *    candidate_id      <str>  Candidate identity. [required]                 │\n╰──────────────────────────────────────────────────────────────────────────────╯\n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ *  --scope-id          <str>  Application scope containing the Candidate.    │\n│                               [required]                                     │\n│    --help      -h             Show this message and exit.                    │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "public_cli_experience_generate",
+      "exit": 0,
+      "elapsed_ms": 1335.15,
+      "stdout": "                                                                                \n Usage: -c experience generate [OPTIONS]                                        \n                                                                                \n Generate at most one pending Experience Candidate.                             \n                                                                                \n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ *  --scope-id              <str>  Application scope receiving the generated  │\n│                                   Candidate.                                 │\n│                                   [required]                                 │\n│    --source-ref            <str>  Exact Source as TYPE/ID; repeat for more   │\n│                                   evidence.                                  │\n│    --artifact-ref          <str>  Exact Artifact as FAMILY/ID@REVISION;      │\n│                                   repeat for more evidence.                  │\n│    --target                <str>  Exact replacement target as                │\n│                                   FAMILY/ID@REVISION; automatically included │\n│                                   as evidence.                               │\n│    --reason                <str>  Why this generation is requested.          │\n│    --help          -h             Show this message and exit.                │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "public_cli_skill_generate",
+      "exit": 0,
+      "elapsed_ms": 1353.58,
+      "stdout": "                                                                                \n Usage: -c skill generate [OPTIONS]                                             \n                                                                                \n Generate at most one pending managed Skill Candidate.                          \n                                                                                \n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ *  --scope-id              <str>                    Application scope        │\n│                                                     receiving the generated  │\n│                                                     Candidate.               │\n│                                                     [required]               │\n│ *  --origin                <experience|source|usag  Provenance shape for the │\n│                            e>                       generated managed Skill. │\n│                                                     [required]               │\n│    --source-ref            <str>                    Exact Source as TYPE/ID; │\n│                                                     repeat for more          │\n│                                                     evidence.                │\n│    --artifact-ref          <str>                    Exact Artifact as        │\n│                                                     FAMILY/ID@REVISION;      │\n│                                                     repeat for more          │\n│                                                     evidence.                │\n│    --target                <str>                    Exact evolution target   │\n│                                                     as FAMILY/ID@REVISION;   │\n│                                                     automatically included   │\n│                                                     as evidence.             │\n│    --reason                <str>                    Why this generation is   │\n│                                                     requested.               │\n│    --help          -h                               Show this message and    │\n│                                                     exit.                    │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "public_cli_skill_export",
+      "exit": 0,
+      "elapsed_ms": 1331.3,
+      "stdout": "                                                                                \n Usage: -c skill export [OPTIONS] {artifact_id}                                 \n                                                                                \n Export one exact approved Revision for an Agent integration target.            \n                                                                                \n╭─ Arguments ──────────────────────────────────────────────────────────────────╮\n│ *    artifact_id      <str>  Managed Skill Artifact identity. [required]     │\n╰──────────────────────────────────────────────────────────────────────────────╯\n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ *  --scope-id             <str>                Application scope containing  │\n│                                                the managed Skill.            │\n│                                                [required]                    │\n│ *  --target               <codex|claude_code>  Agent integration target.     │\n│                                                [required]                    │\n│ *  --destination          <path>               New target Skill directory to │\n│                                                create; existing paths are    │\n│                                                never replaced.               │\n│                                                [required]                    │\n│ *  --revision             <int range> [x>=1]   Exact managed Skill Revision. │\n│                                                [required]                    │\n│    --help         -h                           Show this message and exit.   │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "public_cli_external-skill_import",
+      "exit": 0,
+      "elapsed_ms": 1313.51,
+      "stdout": "                                                                                \n Usage: -c external-skill import [OPTIONS] {external_skill_id}                  \n                                                                                \n Capture an exact local snapshot and propose a new managed Skill.               \n                                                                                \n╭─ Arguments ──────────────────────────────────────────────────────────────────╮\n│ *    external_skill_id      <str>  Stable external Skill identity in the     │\n│                                    scope.                                    │\n│                                    [required]                                │\n╰──────────────────────────────────────────────────────────────────────────────╯\n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ *  --scope-id             <str>          Application scope receiving the     │\n│                                          managed Candidate.                  │\n│                                          [required]                          │\n│ *  --fingerprint          <str>          Exact observed package SHA-256      │\n│                                          fingerprint.                        │\n│                                          [required]                          │\n│    --mode                 <import|fork>  Whether to import or intentionally  │\n│                                          fork the selected package.          │\n│                                          [default: import]                   │\n│    --reason               <str>          Why this managed proposal is        │\n│                                          requested.                          │\n│    --help         -h                     Show this message and exit.         │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "public_cli_doctor",
+      "exit": 0,
+      "elapsed_ms": 1341.45,
+      "stdout": "                                                                                \n Usage: -c doctor [OPTIONS] COMMAND [ARGS]...                                   \n                                                                                \n Check an installed PowerContext environment.                                   \n                                                                                \n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ --server-url                                     <str>  PowerContext Server  │\n│                                                         base URL.            │\n│                                                         [env var:            │\n│                                                         POWERCONTEXT_CLIENT… │\n│ --allow-insecure-ht…      --no-allow-insecur…           Explicitly allow     │\n│                                                         unencrypted remote   │\n│                                                         HTTP.                │\n│ --json                                                  Write the result as  │\n│                                                         JSON.                │\n│ --help                -h                                Show this message    │\n│                                                         and exit.            │\n╰──────────────────────────────────────────────────────────────────────────────╯\n╭─ Commands ───────────────────────────────────────────────────────────────────╮\n│ codex         Check the optional Codex CLI and PowerContext plugin.          │\n│ claude-code   Check the optional Claude Code CLI and PowerContext plugin.    │\n│ dsh           Check the optional DeepSeek Harness CLI and PowerContext       │\n│               plugin.                                                        │\n│ zcode         Check ZCode plugin registration, Hook, MCP, and Server         │\n│               readiness.                                                     │\n│ pi            Check the optional Pi CLI and PowerContext package.            │\n│ opencode      Check the optional OpenCode CLI, plugin, and Skill.            │\n│ hermes        Check the optional Hermes CLI and PowerContext memory          │\n│               provider.                                                      │\n│ workbuddy     Check the optional WorkBuddy hooks, MCP server, and Skill.     │\n│ openclaw      Check the optional OpenClaw CLI and PowerContext memory        │\n│               plugin.                                                        │\n│ integrations  Report first-class host CLI and integration status without     │\n│               failing on missing CLIs.                                       │\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "actual_state_contracts",
+      "exit": 0,
+      "elapsed_ms": 3040.07,
+      "stdout": "......                                                                   [100%]\n6 passed in 2.06s\n",
+      "stderr": ""
+    }
+  ]
+}
