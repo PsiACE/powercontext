@@ -59,6 +59,12 @@ description: 使用真实能力与可验证的结果阶段指导维护和项目�
 
 ## 验收与证据边界
 
+[执行报告](https://github.com/PsiACE/powercontext/blob/471d0cef0d31facbc45e8b4f2fbd599a807bf2c8/experiments/usability/skills/README.md) 与
+[验收结果](https://github.com/PsiACE/powercontext/blob/471d0cef0d31facbc45e8b4f2fbd599a807bf2c8/experiments/usability/skills/qualification.json)
+记录真实投影检查、七个 CLI 能力发现用例，以及六个公开 Runtime/HTTP 状态工作流。二十六个布局、分发测试及原生 Skill 验证通过。
+独立场景文本审查[另行记录](https://github.com/PsiACE/powercontext/blob/090a3cce/experiments/usability/skills-review/README.md)。
+这些证据说明本地契约及指导解释，不等同于真实模型或 Agent 执行。
+
 执行真实 CLI 帮助与公开 Runtime/HTTP 状态流程，覆盖直接 Memory 写入、临时及持久 Handoff、候选生成、批准、拒绝、精确修订、软件包导出读回与 Skill 安装状态。加入无模型能力、受限目录、缺失工具、空搜索、权限失败、版本冲突及未知写入场景。
 
 独立场景审查比较指导、真实请求与能力限制，明确它属于文本判断、受控模型执行或原生宿主执行。测试模型、直接 Hook 调用或 HTTP 成功不证明原生发现、自动捕获、真实模型路由或 Skill 的成功执行。保留失败观察。
