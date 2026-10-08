@@ -16,8 +16,7 @@ PowerContext は、会話をまたいでもコンテキストを作業ととも�
 
 [Web サイト](https://powercontext.oceanbase.io/en/) · [インストール手順](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
 
-PowerContext 1.2.0 には対話式セットアップが含まれています。
-以下のコマンドでこのバージョンの PowerContext と、対応する Agent 連携をインストールします。
+インストーラーはパッケージソースの最新安定版を選びます。Agent 連携にはインストール済みバージョンを使用します。
 
 ## 作業の続きをそのまま引き継ぐ
 
@@ -27,10 +26,21 @@ PowerContext 1.2.0 には対話式セットアップが含まれています。
 
 ## 利用中の Agent と接続する
 
-Git、uv、Agent CLI を用意して、1.2.0 をインストールします：
+推奨のインストールスクリプトは、必要に応じて uv と Python を用意します。Agent 連携には Git と Agent CLI が必要です：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+```
+
+Windows では PowerShell を使用します：
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+```
+
+表示された PATH 設定を実行してから、設定を続けます：
+
+```bash
 mkdir -p powercontext-config
 cd powercontext-config
 powercontext config init --language en --output .env
@@ -50,14 +60,14 @@ Server を起動したまま、別のターミナルで同じ設定ディレク�
 クライアント環境の読み込み、Scope の作成・紐付け、同じバージョンの Agent プラグインのインストールを行います。例：
 
 ```bash
-powercontext setup codex --ref powercontext-v1.2.0
+powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 powercontext doctor codex
 ```
 
 PowerContext ツールと Agent 連携には、常に同じ Git ref を使用してください。
 [Quick Start](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) で Dashboard、SSH、HTTPS、
 Source から Topic 生成・更新、新しいセッションでの検索まで確認できます。
-Python 3.11+ が必要です。macOS と Linux をサポートし、Windows のサポートは `experimental` です。
+Python 3.11+ はインストーラーが用意します。macOS と Linux をサポートし、Windows のサポートは `experimental` です。
 
 Codex は `official`、他のホストと Python Agent フレームワークは `community`、Bub は評価専用の `evaluation` です。
 これらは PowerContext 連携のメンテナンス主体と用途を示すタグです。対応機能と利用可能なバージョンは

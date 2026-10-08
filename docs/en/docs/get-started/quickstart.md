@@ -6,11 +6,11 @@ description: Configure full memory, connect Codex, and verify Source capture, To
 # Quick Start
 
 Start with installation, discuss a project in Codex, watch its input become Source evidence and an evolving topic,
-then recover the decisions in a new session. These instructions use PowerContext 1.2.0,
-with the Agent plugin from the matching `powercontext-v1.2.0` tag.
+then recover the decisions in a new session. The installer selects the latest stable release from your package index;
+the Agent plugin uses the tag matching the installed version.
 
-You need macOS or Linux, Python 3.11+, Git, [uv](https://docs.astral.sh/uv/getting-started/installation/),
-and an installed Codex CLI. Full memory also needs working Generation and Embedding model APIs:
+You need macOS or Linux, Git, and an installed Codex CLI. The script provisions uv and Python 3.11+ when needed.
+For Windows PowerShell, version selection, and mirrors, see [Install and run](install-and-run.md). Full memory also needs working Generation and Embedding model APIs:
 prepare their base URLs, model names, and API keys. Signing into a Codex or Claude subscription does not automatically
 provide these APIs to the PowerContext Server. Without separate model APIs, select basic memory to test explicit saves
 and recall; that does not enable automatic Topic Memory.
@@ -18,7 +18,12 @@ and recall; that does not enable automatic Topic Memory.
 ## 1. Install and open the wizard
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+```
+
+Apply the PATH command printed by the installer, then configure PowerContext:
+
+```bash
 mkdir -p ~/powercontext-demo
 cd ~/powercontext-demo
 powercontext config init --language en --output .env
@@ -96,7 +101,7 @@ Reload the client settings and install the matching plugin:
 set -a
 . ./.env
 set +a
-powercontext setup codex --ref powercontext-v1.2.0
+powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 powercontext doctor codex
 codex
 ```

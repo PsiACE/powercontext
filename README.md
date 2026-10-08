@@ -16,8 +16,7 @@ PowerContext keeps context with the work across conversations. When you return, 
 
 [Website](https://powercontext.oceanbase.io/) · [Installation walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
 
-PowerContext 1.2.0 includes the guided setup. The commands below install this version and connect
-the matching Agent integration.
+The installer selects the latest stable PowerContext release from your package index. Agent integrations use the installed version.
 
 ## Pick up where the work left off
 
@@ -27,13 +26,24 @@ You decide what will matter later and what needs to move with the task. PowerCon
 
 ## Install, configure, and connect your Agent
 
-You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and your Agent's CLI.
-Python 3.11+ is required; uv can provision it. macOS and Linux are supported; Windows support is `experimental`.
+The installer provisions uv and Python when needed. Agent integration setup also needs Git and your Agent's CLI.
+macOS and Linux are supported; Windows support is `experimental`.
 
-Install 1.2.0 and open the interactive configuration wizard in a dedicated directory:
+Install with the recommended script:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+```
+
+On Windows, use PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+```
+
+Apply the PATH command printed by the installer, then configure PowerContext:
+
+```bash
 mkdir -p powercontext-config
 cd powercontext-config
 powercontext config init --language en --output .env
@@ -71,7 +81,7 @@ covers Codex and Claude Code, Dashboard login, SSH forwarding, HTTPS prerequisit
 For example, the matching Codex installation is:
 
 ```bash
-powercontext setup codex --ref powercontext-v1.2.0
+powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 powercontext doctor codex
 ```
 

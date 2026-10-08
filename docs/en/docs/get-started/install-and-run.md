@@ -1,6 +1,6 @@
 ---
 title: Install and run
-description: Install PowerContext 1.2.0 and run the local Server.
+description: Install the latest PowerContext release with Bash or PowerShell, configure mirrors, and run the Server.
 ---
 
 # Install and run
@@ -22,29 +22,109 @@ Windows CLI, Server, and personal-service support is experimental. Each Agent Ho
 requirements. Examples using Bash syntax require a Bash environment and cannot be pasted directly into PowerShell.
 Embedded seekDB is unavailable on Windows.
 
+## Install with the recommended script
+
+The script installs the CLI and local Server in an isolated uv tool environment. It reuses compatible uv/Python,
+or installs uv and Python 3.12 in user-owned directories. It does not need administrator privileges.
+
+macOS or Linux (Bash; `curl` or `wget` is required):
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+```
+
+Windows (PowerShell 5.1 or newer):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+```
+
+Apply the PATH command printed at completion before running `powercontext` in your terminal. The installer does not
+edit shell startup files or the persistent Windows PATH. `UV_INSTALL_DIR` selects where a missing uv is installed;
+`UV_TOOL_BIN_DIR` selects the PowerContext executable directory.
+
+`--no-hosts` installs software without prompting for Agent integrations. Omit it in an interactive terminal to open
+`powercontext setup select`, or pass `--host codex` (repeatable) to select integrations explicitly. Agent setup needs
+Git and each host's prerequisites. A pipeline still reads host choices from the terminal; unattended execution must
+use `--no-hosts` or `--host`. The [capability matrix](../integrations/capabilities.md) describes host support.
+
+For an existing remote Server, add `--profile client` to install only the CLI and Client dependencies. The default
+`--profile local` includes the local Server. Neither profile starts a Server, registers a service, or overwrites
+configuration or data. For a local installation, continue with `powercontext config init` and [Quick Start](quickstart.md).
+Client-only installations use endpoint settings in the [remote connection guide](../operate/connect-remote-server.md).
+
 ## Choose a version
 
-These instructions use PowerContext 1.2.0. Keep the package and Agent integration on
-the same version: package `1.2.0` and Git tag `powercontext-v1.2.0`.
+The default `--version latest` installs or upgrades to the newest stable release available from the selected index
+and compatible with the chosen Python. It excludes prereleases. `--version` accepts an exact release, including an
+explicit prerelease such as `1.3.0rc1`; it never substitutes a different version if that release is unavailable.
+
+For example, install PowerContext 1.2.0 with its Codex integration:
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.2.0 --host codex
+```
+
+This selects package `1.2.0` and Git tag `powercontext-v1.2.0`. With `latest`, the installer reads the installed CLI's
+version and uses its matching tag; it never uses the moving `master` branch for host setup. To add an integration later:
+
+```bash
+powercontext setup codex --ref "powercontext-v$(powercontext --version)"
+```
+
+In PowerShell, the same double-quoted expression works. An integration failure leaves the installed Runtime usable
+and exits with an error and a retry instruction. Installation success does not establish Server readiness or host
+workflow correctness; use the checks below and the integration's own guide.
+
+## Retry dependency downloads with a mirror
+
+Package indexes, uv binaries, and Python distributions are separate downloads. Changing the package index does not
+change the uv or Python download location.
+
+| Download | Explicit setting | Automatic China source | Global source |
+| --- | --- | --- | --- |
+| PowerContext and Python packages | `--index-url URL`, uv index environment variables or `uv.toml` | Tsinghua PyPI mirror | PyPI |
+| uv installer | `POWERCONTEXT_UV_INSTALLER_URL` | USTC uv release mirror | Astral installer |
+| uv binaries | `UV_DOWNLOAD_URL` or `UV_INSTALLER_GITHUB_BASE_URL` | USTC uv release mirror | Astral release channels |
+| Python distributions | `UV_PYTHON_INSTALL_MIRROR` | NJU python-build-standalone mirror | uv default channels |
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --region cn
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --index-url https://pypi.org/simple
+```
+
+`--region auto|cn|global` overrides `POWERCONTEXT_INSTALL_REGION`. Auto selection uses a named local timezone, then the
+locale territory, then global; it makes no geolocation request. An unavailable automatic mirror can fall back to the
+official source. Once a package index passes its availability/version check, uv reports subsequent resolution or
+artifact failures without retrying installation against another index. Explicit sources never fall back automatically.
+A mirror may lag PyPI: `latest` means the newest compatible stable release on the chosen index.
+
+Existing uv index settings and configuration files take precedence over automatic package mirrors. An explicit
+`--index-url` overrides the default index only; additional uv indexes keep their priority. Private index credentials
+belong in uv's authentication configuration, not in script arguments. uv does not read `PIP_INDEX_URL` or
+`PIP_EXTRA_INDEX_URL`. Existing Python mirror settings and `uv.toml` also suppress automatic Python mirror selection.
+`UV_ASTRAL_MIRROR_URL` is passed through for uv versions that support it. These settings are scoped to the installation;
+your persistent package-manager configuration is unchanged. An existing uv is reused without upgrading it.
+
+To inspect the installer or pass several options in PowerShell, save it first:
+
+```powershell
+irm https://powercontext.oceanbase.io/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --no-hosts --region cn --version 1.2.0
+```
+
+Cached reinstallation with `UV_OFFLINE=1` can work when uv, compatible Python, and all required packages are already
+present. This is not an offline distribution bundle; missing downloads fail explicitly.
+
+## Manual package or source installation
+
+If you already manage Python 3.11+ and [uv](https://docs.astral.sh/uv/), you can install the package directly:
 
 ```bash
 uv tool install --force "powercontext[cli,server]==1.2.0"
-powercontext setup codex --ref powercontext-v1.2.0
 ```
 
-Check the [capability matrix](../integrations/capabilities.md) for host support and maintenance status.
-Capabilities marked `experimental` remain experimental in this release.
-
-## Install the application
-
-You need Python 3.11 or newer, Git, and [`uv`](https://docs.astral.sh/uv/) on macOS, Linux, or Windows. Then install
-PowerContext from PyPI:
-
-```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
-```
-
-For a source installation of the same version:
+For a source installation of the same version (requires Git):
 
 ```bash
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.2.0"
@@ -179,10 +259,10 @@ The Dashboard must be explicitly enabled; static Bearer authentication is option
 [Deploy the Server](../operate/deploy-server.md). Remote plaintext HTTP connections require explicit client consent;
 see [Connect to a remote Server](../operate/connect-remote-server.md).
 
-To upgrade to 1.2.0:
+To upgrade to the latest stable version, rerun the installer. To keep an exact release, add `--version`:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
 ```
 
 To replace the installed tool with another Git ref:

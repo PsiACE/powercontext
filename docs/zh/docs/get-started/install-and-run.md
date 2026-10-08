@@ -1,6 +1,6 @@
 ---
 title: 安装和运行
-description: 安装 PowerContext 1.2.0，并运行本地 Server。
+description: 使用 Bash 或 PowerShell 安装最新版 PowerContext，配置镜像并运行 Server。
 ---
 
 # 安装和运行
@@ -20,29 +20,98 @@ description: 安装 PowerContext 1.2.0，并运行本地 Server。
 Windows 的 CLI、Server 和个人服务支持为试验性；各 Agent Host 仍需满足自身的平台要求。
 使用 Bash 语法的示例需要 Bash 环境，不可直接粘贴到 PowerShell。嵌入式 seekDB 不支持 Windows。
 
+## 使用推荐安装脚本
+
+脚本在独立的 uv tool 环境中安装 CLI 和本地 Server。已有兼容的 uv/Python 时会直接复用；缺少时在用户目录安装
+uv 和 Python 3.12，无需管理员权限。
+
+macOS 或 Linux（使用 Bash，需要 `curl` 或 `wget`）：
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+```
+
+Windows（PowerShell 5.1 或更新版本）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+```
+
+先执行安装完成时打印的 PATH 命令，再在终端运行 `powercontext`。安装器不会修改 shell 启动文件或 Windows 的持久
+PATH。`UV_INSTALL_DIR` 指定缺少 uv 时的安装目录，`UV_TOOL_BIN_DIR` 指定 PowerContext 可执行文件目录。
+
+`--no-hosts` 只安装软件，不询问 Agent 集成。在交互终端省略它会打开 `powercontext setup select`，也可以使用
+`--host codex` 显式选择集成；多个宿主可重复传入 `--host`。集成安装需要 Git 及对应宿主的前置条件。管道安装仍从终端
+读取宿主选择；无人值守执行必须传入 `--no-hosts` 或 `--host`。宿主支持范围见[能力矩阵](../integrations/capabilities.md)。
+
+连接已有远程 Server 时，加上 `--profile client`，只安装 CLI 和 Client 依赖。默认 `--profile local` 包含本地 Server。
+两种模式都不会启动 Server、注册服务或覆盖配置与数据。本地安装使用 `powercontext config init`，继续阅读
+[快速开始](quickstart.md)；Client-only 安装按[远程连接指南](../operate/connect-remote-server.md)设置地址和认证。
+
 ## 选择版本
 
-本页使用 PowerContext 1.2.0。包与 Agent 集成保持版本一致：
-Python 包版本为 `1.2.0`，对应 Git tag 为 `powercontext-v1.2.0`。
+默认 `--version latest` 安装或升级到所选包源中与当前 Python 兼容的最新稳定版，排除预发布版本。
+`--version` 也支持指定准确版本，包括 `1.3.0rc1` 这样的显式预发布版本；源中没有指定版本时会报错，不会换成其他版本。
+
+例如，安装 PowerContext 1.2.0 及其 Codex 集成：
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.2.0 --host codex
+```
+
+Python 包版本为 `1.2.0`，对应 Git tag 为 `powercontext-v1.2.0`。使用 `latest` 时，安装器读取实际安装的 CLI 版本，
+并使用对应的 tag 安装集成，不会使用会移动的 `master` 分支。稍后添加集成时可以执行：
+
+```bash
+powercontext setup codex --ref "powercontext-v$(powercontext --version)"
+```
+
+PowerShell 也支持这里的双引号表达式。集成安装失败时，已安装的 Runtime 会保留，脚本返回错误并给出重试提示。
+安装成功不代表 Server 就绪或宿主工作流可用；仍需执行下文检查及集成文档中的验证。
+
+## 使用镜像重试依赖下载
+
+包索引、uv 二进制和 Python 发行版是三类独立下载。更换包索引不会改变 uv 或 Python 的下载位置。
+
+| 下载内容 | 显式配置 | 中国区域自动源 | 全球默认源 |
+| --- | --- | --- | --- |
+| PowerContext 和 Python 包 | `--index-url URL`、uv 索引环境变量或 `uv.toml` | 清华 PyPI 镜像 | PyPI |
+| uv 安装器 | `POWERCONTEXT_UV_INSTALLER_URL` | USTC uv release 镜像 | Astral 安装器 |
+| uv 二进制 | `UV_DOWNLOAD_URL` 或 `UV_INSTALLER_GITHUB_BASE_URL` | USTC uv release 镜像 | Astral release 渠道 |
+| Python 发行版 | `UV_PYTHON_INSTALL_MIRROR` | NJU python-build-standalone 镜像 | uv 默认渠道 |
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --region cn
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --index-url https://pypi.org/simple
+```
+
+`--region auto|cn|global` 优先于 `POWERCONTEXT_INSTALL_REGION`。自动选择依次参考本地命名时区、locale 地区，最后采用
+全球源，不请求网络定位服务。自动镜像不可用时可回退官方源；包索引通过可用性和版本检查后，后续解析或文件下载失败
+由 uv 报告，不会再换源重试安装。显式配置的源不会自动回退。镜像可能有同步延迟：`latest` 指所选源中的最新兼容稳定版。
+
+已有的 uv 索引环境变量和配置文件优先于自动包镜像。`--index-url` 只覆盖默认索引，额外 uv 索引仍保留其优先级。
+私有源凭据应使用 uv 认证配置，不放在脚本参数里。uv 不读取 `PIP_INDEX_URL` 或 `PIP_EXTRA_INDEX_URL`。
+已有 Python 镜像设置和 `uv.toml` 同样会禁用自动 Python 镜像选择。`UV_ASTRAL_MIRROR_URL` 会透传给支持它的 uv 版本。
+这些设置只作用于本次安装，不改写持久包管理配置；已有 uv 会直接复用，不会自动升级。
+
+需要检查脚本内容，或在 PowerShell 传入多个选项时，可以先保存脚本：
+
+```powershell
+irm https://powercontext.oceanbase.io/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --no-hosts --region cn --version 1.2.0
+```
+
+已有 uv、兼容 Python 和完整依赖缓存时，可以使用 `UV_OFFLINE=1` 重装。这不等于离线发行包；缺少下载内容时会明确报错。
+
+## 手动安装包或源码
+
+已自行管理 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/) 时，可以直接安装包：
 
 ```bash
 uv tool install --force "powercontext[cli,server]==1.2.0"
-powercontext setup codex --ref powercontext-v1.2.0
 ```
 
-宿主支持范围和维护状态见[能力矩阵](../integrations/capabilities.md)。
-标为 `experimental` 的能力在此版本中仍属于试验性能力。
-
-## 安装应用
-
-需要在 macOS、Linux 或 Windows 上准备 Python 3.11 或更新版本、Git 和
-[`uv`](https://docs.astral.sh/uv/)，然后从 PyPI 安装 PowerContext：
-
-```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
-```
-
-如需从源码安装同一版本：
+如需从源码安装同一版本（需要 Git）：
 
 ```bash
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.2.0"
@@ -164,10 +233,10 @@ Server、客户端和 Agent 集成需一起升级。Dashboard 需要显式启用
 见[部署 Server](../operate/deploy-server.md)；远程明文 HTTP 连接需要客户端明确同意，
 见[连接远程 Server](../operate/connect-remote-server.md)。
 
-升级到 1.2.0：
+重新运行安装器可升级到最新稳定版；需要保持指定版本时，加上 `--version`：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
 ```
 
 使用其他 Git ref 替换现有工具：

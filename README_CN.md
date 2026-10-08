@@ -16,7 +16,7 @@ PowerContext 让上下文跟随工作，跨越不同的对话。你回来时，�
 
 [网站](https://powercontext.oceanbase.io/zh/) · [完整安装流程](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/)
 
-PowerContext 1.2.0 包含交互式配置向导。下面的命令安装这一版本，并接入相同版本的 Agent 集成。
+安装器默认选择包源中的最新稳定版 PowerContext，Agent 集成与实际安装版本保持一致。
 
 ## 从当前进展继续
 
@@ -26,13 +26,24 @@ PowerContext 1.2.0 包含交互式配置向导。下面的命令安装这一版�
 
 ## 安装、配置并接入 Agent
 
-准备 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和你使用的 Agent CLI。
-需要 Python 3.11+，uv 可以按需安装。支持 macOS 和 Linux；Windows 支持为 `experimental`。
+安装器会按需补齐 uv 和 Python；接入 Agent 时另需 Git 和对应的 Agent CLI。
+支持 macOS 和 Linux；Windows 支持为 `experimental`。
 
-安装 1.2.0，然后在独立目录里打开交互式配置向导：
+推荐使用安装脚本：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+```
+
+Windows 使用 PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+```
+
+先执行安装器打印的 PATH 命令，再继续配置：
+
+```bash
 mkdir -p powercontext-config
 cd powercontext-config
 powercontext config init --language zh --output .env
@@ -66,7 +77,7 @@ powercontext capabilities
 SSH 隧道、HTTPS 前提及逐项验收。例如，匹配本版本的 Codex 安装命令是：
 
 ```bash
-powercontext setup codex --ref powercontext-v1.2.0
+powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 powercontext doctor codex
 ```
 
