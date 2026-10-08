@@ -295,7 +295,8 @@ try {
     $Requirement = 'powercontext[cli,server]'
     if ($RuntimeProfile -eq 'client') { $Requirement = 'powercontext[cli]' }
     $InstallArgs = @('tool', 'install', '--python', $Python.Trim(), '--no-python-downloads')
-    if ($Version -eq 'latest') { $InstallArgs += @('--upgrade', '--prerelease', 'disallow') }
+    # An installed prerelease otherwise remains eligible even with prereleases disallowed.
+    if ($Version -eq 'latest') { $InstallArgs += @('--upgrade', '--reinstall-package', 'powercontext', '--prerelease', 'disallow') }
     else { $Requirement += "==$Version" }
     $InstallArgs += $Requirement
     if ($IndexUrl) { $InstallArgs += @('--default-index', $IndexUrl) }

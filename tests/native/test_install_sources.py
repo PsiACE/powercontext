@@ -183,6 +183,8 @@ def test_latest_stable_and_explicit_prerelease(installation):
     assert version() == "1.1.0"
     install("--region", "cn", "--version", "1.2.0rc1")
     assert version() == "1.2.0rc1"
+    install("--region", "cn")
+    assert version() == "1.1.0"
 
 
 def test_unavailable_automatic_mirror_falls_back_before_tool_install(installation):
