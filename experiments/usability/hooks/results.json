@@ -1,0 +1,132 @@
+{
+  "baseline": "f28f8edfcb2972ac322f4f12b1f224226a9a40ab",
+  "python": "3.13.13",
+  "platform": "Linux-7.1.13-200.fc44.x86_64-x86_64-with-glibc2.43",
+  "qualification": "native subprocess adapters; synthetic HTTP Server; no actual Agent host",
+  "results": [
+    {
+      "host": "codex",
+      "receipt": "valid",
+      "variant": "native",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "codex",
+      "receipt": "valid",
+      "variant": "receipt_contract",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "codex",
+      "receipt": "position_only",
+      "variant": "native",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "codex",
+      "receipt": "position_only",
+      "variant": "receipt_contract",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": false,
+      "diagnostic": {
+        "component": "powercontext.codex.recall",
+        "event": "capture_source",
+        "outcome": "invalid_response"
+      }
+    },
+    {
+      "host": "codex",
+      "receipt": "wrong_source",
+      "variant": "native",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "codex",
+      "receipt": "wrong_source",
+      "variant": "receipt_contract",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": false,
+      "diagnostic": {
+        "component": "powercontext.codex.recall",
+        "event": "capture_source",
+        "outcome": "invalid_response"
+      }
+    },
+    {
+      "host": "claude-code",
+      "receipt": "valid",
+      "variant": "native",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "claude-code",
+      "receipt": "valid",
+      "variant": "receipt_contract",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "claude-code",
+      "receipt": "position_only",
+      "variant": "native",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "claude-code",
+      "receipt": "position_only",
+      "variant": "receipt_contract",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": false,
+      "diagnostic": {
+        "component": "powercontext.claude_code.recall",
+        "event": "capture_source",
+        "outcome": "invalid_response"
+      }
+    },
+    {
+      "host": "claude-code",
+      "receipt": "wrong_source",
+      "variant": "native",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": true,
+      "diagnostic": null
+    },
+    {
+      "host": "claude-code",
+      "receipt": "wrong_source",
+      "variant": "receipt_contract",
+      "exit": 0,
+      "capture_received": true,
+      "checkpoint_requested": false,
+      "diagnostic": {
+        "component": "powercontext.claude_code.recall",
+        "event": "capture_source",
+        "outcome": "invalid_response"
+      }
+    }
+  ]
+}
