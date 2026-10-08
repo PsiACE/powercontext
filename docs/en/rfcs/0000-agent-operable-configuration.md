@@ -60,7 +60,7 @@ results. No running process is declared active without observation. No service i
 record written implicitly. JSON is composable output, not permission for these effects. A dedicated connection workflow
 can use the same concepts without introducing named connections.
 
-# Acceptance
+## Acceptance
 
 Protect typed field discovery, unknown-field rejection, preview purity, partial preservation, private-value redaction,
 invalid combinations, stale and concurrent writer conflicts, mode-0600 readback, multiline syntax and accurate activation.
@@ -76,14 +76,14 @@ Only the public bounded scalar field catalog is writable. Provider/database edit
 strict change fields and public output allowlists. They do not justify replacing `.env`, adding a TOML engine, daemon,
 arbitrary provider request passthrough, or a global transaction across onboarding steps.
 
+# Prior art
+
+[Cida](https://github.com/Xuanwo/cida/blob/a48745e79632f93d6763605d5718ab4b7cea1122/Sources/Cida/ConfigurationFields.swift) derives schema/parser/display from owning fields. [Jiandao](https://github.com/Xuanwo/jiandao/blob/76a3fbc0501ac9c6f5cb5aa88a16d0923bff97b3/src/utils/setup-document.ts) separates strict setup intent from storage. [Agenvo](https://github.com/Xuanwo/agenvo/blob/235978f9fd9cf70fd75b03292619262d5e86a6e6/docs/installation.md) separates saved configuration, deployment and reachability. These sources were inspected, not executed as acceptance evidence.
+
 # Unresolved questions
 
 Provider-specific editing, native secret backends, and observation-bound online checks require concrete consumers. They
 remain independently deliverable and do not block the local static operations.
-
-# Prior art
-
-[Cida](https://github.com/Xuanwo/cida/blob/a48745e79632f93d6763605d5718ab4b7cea1122/Sources/Cida/ConfigurationFields.swift) derives schema/parser/display from owning fields. [Jiandao](https://github.com/Xuanwo/jiandao/blob/76a3fbc0501ac9c6f5cb5aa88a16d0923bff97b3/src/utils/setup-document.ts) separates strict setup intent from storage. [Agenvo](https://github.com/Xuanwo/agenvo/blob/235978f9fd9cf70fd75b03292619262d5e86a6e6/docs/installation.md) separates saved configuration, deployment and reachability. These sources were inspected, not executed as acceptance evidence.
 
 # Future possibilities
 
