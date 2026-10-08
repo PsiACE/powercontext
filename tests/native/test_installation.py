@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import email
-import hashlib
 import os
 import shutil
 import socket
@@ -166,10 +165,9 @@ def test_install_configure_remember_and_reinstall(tmp_path: Path, environment: s
     with zipfile.ZipFile(wheel) as archive:
         metadata = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
         version = email.message_from_bytes(archive.read(metadata))["Version"]
-    # The direct URL and checksum constraint make this a test of the current build.
+    # The direct URL selects this build; a file URL hash fragment is not an integrity check.
     constraints = tmp_path / "constraints.txt"
-    checksum = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    constraints.write_text(f"powercontext @ {wheel.as_uri()}#sha256={checksum}\n", encoding="utf-8")
+    constraints.write_text(f"powercontext @ {wheel.as_uri()}\n", encoding="utf-8")
     home_dir = tmp_path / "home with spaces 测试"
     home_dir.mkdir()
     env = {
@@ -243,8 +241,20 @@ def test_install_configure_remember_and_reinstall(tmp_path: Path, environment: s
         )
     run(installer, tmp_path, env, "install")
     if environment == "existing":
-        # An explicitly selected source must not silently fall back to a public index.
-        run([*installer, "--index-url", "https://127.0.0.1:9/simple"], tmp_path, env, "explicit-index", success=False)
+        # A fresh tool/cache forces resolution; exact reinstallation may legitimately reuse the existing tool.
+        failed_source_env = {
+            **env,
+            "UV_TOOL_DIR": str(tmp_path / "failed-source-tools"),
+            "UV_TOOL_BIN_DIR": str(tmp_path / "failed-source-bin"),
+            "UV_CACHE_DIR": str(tmp_path / "failed-source-cache"),
+        }
+        run(
+            [*installer, "--index-url", "https://127.0.0.1:9/simple"],
+            tmp_path,
+            failed_source_env,
+            "explicit-index",
+            success=False,
+        )
     assert run([cli, "--version"], tmp_path, env, "version").strip() == version
     run([cli, "config", "init", "--template", "--output", ".env"], tmp_path, env, "configure", stdin="\n")
     config = (tmp_path / ".env").read_bytes()
@@ -325,8 +335,8 @@ def test_latest_exact_versions_and_client_profile(tmp_path: Path) -> None:
     worker.start()
     env["UV_INDEX"] = f"http://127.0.0.1:{server.server_port}"
     try:
-        # Invalid unattended input must fail before any tool installation.
-        run(installer, tmp_path, env, "missing-host-choice", success=False)
+        # Contradictory host intent must fail before any tool installation.
+        run([*installer, "--host", "codex", "--no-hosts"], tmp_path, env, "host-choice-conflict", success=False)
         assert not Path(cli).exists()
         client_install = [*installer, "--no-hosts", "--profile", "client"]
         run([*client_install, "--version", "1.2.0"], tmp_path, env, "install-old")
@@ -355,6 +365,8 @@ def test_latest_exact_versions_and_client_profile(tmp_path: Path) -> None:
         assert run([cli, "--version"], tmp_path, env, "prerelease-version").strip() == "1.2.2rc1"
         run([*client_install, "--version", "99.0.0"], tmp_path, env, "missing-version", success=False)
         assert run([cli, "--version"], tmp_path, env, "preserved-version").strip() == "1.2.2rc1"
+        run(client_install, tmp_path, env, "stable-after-prerelease")
+        assert run([cli, "--version"], tmp_path, env, "restored-stable-version").strip() == "1.2.1"
         run([*installer, "--no-hosts", "--version", "1.2.0"], tmp_path, env, "switch-to-local")
         run([python, "-c", "import fastapi"], tmp_path, env, "local-includes-server")
         run([*client_install, "--version", "1.2.0"], tmp_path, env, "switch-to-client")
