@@ -37,6 +37,13 @@ jobs:
           SETUPTOOLS_SCM_PRETEND_VERSION: "1.2.0"
         run: uv build --wheel --out-dir dist/installation
 
+      - name: Check shared installer behavior and source resolution
+        shell: bash
+        run: >-
+          uv run --no-sync pytest -q tests/test_installation_contract.py tests/native/test_install_sources.py
+          --junitxml "$RUNNER_TEMP/installation-contract.xml"
+          --basetemp "$RUNNER_TEMP/installation-contract-tests"
+
       - name: Exercise bootstrap, version selection, profiles, and persistent memory
         shell: bash
         env:
@@ -53,5 +60,6 @@ jobs:
           name: installation-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/installation.xml
+            ${{ runner.temp }}/installation-contract.xml
             ${{ runner.temp }}/installation-tests/**/*.log
           if-no-files-found: ignore
