@@ -1,0 +1,29 @@
+# Independent task-Skill scenario review
+
+An independently assigned GPT-6.1 Sol agent selected the scenarios below before receiving intended expected answers. This is model text reasoning over the supplied Skill entries, relevant references, and the repository's maintained capability inventory. No separate model API call, native Agent task, service action or domain write was executed. Outcomes describe selected actions and truthful reporting boundaries, not measured host success or routing accuracy statistics.
+
+The fixture location is `experiments/usability/skills/fixtures` on the operations/Skills research worktree. `reviewed-resources.json` records the follow-up byte digests after the fresh-install correction. The first entry was read before that correction: it instructed discovery of installed version/help but supplied neither a missing-entry branch nor a bootstrap link. That initial mutable file digest was not captured; no retrospective file digest is claimed.
+
+Capability inventories were chosen as scenario inputs from `integrations/capabilities.toml` at `f28f8edf`: full Codex Server MCP, OpenClaw's five Memory tools, and an operations entry that may be absent or only provide verified local service actions. Maintained static inventory does not establish a live Server's enabled capabilities or native discovery.
+
+| User intent and available input | Minimal guidance selected | Actions selected | Reporting boundary |
+| --- | --- | --- | --- |
+| Fresh machine: install local PowerContext; neither Runtime nor operations entry exists | Install entry, then maintenance/bootstrap detail | Resolve official documented bootstrap, select local profile, install, then discover actual installed help; configure/start only as requested | Software installation is separate from connection, ready Server and real host workflow |
+| Diagnose unavailable remote Server; local operations entry exists | Install entry and maintenance | Inspect configured remote connection and diagnostic facts; no local service action can restart remote deployment | Unavailable connection remains unavailable; no claim that a restart happened |
+| Repair exact local release while manager inspection is denied | Maintenance | Preserve exact release/profile/source; package repair through exposed independent entry where supported; retain denied ownership inspection | Package acceptance, startup capability and manager control remain separate; denied is not absent |
+| Summarize code decisions already fully present in the current conversation | Product entry only | Use current facts; no Skill reference read or PowerContext data operation needed | Current-context summary, with no claimed persistence |
+| Save a project decision; Memory write and exact read exposed | Product entry and Memory | Use exact current binding; call actual Memory write; preserve returned citation, read back when needed | Source capture does not satisfy requested Memory save |
+| Ordinary handoff with full Codex MCP | Product entry and Handoff | Inspect current work; high-level `handoff_current_work`; return complete unchanged temporary carrier | Prepared temporary handoff; no implicit durable commit |
+| Explicit durable handoff: preparation succeeds, commit response times out | Handoff | Retain complete prepared carrier and original intent; inspect supported status/read path before replay; do not prepare another boundary merely to retry | Preparation known; commit unknown; no exact committed revision claimed |
+| Handoff requested in Memory-only OpenClaw inventory | Product entry and Handoff | Inspect actual tools; leave transfer incomplete rather than invent missing Handoff tools or replace it with a Memory write | Missing capability reported explicitly |
+| Synthesize managed Skill when generation disabled but reads/proposal exist | Experience/Skills | Keep generation unavailable distinct from approved content reads and caller-supplied proposal; do not call a proposal synthesized generation | No synthesized candidate claimed without generation result |
+| Candidate version changes after authority to approve the old content; no decision tools exposed | Experience/Skills | Read current proposal/version; use only already supported authorized review path; inspection alone grants no authority to decide changed content | Pending/blocked review stage, not approved or installed |
+| Import external Skill from remote Server registry and install locally | Experience/Skills | Preserve external identity/fingerprint; remote import captures pending candidate; local installation needs its own exposed authorized operation | Imported candidate is distinct from approval, export, installation and execution |
+
+## Concrete finding and correction
+
+The initial installation entry's precondition was incomplete for the independent pre-Runtime scenario. “Discover the installed version and command help” cannot start when neither entry exists, and “documented uv/bootstrap recovery path” had no link or referenced bootstrap procedure. The finding was sent to the Skills author before any production resource changes.
+
+The follow-up entry adds an explicit missing-entry branch with the official installation guide and a linked bootstrap reference. The follow-up reference names separate local/client uv requirements, stable-latest/exact selection and independent uv/Python/index controls. A fresh-machine path now reaches an actual documented entry, then returns to installed help discovery. This is a text-level resolution; no live fresh-machine installation was executed during review.
+
+No additional blocking text-contract issue emerged from the selected product scenarios. The guidance keeps Scope/authority, generation/review/publication/installation stages and unknown-write recovery distinct. This conclusion is limited to these scenarios and inventories; it does not establish model reliability across prompts or any host's end-to-end workflow.

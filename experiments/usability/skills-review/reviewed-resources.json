@@ -1,0 +1,14 @@
+{
+  "method": "independent GPT-6.1 Sol agent text review; no external model call or native host execution",
+  "fixture_root": "experiments/usability/skills/fixtures",
+  "snapshots": {
+    "powercontext-install/SKILL.md": "b2c3e8a3e466128df98e8bf858818e0a4f07b88aac45ff3e058d1d876d4f331e",
+    "powercontext-install/references/bootstrap.md": "06dd3e95ca17fa799cd19a1d9b155745b8b0835a67e6cbfbb2bf6232fb47c9d1",
+    "powercontext-install/references/maintenance.md": "d8c0d780cff9f9b6c56a67103256016328d54efa191ed64f6c6f705e884b5a90",
+    "powercontext-project-context/SKILL.md": "ea7b8c05ec1201a880d608f70dcd11ef9edbd6a662c14b41ce56fb612eaf7400",
+    "powercontext-project-context/references/experience-skills.md": "dfc13570114634a5631e60d621eddbec3985ae473d978595d3a15531b01fabba",
+    "powercontext-project-context/references/handoff.md": "664137b4db646d4ad5d315afc71eaa2020f420f1465b1c39eb1118d18fc4f11e",
+    "powercontext-project-context/references/memory.md": "4580b6c8920cae7f3cac82f43910e5383d5f61390f18dcbb433102d069c70936"
+  },
+  "scope": "follow-up resource snapshot after fresh-install bootstrap correction"
+}
