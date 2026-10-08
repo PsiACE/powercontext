@@ -137,6 +137,19 @@ class ClientTransportResolution:
     consent_source: str
 
 
+def _endpoint_environment_keys(host: str) -> list[str]:
+    """List endpoint inputs accepted by the corresponding native host adapter."""
+    keys = [_prefix(host) + "BASE_URL", _prefix(host) + "SERVER_URL"]
+    if host in {"claude-code", "workbuddy"}:
+        keys = [_prefix(host) + "SERVER_URL"]
+    if host == "claude-code":
+        keys.append("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+    if host in {"dsh", "pi", "opencode", "openclaw"}:
+        keys.append(_prefix(host) + "ENDPOINT")
+    keys.append("POWERCONTEXT_CLIENT_SERVER_URL")
+    return keys
+
+
 def inspect_client_transport(
     host: str,
     *,
@@ -145,13 +158,10 @@ def inspect_client_transport(
     allow_insecure_http: bool | None = None,
 ) -> ClientTransportResolution:
     """Resolve one snapshot and explain precedence without reading credential values."""
-    saved = load_client_settings(host) if saved_settings is None else dict(saved_settings)
+    saved: dict[str, Any] = load_client_settings(host) if saved_settings is None else dict(saved_settings)
     source = "explicit" if server_url is not None else "default"
     if server_url is None:
-        keys = [_prefix(host) + "BASE_URL", _prefix(host) + "SERVER_URL"]
-        if host in {"dsh", "pi", "opencode", "openclaw"}:
-            keys.append(_prefix(host) + "ENDPOINT")
-        keys.append("POWERCONTEXT_CLIENT_SERVER_URL")
+        keys = _endpoint_environment_keys(host)
         for key in keys:
             if os.environ.get(key):
                 server_url, source = os.environ[key], key
@@ -164,12 +174,20 @@ def inspect_client_transport(
     for key in (_prefix(host) + "ALLOW_INSECURE_HTTP", "POWERCONTEXT_CLIENT_ALLOW_INSECURE_HTTP"):
         if key in os.environ:
             return ClientTransportResolution(normalized, parse_client_boolean(os.environ[key]), source, key)
-    if saved.get("server_url") and _endpoint(normalized) == _endpoint(saved["server_url"]):
+    saved_source = "saved"
+    if host == "claude-code" and "CLAUDE_PLUGIN_OPTION_ALLOW_INSECURE_HTTP" in os.environ:
+        saved = {
+            "server_url": os.environ.get("CLAUDE_PLUGIN_OPTION_SERVER_URL"),
+            "allow_insecure_http": parse_client_boolean(os.environ["CLAUDE_PLUGIN_OPTION_ALLOW_INSECURE_HTTP"]),
+        }
+        saved_source = "CLAUDE_PLUGIN_OPTION_ALLOW_INSECURE_HTTP"
+    saved_endpoint = saved.get("server_url")
+    if saved_endpoint and _endpoint(normalized) == _endpoint(saved_endpoint):
         return ClientTransportResolution(
             normalized,
             saved.get("allow_insecure_http", False),
             source,
-            "saved" if "allow_insecure_http" in saved else "default",
+            saved_source if "allow_insecure_http" in saved else "default",
         )
     return ClientTransportResolution(normalized, False, source, "default")
 

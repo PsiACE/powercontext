@@ -36,6 +36,7 @@ from powercontext.client.connections import (
 )
 from powercontext.client.errors import ClientError
 from powercontext.client.settings import ClientSettings
+from powercontext.local_config import ConfigurationConflictError
 
 connection_app = typer.Typer(
     name="connection", no_args_is_help=True, help="Inspect and configure saved Client connections."
@@ -43,11 +44,49 @@ connection_app = typer.Typer(
 project_app = typer.Typer(name="project", no_args_is_help=True, help="Manage existing Codex checkout Scope bindings.")
 
 
+def _report_failure(error: Exception) -> None:
+    """Translate only owned static diagnostics; never echo arbitrary error payloads."""
+    message = str(error)
+    category, action = "invalid_connection", "Inspect connection state and check the endpoint and credential reference"
+    if isinstance(error, ConfigurationConflictError):
+        category, action = "revision_conflict", "Inspect again and use the returned revision"
+    elif message == "Unsupported connection host":
+        category, action = "unsupported_host", "Choose a supported host from connection --help"
+    elif message.startswith("PowerContext Server URL must"):
+        category, action = "invalid_endpoint", "Use an HTTP(S) endpoint without credentials, query, or fragment"
+    elif (
+        "conflicts with the selected endpoint; align or unset it first" in message
+        or "conflicts with the selected consent; align or unset it first" in message
+    ):
+        category, action = "environment_conflict", "Align or unset the conflicting runtime endpoint/consent variables"
+    elif "The saved Client credential reference is unavailable" in message:
+        category, action = (
+            "credential_unavailable",
+            "Supply the referenced environment variable before making a request",
+        )
+    elif "Unencrypted PowerContext Server URLs must be loopback addresses" in message:
+        category, action = "http_consent_required", "Use HTTPS or explicitly consent to this plaintext endpoint"
+    elif message in {
+        "Token references must name an environment variable for the client entry",
+        "Cannot set and clear the token reference together",
+    }:
+        category, action = "invalid_credential_reference", "Use one client environment-variable reference or clear it"
+    elif isinstance(error, ClientError):
+        category, action = (
+            "server_operation_failed",
+            "Check the selected Server and Scope; inspect before retrying a write",
+        )
+    elif isinstance(error, OSError):
+        category, action = "resource_unavailable", "Check the configuration/project path and filesystem permissions"
+    typer.echo(json.dumps({"schema_version": 1, "error": {"category": category, "next_action": action}}))
+    typer.echo("Operation failed; no automatic retry was performed.", err=True)
+
+
 def _output(operation: Callable[[], dict[str, Any]]) -> None:
     try:
         value = operation()
     except (OSError, ValueError) as error:
-        typer.echo(f"Connection operation failed ({type(error).__name__}); inspect the resource and inputs.", err=True)
+        _report_failure(error)
         raise typer.Exit(1) from error
     typer.echo(json.dumps(value, indent=2, ensure_ascii=False))
 
@@ -114,7 +153,7 @@ def _run_project(
         )
     except (ClientError, OSError, ValueError, subprocess.SubprocessError) as error:
         # Do not expose server payloads or input values through ordinary diagnostics.
-        typer.echo(f"Project operation failed ({type(error).__name__}); no automatic retry was performed.", err=True)
+        _report_failure(error)
         raise typer.Exit(1) from error
     typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
 

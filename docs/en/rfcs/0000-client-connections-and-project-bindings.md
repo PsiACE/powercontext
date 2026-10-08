@@ -48,11 +48,13 @@ Connection writes compare a byte revision under a local cooperating-writer lock 
 Unknown file versions are rejected before writes. Preserve other host entries and unknown fields. Failed operations retain
 the old file. This lock does not claim coordination with arbitrary external editors or multi-file host installers.
 
-# Acceptance
+## Acceptance
 
 Protect source precedence, same-versus-changed endpoint consent, environment conflict rejection, missing token references,
 concurrent revision conflicts, cross-process readback, exact worktree identity, bind/unbind and endpoint switching through
 actual API behavior. Native host activation remains outside this contract.
+
+Inspection reports Client/setup transport policy, not authoritative native MCP registration. `selection_scope` is `client_transport_policy` and `native_host_configuration` is `unobserved`; Codex or another host may have separately configured MCP endpoints. Activation remains unknown.
 
 # Drawbacks
 

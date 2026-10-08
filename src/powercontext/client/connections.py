@@ -75,6 +75,8 @@ def inspect_connection(host: str = "client") -> dict[str, Any]:
             else "unset",
         },
         "activation": "unknown",
+        "selection_scope": "client_transport_policy",
+        "native_host_configuration": "unobserved",
     }
 
 
