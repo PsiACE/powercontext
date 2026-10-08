@@ -128,3 +128,24 @@ def test_failed_stop_preserves_owned_artifact_and_data(tmp_path: Path, monkeypat
     assert cli.main(["server", "uninstall"]) == 1
     assert adapter.artifact_path.read_bytes() == content
     assert retained.read_bytes() == b"retain"
+
+
+@pytest.mark.parametrize("ownership", ["owned", "foreign", "unknown"])
+def test_repair_refuses_unsafe_loaded_manager_without_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ownership: str
+) -> None:
+    from powercontext_operations.model import ManagerOwnershipState, ManagerRegistration, ManagerState
+
+    adapter = SystemdUserAdapter(config_home=tmp_path, identifier="powercontext-operations-test.service")
+    monkeypatch.setattr(adapter, "loaded_registration", lambda: ManagerRegistration(ManagerOwnershipState(ownership)))
+    monkeypatch.setattr(adapter, "manager_state", lambda: ManagerState.ACTIVE)
+    monkeypatch.setattr(cli, "native_service_adapter", lambda: adapter)
+    monkeypatch.setattr(cli, "tool_bin", lambda _uv: tmp_path / "bin")
+    monkeypatch.setattr(cli.shutil, "which", lambda _command: sys.executable)
+
+    def forbid_package_mutation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError
+
+    monkeypatch.setattr(cli.subprocess, "run", forbid_package_mutation)
+    assert cli.main(["repair", "--target", "uv-tool", "--version", "0.1.0", "--profile", "client"]) == 1
+    assert not adapter.artifact_path.exists()
