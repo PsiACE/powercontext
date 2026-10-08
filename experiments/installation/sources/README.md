@@ -33,6 +33,10 @@ The measured environment is Linux x86_64, harness Python 3.14.7, uv 0.11.14. The
 at 0.12.23; existing uv reuse means 0.11.14 is an independently relevant path. Python discovery independently reuses a local 3.13 interpreter. All 46 measured cases meet their
 expected exit/result assertions. [results.json](results.json) contains elapsed milliseconds, requests, exit codes,
 and normalized output for every case. Durations are single-run local measurements, not Internet latency estimates.
+The same 46 cases also pass with the installer-pinned uv 0.12.23;
+[results-uv-0.12.23.json](results-uv-0.12.23.json) preserves that independent run. Pass the official
+0.12.23 executable through `--uv` to reproduce it. Baseline shell functions are loaded through pinned
+`git show`, independent of the checked-out production script contents.
 
 | Ablation or fault | Measured outcome | Decision supported |
 | --- | --- | --- |
