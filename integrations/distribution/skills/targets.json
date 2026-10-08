@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "targets": {
+    "agent-plugin": {
+      "destination": "integrations/agent-plugin/powercontext/skills/powercontext-project-context",
+      "files": {
+        "SKILL.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/SKILL.md",
+        "references/review-publication.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/review-publication.md",
+        "references/scope-memory.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/scope-memory.md",
+        "references/work-handoff.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/work-handoff.md"
+      },
+      "retired": []
+    },
+    "claude-code": {
+      "destination": "integrations/claude-code/plugins/powercontext/skills/powercontext-project-context",
+      "files": {
+        "SKILL.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/SKILL.md",
+        "references/review-publication.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/review-publication.md",
+        "references/scope-memory.md": "integrations/distribution/skills/overrides/claude-code/references/scope-memory.md",
+        "references/work-handoff.md": "integrations/distribution/skills/overrides/claude-code/references/work-handoff.md"
+      },
+      "retired": []
+    },
+    "workbuddy": {
+      "destination": "integrations/workbuddy/plugins/powercontext/skills/powercontext-project-context",
+      "files": {
+        "SKILL.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/SKILL.md",
+        "references/review-publication.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/review-publication.md",
+        "references/scope-memory.md": "integrations/distribution/skills/overrides/workbuddy/references/scope-memory.md",
+        "references/work-handoff.md": "integrations/distribution/skills/overrides/workbuddy/references/work-handoff.md"
+      },
+      "retired": []
+    },
+    "codex": {
+      "destination": "integrations/codex/plugins/powercontext/skills/powercontext-project-context",
+      "files": {
+        "SKILL.md": "integrations/distribution/skills/overrides/codex/SKILL.md",
+        "agents/openai.yaml": "integrations/distribution/skills/overrides/codex/agents/openai.yaml",
+        "references/experience-skills.md": "integrations/distribution/skills/overrides/codex/references/experience-skills.md",
+        "references/review-publication.md": "integrations/distribution/skills/overrides/codex/references/review-publication.md",
+        "references/scope-memory.md": "integrations/distribution/skills/overrides/codex/references/scope-memory.md",
+        "references/work-handoff.md": "integrations/distribution/skills/overrides/codex/references/work-handoff.md"
+      },
+      "retired": []
+    }
+  }
+}

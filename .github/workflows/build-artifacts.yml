@@ -63,6 +63,9 @@ jobs:
       - name: Verify locked dependencies
         run: uv lock --locked
 
+      - name: Verify declared plugin Skill resources
+        run: uv run --locked python scripts/generate_plugin_skills.py --check
+
       - name: Resolve artifact metadata
         id: metadata
         env:

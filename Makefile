@@ -19,7 +19,7 @@ notebooks-test: ## Execute provider-free tutorials in fresh kernels; use ARGS fo
 	@uv run --locked --group notebooks python examples/jupyter/run.py $(ARGS)
 
 .PHONY: check
-check: version-check workflow-actions-check integration-manifest-check ## Run code quality tools.
+check: version-check workflow-actions-check integration-manifest-check plugin-skills-check ## Run code quality tools.
 
 .PHONY: workflow-actions-check
 workflow-actions-check: ## Verify third-party GitHub Actions use immutable commit pins.
@@ -274,3 +274,10 @@ help:
 	[[print(f'\033[36m{m[0]:<20}\033[0m {m[1]}') for m in re.findall(r'^([a-zA-Z0-9_-]+):.*?## (.*)$$', open(makefile).read(), re.M)] for makefile in ('$(MAKEFILE_LIST)').strip().split()]"
 
 .DEFAULT_GOAL := help
+
+.PHONY: plugin-skills plugin-skills-check
+plugin-skills: ## Refresh declared native Skill resources from their authoritative sources.
+	@uv run python scripts/generate_plugin_skills.py --write
+
+plugin-skills-check: ## Check native Skill resources and reachable references without writes.
+	@uv run python scripts/generate_plugin_skills.py

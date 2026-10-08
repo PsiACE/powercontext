@@ -1,0 +1,107 @@
+{
+  "baseline": "f28f8edfcb2972ac322f4f12b1f224226a9a40ab",
+  "python": "3.13.13",
+  "qualification": "pinned resource bytes and pure in-memory projections; no actual host discovery",
+  "results": [
+    {
+      "host": "agent-plugin",
+      "variant": "universal_baseline",
+      "file_count": 4,
+      "preserves_native_resources": true,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "1d6eff7ab1c0fcc62599b3af888896bd8c42d47aa8bfd7dcb59f938bf5852566"
+    },
+    {
+      "host": "agent-plugin",
+      "variant": "explicit_projection",
+      "file_count": 4,
+      "preserves_native_resources": true,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "1d6eff7ab1c0fcc62599b3af888896bd8c42d47aa8bfd7dcb59f938bf5852566"
+    },
+    {
+      "host": "claude-code",
+      "variant": "universal_baseline",
+      "file_count": 4,
+      "preserves_native_resources": false,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "1d6eff7ab1c0fcc62599b3af888896bd8c42d47aa8bfd7dcb59f938bf5852566"
+    },
+    {
+      "host": "claude-code",
+      "variant": "explicit_projection",
+      "file_count": 4,
+      "preserves_native_resources": true,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "35d6d182f4c0f208e1f0a57ed96eeadab38366b4a59cd9c606cf4d8291f8f21c"
+    },
+    {
+      "host": "workbuddy",
+      "variant": "universal_baseline",
+      "file_count": 4,
+      "preserves_native_resources": false,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "1d6eff7ab1c0fcc62599b3af888896bd8c42d47aa8bfd7dcb59f938bf5852566"
+    },
+    {
+      "host": "workbuddy",
+      "variant": "explicit_projection",
+      "file_count": 4,
+      "preserves_native_resources": true,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "17ffbf05875e22e78ccf227682150329d91cf32cf08c08d4b18677d56a1aebcb"
+    },
+    {
+      "host": "codex",
+      "variant": "universal_baseline",
+      "file_count": 4,
+      "preserves_native_resources": false,
+      "missing_links": [],
+      "native_resources_lost": [
+        "agents/openai.yaml",
+        "references/experience-skills.md"
+      ],
+      "digest": "1d6eff7ab1c0fcc62599b3af888896bd8c42d47aa8bfd7dcb59f938bf5852566"
+    },
+    {
+      "host": "codex",
+      "variant": "explicit_projection",
+      "file_count": 6,
+      "preserves_native_resources": true,
+      "missing_links": [],
+      "native_resources_lost": [],
+      "digest": "b90929591cd4e41dfe228c87707110ffc56890bde45ecb96822f1ff8b16ef1c3"
+    },
+    {
+      "scenario": "single_authoritative_edit",
+      "equal_contract_targets": [
+        "agent-plugin",
+        "claude-code",
+        "workbuddy"
+      ],
+      "duplicate_targets_updated": [
+        "agent-plugin"
+      ],
+      "projected_targets_updated": [
+        "agent-plugin",
+        "claude-code",
+        "workbuddy"
+      ],
+      "specialized_codex_preserved": true
+    },
+    {
+      "scenario": "incomplete_package",
+      "missing_links": [
+        "SKILL.md:references/experience-skills.md",
+        "SKILL.md:references/experience-skills.md",
+        "SKILL.md:references/experience-skills.md"
+      ]
+    }
+  ]
+}
