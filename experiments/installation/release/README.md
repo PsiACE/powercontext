@@ -22,6 +22,7 @@ PowerContext readiness or real Agent acceptance.
 | --- | --- | --- | --- |
 | Latest must mean stable; index has stable and prerelease wheels | Explicit prerelease exclusion | Both variants choose 2.0.0 | This particular index does not expose the policy difference. |
 | Latest must mean stable; same index after hiding stable wheels | Explicit prerelease exclusion | uv installs 3.0.0rc1; explicit exclusion fails | Keep `--prerelease disallow`; delegation needs an explicit policy input. |
+| Installed prerelease; stable candidates available | Reinstall only the PowerContext package | Upgrade with prereleases disallowed still keeps the installed prerelease; package reinstall selects stable | Latest must add `--reinstall-package powercontext`, not just an upgrade or refresh. |
 | Working 1.0.0; request unavailable 99.0.0 | Custom rollback and custom receipt | uv fails; old launcher runs; uv receipt remains byte-identical | No additional receipt/rollback layer is needed for this resolution failure. |
 | Accepted wheel has failing entry point | Executable check | uv installation succeeds; launcher fails and previous installation is replaced | Package acceptance is not executable capability. Verification detects failure but does not roll package files back. |
 | Distribution metadata says 5.0.0, CLI prints 1.0.0 | Compare requested/reported version | uv accepts distribution; CLI reports wrong version | Exact request comparison rejects this mismatch. `latest` needs no hypothetical additional metadata framework. |

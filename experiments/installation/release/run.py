@@ -147,6 +147,20 @@ def main() -> None:
         observations["cases"].append({"case": "prerelease_only_with_stable_policy", "install_status": 1})
         for path in stable_wheels:
             path.with_suffix(".hidden").rename(path)
+        result = install("powercontext", "--upgrade", "--prerelease", "disallow")
+        assert result.returncode == 0 and executable().stdout.strip() == "3.0.0rc1"
+        observations["cases"].append({
+            "case": "upgrade_retains_installed_prerelease",
+            "install_status": 0,
+            "version": "3.0.0rc1",
+        })
+        result = install("powercontext", "--upgrade", "--reinstall-package", "powercontext", "--prerelease", "disallow")
+        assert result.returncode == 0 and executable().stdout.strip() == "2.0.0"
+        observations["cases"].append({
+            "case": "package_reinstall_returns_to_stable",
+            "install_status": 0,
+            "version": "2.0.0",
+        })
         result = install("powercontext==1.0.0")
         assert result.returncode == 0 and executable().stdout.strip() == "1.0.0"
         receipt_before = (root / "tools" / "powercontext" / "uv-receipt.toml").read_bytes()

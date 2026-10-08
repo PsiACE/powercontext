@@ -21,6 +21,16 @@
       "install_status": 1
     },
     {
+      "case": "upgrade_retains_installed_prerelease",
+      "install_status": 0,
+      "version": "3.0.0rc1"
+    },
+    {
+      "case": "package_reinstall_returns_to_stable",
+      "install_status": 0,
+      "version": "2.0.0"
+    },
+    {
       "case": "unavailable_exact_without_custom_rollback",
       "install_status": 1,
       "version": "1.0.0",
