@@ -94,7 +94,7 @@ def test_symlink_destination_rejected_before_publication(tmp_path: Path) -> None
     assert not list(outside.iterdir())
 
 
-@pytest.mark.parametrize("unsafe", ["../escaped", "/absolute", "folder\\file"])
+@pytest.mark.parametrize("unsafe", ["../escaped", "/absolute", "folder\\file", "C:/escaped", "entry:stream"])
 def test_resource_path_escape_rejected(tmp_path: Path, unsafe: str) -> None:
     target = {"files": {"SKILL.md": unsafe}}
     with pytest.raises(ValueError, match="contained relative"):
