@@ -94,6 +94,13 @@ not a workflow execution language. A valid frontmatter or reachable reference pr
 
 ## Acceptance and evidence limits
 
+The [executed report](https://github.com/PsiACE/powercontext/blob/471d0cef0d31facbc45e8b4f2fbd599a807bf2c8/experiments/usability/skills/README.md)
+and [qualification results](https://github.com/PsiACE/powercontext/blob/471d0cef0d31facbc45e8b4f2fbd599a807bf2c8/experiments/usability/skills/qualification.json)
+record the actual projection check, seven CLI discovery cases and six public Runtime/HTTP state workflows.
+Twenty-six layout/distribution tests and native Skill validation passed. Independent scenario text review is
+[separately recorded](https://github.com/PsiACE/powercontext/blob/090a3cce/experiments/usability/skills-review/README.md).
+These evidence classes establish local contracts and guidance interpretation, not live model or Agent execution.
+
 Run actual CLI help and public Runtime/HTTP state workflows for Memory direct writes, temporary/durable Handoff,
 candidate generation/review/rejection, exact revisions, package export/readback, and installed Skill state. Include
 no-model capability, restricted catalogs, absent tools, empty search, permission failure, version conflict, and
