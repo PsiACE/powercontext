@@ -13,7 +13,7 @@ description: 配置客户端地址，并在需要时明确允许非环回明文 
 在运行 Agent 的机器上使用安装脚本。它会按需补齐 uv 和 Python，安装最新稳定版 CLI 和 Client，不安装本地 Server 依赖：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --profile client --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --profile client
 ```
 
 Windows PowerShell、指定版本和镜像选项见[安装和运行](../get-started/install-and-run.md)。

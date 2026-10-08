@@ -40,13 +40,13 @@ selection, explicit host selection, recoverable partial failures, and verificati
 On macOS or Linux:
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 On Windows, using PowerShell 5.1 or newer:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1)))"
 ```
 
 `local`, the default profile, installs CLI, Client, and local Server dependencies. `--profile client` installs CLI and
@@ -66,9 +66,10 @@ repeatable package selection, use an exact version:
 curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.2.0 --host codex
 ```
 
-`--host` is repeatable. `--no-hosts` skips integration setup. With neither option, an interactive terminal opens
-`powercontext setup select`; without a terminal the installer fails before provisioning. Piped Bash installation
-uses `/dev/tty` for selection, separate from script input. Git and each selected host's own prerequisites are required.
+Installation runs unattended by default, without Git or a host picker. `--host` is repeatable and opts into integration
+setup; selected hosts require Git and their own prerequisites. `--no-hosts` explicitly states the default and cannot
+be combined with `--host`. For an interactive picker after installation, run
+`powercontext setup select --ref "powercontext-v$(powercontext --version)"`.
 
 The installed CLI supplies the exact version for `powercontext-vVERSION`. Host setup never resolves `latest` again
 and never defaults to `master`. If a host installation fails, the Runtime remains installed and the script returns
@@ -116,16 +117,19 @@ into shell, add a standalone Python installer engine, or change Runtime/public H
 
 ## Version and profile semantics
 
-- `latest` passes an unpinned profile requirement to `uv tool install --upgrade --prerelease disallow`. It means the
+- `latest` passes an unpinned profile requirement to `uv tool install --upgrade --reinstall-package powercontext --prerelease disallow`. It means the
   newest stable version compatible with the selected interpreter and configured sources, not necessarily the version
-  most recently uploaded to another mirror. Resolution failures are reported without substituting another requirement.
+  most recently uploaded to another mirror. The PowerContext package is reinstalled so an existing prerelease cannot bypass stable selection. Resolution failures
+  are reported without substituting another requirement.
 - An exact `X.Y.Z`, optionally followed by `aN`, `bN`, or `rcN`, uses `==VERSION`. Explicit prereleases are supported;
   source refs, ranges, and URLs are not `--version` values. Releases before 0.1.0 are excluded.
 - `local` uses `powercontext[cli,server]`; `client` uses `powercontext[cli]`, whose dependencies include the Client.
   Rerunning with a different profile replaces that tool's dependency set. Independently added extras must be managed
   through the documented manual installation path.
-- The installed executable must report a release version. Exact requests must match it. The script prints success
-  only after this check. The user receives a usable Runtime even if subsequent host setup fails.
+- The executable in `uv tool dir --bin` must report a release version. Exact requests must match it. All profiles
+  must expose CLI help and `capabilities --help`; `local` additionally requires
+  `config init --help` and `server run --help`. The script prints success only after these commands succeed.
+  These checks establish imports and command availability, not Server readiness or Agent workflow correctness.
 
 uv is bootstrapped at an installer-controlled version; that version is independent of the PowerContext release.
 An existing uv is reused rather than upgraded silently. Python discovery excludes virtual environments so a project
@@ -139,10 +143,11 @@ mirror installer falls back to Astral; failed mirrored uv artifacts may use offi
 URL is obtained from uv, and its mirrored artifact is checked before installation. If the automatic Python mirror
 fails, installation retries with uv's default channels.
 
-Automatic package selection checks the PowerContext index page and, for exact requests, the listed version. An
-unavailable or unsynchronized China index falls back to PyPI. After selection, uv owns dependency resolution and
-artifact errors; the script does not retry a partially attempted tool installation against another index.
-Explicit indexes bypass shell probing so uv can apply its authentication and configuration correctly.
+Automatic China package selection makes a bounded availability request to the PowerContext index page. An
+unreachable mirror falls back to PyPI before tool installation. A reachable mirror remains selected even if it lacks
+the requested release; uv reports that resolution failure. Global and explicit sources go directly to uv. The scripts
+never interpret index HTML, wheel filenames, encoded URLs, package compatibility, or authentication. They do not
+switch indexes after a tool installation attempt, which may already have changed installed files.
 
 Shell environment changes are local to the installer process; PowerShell restores temporary source variables in
 `finally`. Existing configuration files are neither parsed by shell nor rewritten. Only installer-owned temporary
@@ -155,30 +160,45 @@ or restart a running service. Users follow the existing upgrade and migration in
 Server. An exact-version retry may reuse cached packages; `latest` intentionally allows upgrades.
 
 `UV_OFFLINE=1` permits cached reinstallation only when uv, a compatible Python, and all dependencies are present.
-It does not promise a complete offline distribution. A failure after bootstrapping leaves installed prerequisites
-available for retry; a failure in host setup preserves the Runtime. There is no cross-component rollback or repair
-of unrelated host configuration.
+It disables installer source probes as well as uv networking. It does not promise a complete offline distribution.
+Prerequisites remain available after later failures. A resolution failure for an unavailable exact version preserves
+the existing tool. Once uv accepts a package, verification can fail after replacing the old executable: report
+"package installed, verification failed" and allow an explicit version retry, without claiming rollback. A later host
+setup failure preserves the verified Runtime. There is no cross-component rollback or repair of unrelated host state.
 
 Windows retains its experimental product status. Native acceptance runs on Linux, macOS, and Windows; host-specific
 support still comes from each integration's capability contract.
 
-## Acceptance
+## Executable contract and acceptance
 
-`tests/native/test_installation.py` runs the actual shell installer, uv, installed CLI, and HTTP Server. A wheel built
-from the tested commit uses release-shaped metadata and an exact file/checksum constraint. Qualification includes:
+`tests/fixtures/installation/*.json` defines shared public inputs and expected outcomes for both shell adapters.
+`tests/test_installation_contract.py` executes those cases with real uv and small offline fixture wheels: host opt-in,
+profiles, exact-version verification, unavailable commands, and partial host failure. Cases observe installed
+capabilities, selected hosts, release refs and exit results. They do not fix internal function boundaries or call order.
+The same catalog runs on each native operating system; fixture host execution is not real Agent acceptance.
+
+`tests/native/test_installation.py` runs the actual shell installer, uv, installed PowerContext CLI, and HTTP Server.
+A wheel built from the tested commit uses release-shaped metadata and a direct local file constraint. That constraint
+selects the tested artifact; it does not establish an independently enforced checksum. Qualification includes:
 
 - missing uv/Python under global and China source selection, existing tools/configuration, and spaces/Unicode paths;
 - real stable/prerelease wheel resolution through a controlled package index, default upgrade, exact selection, and
   preserving the installed version when a requested release is unavailable;
 - Client-only installation and profile changes, with no local Server state created by installation;
 - `.env` generation and validation, readiness, Memory remember/search, cached offline reinstall, and restart readback;
-- explicit index failure, non-interactive missing choices, piped Bash terminal selection, and the downloaded
+- explicit index failure, conflicting host choices, unattended and piped Bash installation, and the downloaded
   PowerShell scriptblock entry point.
 
 A separate CI matrix executes the suite on all three operating systems. Release reference checks preserve script
 `latest` defaults while updating explicit version examples. Website validation confirms documentation links and the
 static build. Syntax checks alone do not establish Windows or macOS installation support, and these tests do not
 claim that a real Agent host completes its capture/recall workflow.
+
+[Reproducible first-principles and ablation studies](https://github.com/PsiACE/powercontext/tree/feat/installation-contract/experiments/installation) pin upstream
+sources, installer baselines, uv versions, controlled inputs and observed results. They support these decisions:
+removing implicit host selection preserves explicit host failure semantics; a filename-based preflight rejects valid
+encoded package URLs; prerelease-only indexes require explicit stable policy; and an accepted package can still have
+an unusable entry point. They remain separate from maintained product acceptance and carry their own execution limits.
 
 # Drawbacks
 
@@ -192,18 +212,36 @@ A uv-only command is retained for users who already manage Python and uv; it can
 Source installation is useful for development but is not the default release channel. Pinning the public script to
 a PowerContext version would leave new users on stale releases until the website is republished.
 
-A standalone installer engine and immutable component manifest can serve richer installation plans. They are not
-prerequisites for package bootstrap or reliable source controls. Delegating to existing package and host adapters
-keeps this change independently deliverable without removing working CLI contracts.
+A Python engine still needs a bootstrap on machines without Python. Generating the shell adapters would still require
+native behavioral tests and would add generator/versioning machinery. Shared conformance cases provide executable
+parity without another runtime asset. Introduce an engine or generator only when a concrete policy needs it.
+
+Immutable manifests and a second installation ledger are useful when distributing independently versioned raw
+artifacts. Here uv owns wheel resolution, tool environments and its records. The installer observes the actual launcher
+and delegates repair to an explicit uv-backed retry. This boundary avoids two authorities for the same installation.
 
 # Prior art
 
 [RFC 1408](https://github.com/oceanbase/powercontext/pull/1408) defines the separation of installation, configuration,
 and diagnostics; independent Runtime profiles and host selection; component-level recovery; and explicit service
 registration. [RFC 1299](1299_local_server_availability_and_service_installation.md) defines personal service lifecycle.
-[Bub](https://github.com/bubbuild/bub/tree/main/website/public) provides Bash/PowerShell bootstrap entry points that
-reuse uv and report configuration next steps. [uv](https://docs.astral.sh/uv/guides/tools/) supplies isolated tools,
-Python provisioning, package indexes, and caches.
+
+[Magpie's installer](https://github.com/yetone/magpie/blob/023f5aaad2ecd41ae04390166b9cac9a0b300d81/site/public/install.sh)
+separates an authoritative release feed from artifact mirrors and verifies a binary checksum before replacement.
+Its raw binary ownership justifies that verification; its manifest is not a replacement for Python package standards.
+
+[Lody's daemon installation contract](https://github.com/LodyAI/Lody/blob/811b573329716b23e1144e5d66211ea4ddfb0dfd/specs/daemon-upgrade-installation.md)
+resolves and executes the actual npm installation destination and checks replacement readiness. Its separate
+[managed Agent runtime](https://github.com/LodyAI/Lody/blob/811b573329716b23e1144e5d66211ea4ddfb0dfd/apps/cli/src/agent/managed-agent-runtime.ts)
+owns raw archives and therefore owns manifests and completion records. Apply the actual-executable check here;
+retain service readiness in the service boundary. The public tag-release workflow does not publish installers.
+
+[Bub](https://github.com/bubbuild/bub/tree/b4a61bf1326729a024161d22ba20019b8500f907/website/public) bootstraps uv before
+running its Python preset resolver. Its terminal and macOS Bash fixes motivate explicit host setup and native tests.
+[uv tools](https://docs.astral.sh/uv/concepts/tools/) and
+[configuration](https://docs.astral.sh/uv/concepts/configuration-files/) define the reused environment and source
+semantics; the [Python Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/)
+defines package index interpretation. A shell regex cannot implement those contracts.
 
 # Unresolved questions
 

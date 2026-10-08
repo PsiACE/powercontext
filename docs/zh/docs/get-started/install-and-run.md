@@ -28,21 +28,21 @@ uv 和 Python 3.12，无需管理员权限。
 macOS 或 Linux（使用 Bash，需要 `curl` 或 `wget`）：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 Windows（PowerShell 5.1 或更新版本）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1)))"
 ```
 
 先执行安装完成时打印的 PATH 命令，再在终端运行 `powercontext`。安装器不会修改 shell 启动文件或 Windows 的持久
 PATH。`UV_INSTALL_DIR` 指定缺少 uv 时的安装目录，`UV_TOOL_BIN_DIR` 指定 PowerContext 可执行文件目录。
 
-`--no-hosts` 只安装软件，不询问 Agent 集成。在交互终端省略它会打开 `powercontext setup select`，也可以使用
-`--host codex` 显式选择集成；多个宿主可重复传入 `--host`。集成安装需要 Git 及对应宿主的前置条件。管道安装仍从终端
-读取宿主选择；无人值守执行必须传入 `--no-hosts` 或 `--host`。宿主支持范围见[能力矩阵](../integrations/capabilities.md)。
+默认安装可以无人值守执行。使用 `--host codex` 安装选定的 Agent 集成；多个宿主可重复传入 `--host`。
+只有集成安装需要 Git 及对应宿主的前置条件。`--no-hosts` 可以显式表达默认行为，不能与 `--host` 同时使用。
+宿主支持范围见[能力矩阵](../integrations/capabilities.md)。
 
 连接已有远程 Server 时，加上 `--profile client`，只安装 CLI 和 Client 依赖。默认 `--profile local` 包含本地 Server。
 两种模式都不会启动 Server、注册服务或覆盖配置与数据。本地安装使用 `powercontext config init`，继续阅读
@@ -66,8 +66,13 @@ Python 包版本为 `1.2.0`，对应 Git tag 为 `powercontext-v1.2.0`。使用 
 powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 ```
 
+需要交互选择宿主时，运行 `powercontext setup select --ref "powercontext-v$(powercontext --version)"`。
+
 PowerShell 也支持这里的双引号表达式。集成安装失败时，已安装的 Runtime 会保留，脚本返回错误并给出重试提示。
 安装成功不代表 Server 就绪或宿主工作流可用；仍需执行下文检查及集成文档中的验证。
+
+安装器在报告成功前验证版本和所选模式的命令。包安装成功后仍可能无法通过命令验证，此时旧可执行文件可能已被替换。
+请查看错误中指出的命令，再指定已知可用的 `--version` 重试。安装器不回滚包文件。
 
 ## 使用镜像重试依赖下载
 
@@ -81,13 +86,14 @@ PowerShell 也支持这里的双引号表达式。集成安装失败时，已安
 | Python 发行版 | `UV_PYTHON_INSTALL_MIRROR` | NJU python-build-standalone 镜像 | uv 默认渠道 |
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --region cn
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --index-url https://pypi.org/simple
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --region cn
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --index-url https://pypi.org/simple
 ```
 
 `--region auto|cn|global` 优先于 `POWERCONTEXT_INSTALL_REGION`。自动选择依次参考本地命名时区、locale 地区，最后采用
-全球源，不请求网络定位服务。自动镜像不可用时可回退官方源；包索引通过可用性和版本检查后，后续解析或文件下载失败
-由 uv 报告，不会再换源重试安装。显式配置的源不会自动回退。镜像可能有同步延迟：`latest` 指所选源中的最新兼容稳定版。
+全球源，不请求网络定位服务。自动镜像不可用时可回退官方源；中国区域包镜像可达时，即使缺少请求版本，也保持选中。
+解析或文件下载失败由 uv 报告，不会再换源重试安装。需要换源时使用 `--region global` 或显式指定来源。
+显式配置的源不会自动回退。镜像可能有同步延迟：`latest` 指所选源中的最新兼容稳定版。
 
 已有的 uv 索引环境变量和配置文件优先于自动包镜像。`--index-url` 只覆盖默认索引，额外 uv 索引仍保留其优先级。
 私有源凭据应使用 uv 认证配置，不放在脚本参数里。uv 不读取 `PIP_INDEX_URL` 或 `PIP_EXTRA_INDEX_URL`。
@@ -98,7 +104,7 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts 
 
 ```powershell
 irm https://powercontext.oceanbase.io/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1 --no-hosts --region cn --version 1.2.0
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --region cn --version 1.2.0
 ```
 
 已有 uv、兼容 Python 和完整依赖缓存时，可以使用 `UV_OFFLINE=1` 重装。这不等于离线发行包；缺少下载内容时会明确报错。
@@ -236,7 +242,7 @@ Server、客户端和 Agent 集成需一起升级。Dashboard 需要显式启用
 重新运行安装器可升级到最新稳定版；需要保持指定版本时，加上 `--version`：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 使用其他 Git ref 替换现有工具：

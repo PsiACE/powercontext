@@ -32,13 +32,13 @@ PowerContext 让上下文跟随工作，跨越不同的对话。你回来时，�
 推荐使用安装脚本：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 Windows 使用 PowerShell：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1)))"
 ```
 
 先执行安装器打印的 PATH 命令，再继续配置：

@@ -17,7 +17,7 @@ Codex 或 Claude 的订阅登录不会自动为 PowerContext Server 提供这些
 ## 1. 安装并进入配置向导
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 先执行安装器打印的 PATH 命令，再继续配置：

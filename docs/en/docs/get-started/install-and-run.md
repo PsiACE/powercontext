@@ -30,23 +30,22 @@ or installs uv and Python 3.12 in user-owned directories. It does not need admin
 macOS or Linux (Bash; `curl` or `wget` is required):
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 Windows (PowerShell 5.1 or newer):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1)))"
 ```
 
 Apply the PATH command printed at completion before running `powercontext` in your terminal. The installer does not
 edit shell startup files or the persistent Windows PATH. `UV_INSTALL_DIR` selects where a missing uv is installed;
 `UV_TOOL_BIN_DIR` selects the PowerContext executable directory.
 
-`--no-hosts` installs software without prompting for Agent integrations. Omit it in an interactive terminal to open
-`powercontext setup select`, or pass `--host codex` (repeatable) to select integrations explicitly. Agent setup needs
-Git and each host's prerequisites. A pipeline still reads host choices from the terminal; unattended execution must
-use `--no-hosts` or `--host`. The [capability matrix](../integrations/capabilities.md) describes host support.
+Installation runs unattended by default. Pass `--host codex` (repeatable) to install selected Agent integrations.
+Only Agent setup needs Git and each host's prerequisites. `--no-hosts` remains an optional way to state the default;
+it cannot be combined with `--host`. The [capability matrix](../integrations/capabilities.md) describes host support.
 
 For an existing remote Server, add `--profile client` to install only the CLI and Client dependencies. The default
 `--profile local` includes the local Server. Neither profile starts a Server, registers a service, or overwrites
@@ -72,9 +71,15 @@ version and uses its matching tag; it never uses the moving `master` branch for 
 powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 ```
 
+Use `powercontext setup select --ref "powercontext-v$(powercontext --version)"` for an interactive host picker.
+
 In PowerShell, the same double-quoted expression works. An integration failure leaves the installed Runtime usable
 and exits with an error and a retry instruction. Installation success does not establish Server readiness or host
 workflow correctness; use the checks below and the integration's own guide.
+
+The installer verifies the installed version and advertised commands before reporting success. A package can install
+successfully while command verification fails; in that case the old executable may already have been replaced. Review
+the named command error and rerun with a known working `--version`. The installer does not roll package files back.
 
 ## Retry dependency downloads with a mirror
 
@@ -89,14 +94,15 @@ change the uv or Python download location.
 | Python distributions | `UV_PYTHON_INSTALL_MIRROR` | NJU python-build-standalone mirror | uv default channels |
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --region cn
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts --index-url https://pypi.org/simple
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --region cn
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --index-url https://pypi.org/simple
 ```
 
 `--region auto|cn|global` overrides `POWERCONTEXT_INSTALL_REGION`. Auto selection uses a named local timezone, then the
 locale territory, then global; it makes no geolocation request. An unavailable automatic mirror can fall back to the
-official source. Once a package index passes its availability/version check, uv reports subsequent resolution or
-artifact failures without retrying installation against another index. Explicit sources never fall back automatically.
+official source. A reachable China package mirror remains selected even if it lacks the requested release; uv reports
+resolution or artifact failures without retrying against another index. Use `--region global` or an explicit source
+to select another index. Explicit sources never fall back automatically.
 A mirror may lag PyPI: `latest` means the newest compatible stable release on the chosen index.
 
 Existing uv index settings and configuration files take precedence over automatic package mirrors. An explicit
@@ -110,7 +116,7 @@ To inspect the installer or pass several options in PowerShell, save it first:
 
 ```powershell
 irm https://powercontext.oceanbase.io/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1 --no-hosts --region cn --version 1.2.0
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --region cn --version 1.2.0
 ```
 
 Cached reinstallation with `UV_OFFLINE=1` can work when uv, compatible Python, and all required packages are already
@@ -262,7 +268,7 @@ see [Connect to a remote Server](../operate/connect-remote-server.md).
 To upgrade to the latest stable version, rerun the installer. To keep an exact release, add `--version`:
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 To replace the installed tool with another Git ref:

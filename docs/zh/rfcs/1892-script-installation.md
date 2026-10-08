@@ -35,13 +35,13 @@ Python 发行版也来自不同渠道：只更换 PyPI 索引无法解决 Python
 macOS 或 Linux：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --no-hosts
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 ```
 
 Windows，使用 PowerShell 5.1 或更新版本：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1))) --no-hosts"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://powercontext.oceanbase.io/install.ps1)))"
 ```
 
 默认 `local` profile 安装 CLI、Client 和本地 Server 依赖。`--profile client` 只安装连接已有 Server 所需的 CLI 和
@@ -59,9 +59,9 @@ Client 依赖。Profile 与宿主选择相互独立：选择数据库角色不�
 curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.2.0 --host codex
 ```
 
-`--host` 可以重复，`--no-hosts` 跳过集成安装。两者都不指定时，交互终端会打开 `powercontext setup select`；
-没有交互终端则在安装依赖前报错。Bash 管道安装使用 `/dev/tty` 读取选择，将终端输入与脚本输入分开。
-安装集成仍需 Git 和各宿主自己的前置条件。
+默认安装无需 Git 或宿主选择界面，可以无人值守执行。`--host` 可以重复，用于显式安装集成；这时需要 Git 和
+各宿主自己的前置条件。`--no-hosts` 显式表达默认行为，不能与 `--host` 同时使用。安装后需要交互选择宿主时，运行
+`powercontext setup select --ref "powercontext-v$(powercontext --version)"`。
 
 已安装的 CLI 提供准确版本，形成 `powercontext-vVERSION`。宿主安装不再次解析 `latest`，也不默认使用 `master`。
 宿主安装失败时，保留已安装的 Runtime，脚本返回非零状态，并提示按该 tag 重试 setup；各适配器提供其已有的宿主结果。
@@ -106,14 +106,15 @@ pip 的索引环境变量不属于 uv 配置。Python 和 uv 下载覆盖项与�
 
 ## 版本和 profile 语义
 
-- `latest` 向 `uv tool install --upgrade --prerelease disallow` 传入未固定版本的 profile requirement。
-  它表示所选解释器及已配置源兼容的最新稳定版，不一定是另一镜像上最近上传的版本。解析失败直接报告，不改换 requirement。
+- `latest` 向 `uv tool install --upgrade --reinstall-package powercontext --prerelease disallow` 传入未固定版本的 profile requirement。
+  它表示所选解释器及已配置源兼容的最新稳定版，不一定是另一镜像上最近上传的版本。重新安装 PowerContext 包，避免已有预发布版本绕过稳定版选择。解析失败直接报告，不改换 requirement。
 - 准确版本使用 `==VERSION`，格式为 `X.Y.Z`，可追加 `aN`、`bN` 或 `rcN`。支持显式预发布版本；
   `--version` 不接受源码 ref、版本范围或 URL，也不支持 0.1.0 之前的版本。
 - `local` 使用 `powercontext[cli,server]`；`client` 使用 `powercontext[cli]`，后者已经包含 Client 依赖。
   使用不同 profile 重跑会替换该工具的依赖集合；自行添加的 extras 应通过文档中的手动安装路径维护。
-- 安装后的可执行文件必须报告发行版本；显式请求必须与其一致。通过检查后才打印安装成功。
-  后续宿主安装失败不会移除可用的 Runtime。
+- `uv tool dir --bin` 中的可执行文件必须报告发行版本；显式请求必须与其一致。所有 profile 都需要通过 CLI help、
+  `capabilities --help`；`local` 还需要通过 `config init --help` 和 `server run --help`。
+  全部通过后才打印安装成功。这些检查验证导入和命令可用性，不代表 Server 就绪或 Agent 工作流可用。
 
 uv 使用安装器维护的固定引导版本，与 PowerContext 发行版本无关。已有 uv 直接复用，不悄悄升级。
 Python 发现排除虚拟环境，避免项目 venv 意外成为安装前提。没有兼容的 Python 3.11+ 时，通过 uv 安装 Python 3.12。
@@ -125,9 +126,9 @@ Python 发现排除虚拟环境，避免项目 venv 意外成为安装前提。�
 uv 镜像文件下载失败时可以尝试官方源。Python 的准确构建 URL 由 uv 提供，安装前检查对应镜像文件；
 自动 Python 镜像安装失败后，使用 uv 默认渠道重试。
 
-自动包源选择检查 PowerContext 索引页；准确版本还检查索引是否列出该版本。中国区域索引不可达或尚未同步指定版本时，
-回退 PyPI。索引选定后，依赖解析和文件下载错误交给 uv 报告，不再换源重试已经尝试的工具安装。
-显式索引不经过 shell 探测，由 uv 正确处理认证和配置。
+中国区域自动包源选择对 PowerContext 索引页发起有超时限制的可用性请求；镜像不可达时，在工具安装前回退 PyPI。
+可达镜像即使缺少请求版本也保持选中，由 uv 报告解析失败。全球源和显式来源直接交给 uv。脚本不解释索引 HTML、
+wheel 文件名、编码 URL、包兼容性或认证，也不在一次可能已经改变安装文件的工具安装尝试后换源重试。
 
 Shell 环境变化局限于安装器进程；PowerShell 在 `finally` 恢复临时来源变量。不用 shell 解析或改写已有配置文件，
 只清理由安装器创建的临时下载目录。保留 `UV_INSTALL_DIR`、`UV_TOOL_DIR` 和 `UV_TOOL_BIN_DIR` 的位置控制。
@@ -137,26 +138,39 @@ Shell 环境变化局限于安装器进程；PowerShell 在 `finally` 恢复临�
 安装器不读取或改写 `.env`、凭据、数据目录或数据库 schema，也不停止或重启运行中的服务。
 启动升级后的 Server 时，用户按现有升级和迁移指南操作。准确版本重试可以使用缓存；`latest` 则明确允许升级。
 
-`UV_OFFLINE=1` 只支持已有 uv、兼容 Python 和全部依赖时的缓存重装，不承诺完整离线发行包。
-引导依赖安装后发生失败，会保留这些依赖供重试；宿主安装失败保留 Runtime。不提供跨组件回滚，
-也不修复无关宿主配置。
+`UV_OFFLINE=1` 只支持已有 uv、兼容 Python 和全部依赖时的缓存重装，同时禁用安装器源探测和 uv 网络访问，
+不承诺完整离线发行包。后续步骤失败会保留已安装的前置依赖。准确版本不存在导致的解析失败会保留原工具；
+但 uv 接受新包后，验证失败可能发生在旧可执行文件已被替换之后。此时明确报告“包已安装，验证失败”，允许通过准确
+版本重试，不声称已经回滚。后续宿主安装失败则保留已验证的 Runtime。不提供跨组件回滚，也不修复无关宿主状态。
 
 Windows 保持产品的试验性支持状态。原生验收在 Linux、macOS 和 Windows 执行；具体宿主支持范围仍由各集成的能力契约决定。
 
-## 验收
+## 可执行契约与验收
 
-`tests/native/test_installation.py` 执行真实 shell 安装器、uv、安装后的 CLI 和 HTTP Server。
-从被测提交构建 wheel，使用发行版形式的元数据和带校验和的准确文件约束。验收包括：
+`tests/fixtures/installation/*.json` 定义两个 shell 适配器共享的公开输入与预期结果。
+`tests/test_installation_contract.py` 使用真实 uv 和小型离线 fixture wheel 执行宿主显式选择、profile、准确版本
+校验、命令缺失和宿主部分失败用例。用例观察安装后的能力、所选宿主、发行 ref 和退出结果，不固定内部函数边界或
+调用顺序。同一组用例在各操作系统原生执行；模拟宿主执行不等于真实 Agent 验收。
+
+`tests/native/test_installation.py` 执行真实 shell 安装器、uv、安装后的 PowerContext CLI 和 HTTP Server。
+从被测提交构建 wheel，使用发行版形式的元数据和直接本地文件约束。该约束选定被测产物，不构成独立执行的校验和验证。
+验收包括：
 
 - 全球源及中国区域源下缺少 uv/Python 的安装、已有工具与配置、包含空格和中文的路径；
 - 通过受控包索引解析真实稳定版和预发布版 wheel、默认升级、指定版本，以及版本不存在时保留原安装；
 - Client-only 安装及 profile 切换，安装过程不创建本地 Server 状态；
 - `.env` 生成与验证、就绪检查、Memory 保存与搜索、离线缓存重装及重启后的回读；
-- 显式索引失败、非交互模式缺少选择、Bash 管道终端选择，以及 PowerShell 下载脚本后执行 scriptblock 的入口。
+- 显式索引失败、宿主选项冲突、无人值守与 Bash 管道安装，以及 PowerShell 下载脚本后执行 scriptblock 的入口。
 
 独立 CI 矩阵在三个操作系统执行上述套件。发布引用检查保持脚本的 `latest` 默认值，同时更新显式版本示例。
 网站验证检查文档链接和静态构建。语法检查本身不证明 Windows 或 macOS 安装可用；这些测试也不声称
 真实 Agent 宿主已完成采集与召回工作流。
+
+[可复现的第一性原理和消融研究](https://github.com/PsiACE/powercontext/tree/feat/installation-contract/experiments/installation)
+固定上游源码、安装器基线、uv 版本、受控输入和
+观测结果。它们支持以下决策：删除隐式宿主选择仍可保留显式宿主失败语义；基于文件名的预检查会拒绝合法编码包 URL；
+只有预发布版本的索引需要显式稳定版策略；包安装成功后入口仍可能不可用。研究与持续维护的产品验收分开，分别说明
+实际执行范围和限制。
 
 # Drawbacks
 
@@ -169,16 +183,33 @@ Bash 和 PowerShell 会重复部分编排和来源选择策略。自动镜像增
 源码安装适合开发，不作为默认发行渠道。把公共脚本固定在某个 PowerContext 版本，会使新用户在网站重新发布前
 一直安装过期版本。
 
-独立安装引擎和不可变组件清单可以支持更丰富的安装计划，但不是包引导及可靠来源控制的前提。
-复用现有包管理器和宿主适配器，使本项工作可以独立交付，同时保留可用的 CLI 契约。
+没有 Python 的机器仍需要为 Python 引擎提供引导。生成 shell 适配器仍需原生行为测试，还会增加生成器和版本管理。
+共享契约用例可以提供可执行的一致性约束，无需分发新的运行时资源。仅当具体策略确有需要时再引入引擎或生成器。
+
+分发独立版本的原始产物时，不可变清单和额外安装账本有其用途。这里由 uv 管理 wheel 解析、工具环境及自身记录；
+安装器观察实际入口，通过显式的 uv 安装重试修复组件，避免同一安装状态出现两个权威来源。
 
 # Prior art
 
 [RFC 1408](https://github.com/oceanbase/powercontext/pull/1408) 定义了安装、配置和诊断的职责分离，
 独立的 Runtime profile 与宿主选择、组件级恢复和显式服务注册。
 [RFC 1299](1299_local_server_availability_and_service_installation.md) 定义个人服务生命周期。
-[Bub](https://github.com/bubbuild/bub/tree/main/website/public) 提供复用 uv 并报告后续配置步骤的 Bash/PowerShell 引导入口。
-[uv](https://docs.astral.sh/uv/guides/tools/) 提供独立工具环境、Python 安装、包索引和缓存。
+
+[Magpie 安装器](https://github.com/yetone/magpie/blob/023f5aaad2ecd41ae04390166b9cac9a0b300d81/site/public/install.sh)
+将权威发行源与产物镜像分开，在替换二进制前检查校验和。它直接拥有原始二进制的分发职责，因此需要这层验证；
+其清单不能替代 Python 包标准。
+
+[Lody daemon 安装契约](https://github.com/LodyAI/Lody/blob/811b573329716b23e1144e5d66211ea4ddfb0dfd/specs/daemon-upgrade-installation.md)
+解析并执行实际 npm 安装位置，检查替换后的就绪状态。它另有直接管理原始压缩包的
+[Agent runtime](https://github.com/LodyAI/Lody/blob/811b573329716b23e1144e5d66211ea4ddfb0dfd/apps/cli/src/agent/managed-agent-runtime.ts)，
+因此拥有清单和完成记录。本方案采用实际可执行文件检查，服务就绪仍归服务边界负责。其公开 tag-release 工作流不发布安装器。
+
+[Bub](https://github.com/bubbuild/bub/tree/b4a61bf1326729a024161d22ba20019b8500f907/website/public) 先引导 uv，再运行
+Python preset 解析器。它对终端和 macOS Bash 的修复支持显式宿主安装与原生测试的必要性。
+[uv 工具环境](https://docs.astral.sh/uv/concepts/tools/)及
+[配置规则](https://docs.astral.sh/uv/concepts/configuration-files/)定义复用的环境与来源语义；
+[Python Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/)定义包索引解释规则。
+Shell 正则无法实现这些契约。
 
 # Unresolved questions
 
