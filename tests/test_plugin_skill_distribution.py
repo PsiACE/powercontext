@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 
@@ -99,3 +101,22 @@ def test_resource_path_escape_rejected(tmp_path: Path, unsafe: str) -> None:
     target = {"files": {"SKILL.md": unsafe}}
     with pytest.raises(ValueError, match="contained relative"):
         render_skill(tmp_path, target)
+
+
+def test_cli_rejects_symlink_above_skill_directory(tmp_path: Path) -> None:
+    outside = tmp_path / "foreign"
+    outside.mkdir()
+    alias = tmp_path / "output"
+    try:
+        alias.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("native symlinks unavailable")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/generate_plugin_skills.py"), "--target", "codex", "--output", str(alias)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "symlink output" in result.stderr
+    assert not list(outside.iterdir())

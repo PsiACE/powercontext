@@ -84,13 +84,11 @@ def validate_skill(files: Mapping[str, bytes]) -> None:
 def inspect_output(destination: Path, files: Mapping[str, bytes], retired: list[str]) -> list[str]:
     """Find resource drift and refuse symlink traversal before any writes."""
     changed = []
+    # Canonical OS temporary-directory ancestors may be aliases (for example /var on macOS).
+    system_ancestors = set(Path(tempfile.gettempdir()).absolute().parents)
     for name in [*files, *retired]:
         path = destination / relative_path(name)
-        if path.is_symlink() or any(
-            parent.is_symlink()
-            for parent in path.parents
-            if parent == destination or parent.is_relative_to(destination)
-        ):
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent not in system_ancestors):
             raise ValueError(f"Refusing symlink output path: {path}")  # noqa: TRY003
         if name in retired:
             if path.exists():
