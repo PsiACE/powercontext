@@ -4,7 +4,7 @@ The runtime bootstrap can remain shell code delegated to uv. Host selection is a
 
 ## Reproduction and scope
 
-Run `python experiments/installation/bootstrap/run.py` from any directory. The harness reads the checkout's installer and creates a temporary directory beneath `~/.cache/powercontext-installation-research/bootstrap`, deleting it at completion. It requires Bash and standard Linux command-line tools. `results.json` is the bounded run on baseline `8b2ea957`; it contains no downloads or personal configuration. The interpreter-free PATH belongs only to child processes; Python runs the harness.
+Run `python experiments/installation/bootstrap/run.py` from any directory. The harness reads the installer from pinned Git revision `8b2ea957` (override explicitly with `--baseline REV`) and creates a temporary directory beneath `~/.cache/powercontext-installation-research/bootstrap`, deleting it at completion. It requires Bash and standard Linux command-line tools. `results.json` is the bounded run on baseline `8b2ea957`; it contains no downloads or personal configuration. The interpreter-free PATH belongs only to child processes; Python runs the harness.
 
 Bash is executed natively on Linux. uv, Python discovery, the installed CLI and a failing host adapter are executable fixtures. No actual package installation, Windows, macOS, network mirror, or host application is exercised by this harness. A separate native read-only check ran uv 0.11.14's `python find --system --no-project --no-python-downloads '>=3.11,<4'` and found a managed CPython 3.13. These observations do not qualify platform support.
 

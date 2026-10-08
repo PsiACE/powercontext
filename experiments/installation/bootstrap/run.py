@@ -1,5 +1,6 @@
 """Run bounded shell-boundary ablations without network or user-state writes."""
 
+import argparse
 import json
 import platform
 import shutil
@@ -37,7 +38,11 @@ def explicit_hosts(source: str) -> str:
 
 def main() -> None:
     CACHE.mkdir(parents=True, exist_ok=True)
-    source = (ROOT / "website/public/install.sh").read_text()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline", default="8b2ea957", help="Git revision containing the installer")
+    baseline = parser.parse_args().baseline
+    revision = subprocess.check_output(["git", "rev-parse", baseline], cwd=ROOT, text=True).strip()  # noqa: S603
+    source = subprocess.check_output(["git", "show", f"{revision}:website/public/install.sh"], cwd=ROOT, text=True)  # noqa: S603
     results = []
     with tempfile.TemporaryDirectory(prefix="boundary-", dir=CACHE) as directory:
         work = Path(directory)
@@ -99,9 +104,10 @@ def main() -> None:
                     "commands": trace.read_text().splitlines(),
                     "error": result.stderr.strip(),
                 })
+        (work / "help.sh").write_text(source)
         # Engine startup changes only the interpreter prerequisite: same Python-free PATH.
         for name, command in [
-            ("shell_help", ["/bin/bash", str(ROOT / "website/public/install.sh"), "--help"]),
+            ("shell_help", ["/bin/bash", str(work / "help.sh"), "--help"]),
             ("python_engine_help", ["/bin/sh", "-c", 'python3 -c "print(123)"']),
         ]:
             result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=15)  # noqa: S603
@@ -113,7 +119,7 @@ def main() -> None:
                     "os": platform.platform(),
                     "python_harness": platform.python_version(),
                     "bash": subprocess.check_output(["/bin/bash", "--version"], text=True).splitlines()[0],
-                    "baseline": "8b2ea957",
+                    "baseline": revision,
                 },
                 "results": results,
             },
