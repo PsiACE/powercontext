@@ -1,3 +1,17 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run bounded shell-boundary ablations without network or user-state writes."""
 
 import argparse
@@ -10,6 +24,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 CACHE = Path.home() / ".cache/powercontext-installation-research/bootstrap"
+
+
+def executable(name: str) -> str:
+    """Require a native experiment prerequisite with a clear diagnostic."""
+    path = shutil.which(name)
+    if path is None:
+        raise SystemExit(f"Required experiment executable is unavailable: {name}")  # noqa: TRY003
+    return path
 
 
 def runtime_only(source: str) -> str:
@@ -41,15 +63,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", default="8b2ea957", help="Git revision containing the installer")
     baseline = parser.parse_args().baseline
-    revision = subprocess.check_output([shutil.which("git"), "rev-parse", baseline], cwd=ROOT, text=True).strip()  # noqa: S603
-    source = subprocess.check_output([shutil.which("git"), "show", f"{revision}:website/public/install.sh"], cwd=ROOT, text=True)  # noqa: S603
+    revision = subprocess.check_output([executable("git"), "rev-parse", baseline], cwd=ROOT, text=True).strip()  # noqa: S603
+    source = subprocess.check_output(  # noqa: S603 - revision is resolved locally
+        [executable("git"), "show", f"{revision}:website/public/install.sh"], cwd=ROOT, text=True
+    )
     results = []
     with tempfile.TemporaryDirectory(prefix="boundary-", dir=CACHE) as directory:
         work = Path(directory)
         tools = work / "tools"
         tools.mkdir()
         for name in ("uname", "mktemp", "rm", "dirname", "cat", "sh", "curl"):
-            (tools / name).symlink_to(shutil.which(name))
+            (tools / name).symlink_to(executable(name))
         trace = work / "trace"
         installed = work / "installed"
         installed.mkdir()
@@ -84,7 +108,7 @@ def main() -> None:
                 # Add Git only to host-failure inputs; both variants receive identical tools.
                 git = tools / "git"
                 if scenario == "host_failure" and not git.exists():
-                    git.symlink_to(shutil.which("git"))
+                    git.symlink_to(executable("git"))
                 trace.write_text("")
                 (work / "state").unlink(missing_ok=True)
                 path = work / "install.sh"
