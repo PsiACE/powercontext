@@ -341,9 +341,22 @@ main() {
     tool_bin=$("$UV_BIN" tool dir --bin)
     export PATH="$tool_bin:$PATH"
     local installed_version
-    installed_version=$("$tool_bin/powercontext" --version) || fail "The installed CLI could not start."
-    [[ "$installed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]] || fail "The installed CLI did not report a release version."
-    [[ "$VERSION" == latest || "$VERSION" == "$installed_version" ]] || fail "The installed version differs from the requested release."
+    installed_version=$("$tool_bin/powercontext" --version) || fail "Package installed, but CLI version verification failed. Check uv output and retry installation."
+    [[ "$installed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]] || fail "Package installed, but CLI release version verification failed. Check uv output and retry installation."
+    [[ "$VERSION" == latest || "$VERSION" == "$installed_version" ]] || fail "Package installed, but the CLI version differs from the requested release. Retry installation with the intended version."
+    # Help checks import and command availability without configuring or starting a service.
+    "$tool_bin/powercontext" --help >/dev/null ||
+        fail "Package installed, but CLI help verification failed. Retry installation after reviewing the command error."
+    "$tool_bin/powercontext" capabilities --help >/dev/null ||
+        fail "Package installed, but Client command verification failed (capabilities --help). Retry installation after reviewing the command error."
+    "$tool_bin/powercontext" setup select --help >/dev/null ||
+        fail "Package installed, but integration command verification failed (setup select --help). Retry installation after reviewing the command error."
+    if [[ "$PROFILE" == local ]]; then
+        "$tool_bin/powercontext" config init --help >/dev/null ||
+            fail "Package installed, but configuration command verification failed (config init --help). Retry installation after reviewing the command error."
+        "$tool_bin/powercontext" server run --help >/dev/null ||
+            fail "Package installed, but Server command verification failed (server run --help). Retry installation after reviewing the command error."
+    fi
     VERSION=$installed_version
     printf 'Runtime installed: %s (%s)\n' "$VERSION" "$PROFILE"
     printf 'For a new terminal, add these directories to PATH if needed:\n'

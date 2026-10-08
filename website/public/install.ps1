@@ -313,9 +313,22 @@ try {
     $Cli = Join-Path $ToolBin.Trim() 'powercontext.exe'
     $env:PATH = "$($ToolBin.Trim());$env:PATH"
     $InstalledVersion = & $Cli --version
-    if ($LASTEXITCODE -ne 0) { throw 'The installed CLI could not start.' }
-    if ($InstalledVersion -notmatch '^\d+\.\d+\.\d+((a|b|rc)\d+)?$') { throw 'The installed CLI did not report a release version.' }
-    if ($Version -ne 'latest' -and $Version -ne $InstalledVersion) { throw 'The installed version differs from the requested release.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Package installed, but CLI version verification failed. Check uv output and retry installation.' }
+    if ($InstalledVersion -notmatch '^\d+\.\d+\.\d+((a|b|rc)\d+)?$') { throw 'Package installed, but CLI release version verification failed. Check uv output and retry installation.' }
+    if ($Version -ne 'latest' -and $Version -ne $InstalledVersion) { throw 'Package installed, but the CLI version differs from the requested release. Retry installation with the intended version.' }
+    # Help checks import and command availability without configuring or starting a service.
+    & $Cli --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Package installed, but CLI help verification failed. Retry installation after reviewing the command error.' }
+    & $Cli capabilities --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Package installed, but Client command verification failed (capabilities --help). Retry installation after reviewing the command error.' }
+    & $Cli setup select --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Package installed, but integration command verification failed (setup select --help). Retry installation after reviewing the command error.' }
+    if ($RuntimeProfile -eq 'local') {
+        & $Cli config init --help | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Package installed, but configuration command verification failed (config init --help). Retry installation after reviewing the command error.' }
+        & $Cli server run --help | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Package installed, but Server command verification failed (server run --help). Retry installation after reviewing the command error.' }
+    }
     $Version = $InstalledVersion.Trim()
     Write-Host "Runtime installed: $Version ($RuntimeProfile)"
     $PathPrefix = ("$($ToolBin.Trim());$(Split-Path -Parent $Uv)").Replace("'", "''")
