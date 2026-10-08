@@ -375,7 +375,7 @@ def show_command(
     public = {field["environment"]: field for field in view["fields"].values() if "value" in field}
     for name in sorted(values):
         # Unrecognized assignments remain present but their values are never public.
-        value = values[name] if name in public else "<redacted>"
+        value = public[name]["value"] if name in public else "<redacted>"
         typer.echo(f"{name}={value}")
 
 

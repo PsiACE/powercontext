@@ -155,3 +155,29 @@ def test_multiline_unknown_assignment_survives_partial_apply(tmp_path):
     apply_configuration(request(path, {"timeout": 14.0}))
     assert "BUSINESS_CREDENTIAL='first\nsecond'\n" in path.read_text()
     assert "first" not in json.dumps(inspect_configuration(path, "client"))
+
+
+@pytest.mark.parametrize("target,name", [("client", "SERVER_URL"), ("server", "PUBLIC_URL")])
+def test_show_does_not_echo_credentials_in_malformed_endpoint(tmp_path, target, name):
+    from typer.testing import CliRunner
+
+    from powercontext.cli.config import app
+
+    path = tmp_path / ".env"
+    path.write_text(f"POWERCONTEXT_{target.upper()}_{name}=https://user:private-fixture@example.com\n")
+    view = inspect_configuration(path, target)
+    assert "private-fixture" not in json.dumps(view)
+    assert view["fields"][name.lower()]["state"] == "invalid"
+    for args in ([], ["--json"]):
+        result = CliRunner().invoke(app, ["show", "--target", target, "--env-file", str(path), *args])
+        assert result.exit_code == 0
+        assert "private-fixture" not in result.output
+
+
+def test_duplicate_assignment_rejected_before_apply(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("POWERCONTEXT_CLIENT_TIMEOUT=10\nPOWERCONTEXT_CLIENT_TIMEOUT=20\n")
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="duplicate"):
+        inspect_configuration(path, "client")
+    assert path.read_bytes() == original
