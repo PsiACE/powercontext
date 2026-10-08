@@ -5,7 +5,7 @@ description: Discover, inspect, preview and apply typed local .env changes with 
 
 - Proposal Name: `agent_operable_configuration`
 - Start Date: 2026-10-09
-- Status: Implemented
+- Status: Proposed
 - RFC PR: Not opened
 - Related RFC: [RFC 1733](1733-usability-and-agent-workflows.md)
 
@@ -66,6 +66,8 @@ Protect typed field discovery, unknown-field rejection, preview purity, partial 
 invalid combinations, stale and concurrent writer conflicts, mode-0600 readback, multiline syntax and accurate activation.
 Run public CLI scenarios and cross-process writes. Real network/model/host acceptance is separate.
 
+Linux acceptance executes real subprocess concurrency and a fresh `[cli]` wheel with Typer 0.27.3, no Click and no SQLAlchemy. The Windows portability workflow includes the configuration suite; Windows/macOS execution has not been observed locally.
+
 # Drawbacks
 
 Only the public bounded scalar field catalog is writable. Provider/database editing remains with existing setup interfaces. Unix files use mode 0600; Windows relies on the user's filesystem ACLs and does not claim Unix permission enforcement. Locks coordinate these writers, not arbitrary editors. Changed assignments are normalized; unrelated comments and multiline assignments remain intact.
@@ -89,4 +91,3 @@ remain independently deliverable and do not block the local static operations.
 
 Provider-owned editing and independently authorized online checks can extend this contract when required. Native secret storage and observed running-process activation remain separate work.
 
-Linux acceptance executes real subprocess concurrency and a fresh `[cli]` wheel with Typer 0.27.3, no Click and no SQLAlchemy. The Windows portability workflow includes the configuration suite; Windows/macOS execution has not been observed locally.
