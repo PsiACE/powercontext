@@ -12,8 +12,8 @@ python experiments/installation/release/run.py \
 
 The harness creates small synthetic wheels, invokes the real uv executable, and executes its installed launcher.
 It uses private tool/cache directories and no package network. It removes its private working directory afterward.
-Results were observed on Linux with uv 0.11.14 and Python 3.14. The bootstrap script pins a newer uv version; these
-results do not qualify that version or Windows/macOS. Synthetic wheels establish installer semantics, not production
+Results were observed on Linux with uv 0.11.14 and the installer-pinned uv 0.12.23, using Python 3.14.
+Both runs produced the same case outcomes; these results do not qualify Windows/macOS. Synthetic wheels establish installer semantics, not production
 PowerContext readiness or real Agent acceptance.
 
 ## Controlled ablations
@@ -78,6 +78,7 @@ The smallest independently useful change is profile capability verification befo
 4. On verification failure, state that package installation completed but verification failed, name the failed command,
    and preserve uv/prerequisites and user data for explicit retry. Do not claim old Runtime preservation after package acceptance.
 
+PowerContext source baseline: [`8b2ea957`](https://github.com/PsiACE/powercontext/commit/8b2ea957).
 PowerContext's `create_cli` skips providers raising `ModuleNotFoundError`; its `--version` callback reads distribution
 metadata. Thus a missing Server dependency can leave version reporting successful while omitting the server command.
 A profile smoke contract can be literal as-code command lists for `client` and `local`, consumed by both wrappers or
