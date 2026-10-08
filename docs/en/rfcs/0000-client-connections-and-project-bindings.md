@@ -80,4 +80,3 @@ acceptance. They do not block this implementation.
 # Future possibilities
 
 Named connections, additional host binding keys, and native secret stores can extend this contract when supported consumers and native acceptance exist.
-
