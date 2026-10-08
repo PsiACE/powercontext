@@ -29,24 +29,27 @@ The existing retry bootstrap already demonstrates a separate namespace surviving
 
 The [operations experiment](../../../experiments/usability/operations/README.md) executes stopped-Server and
 broken-import failures, a same-environment sibling-entry ablation, and exact owned/foreign/missing definition inspection.
-The ablation establishes a small import boundary; it does not qualify shipped service lifecycle or package repair.
-Existing behavior tests protect owned removal and partial-failure reporting. Native lifecycle acceptance remains
-required on each claimed platform.
+The installed-wheel qualification verifies the actual built wheel with Runtime dependencies absent. A separately
+labeled controlled wheel verifies named uv repair and real Linux systemd ownership/start/stop/uninstall using a
+fixture process. Existing behavior tests protect removal and partial failure. These results do not qualify a live
+PowerContext Server on macOS or Windows; matching native acceptance remains required for those claims.
 
 # Guide-level explanation
 
 ```text
 powercontext-ops
-+-- status [--json]
-+-- doctor [--json]
++-- status
++-- doctor
 +-- server
 |   `-- start | stop | restart | logs | uninstall
-`-- repair --version EXACT --profile local|client [--index-url HTTPS] [--python ABSOLUTE_VENV_PYTHON]
+`-- repair --target uv-tool --version EXACT --profile local|client [--index-url HTTPS]
 ```
 
 `status` reads local software presence, definition, registration, manager ownership/state, and exact log location.
-`doctor` adds a bounded Runtime CLI startup probe and selected endpoint liveness/readiness checks. Report facts
-independently, including unsupported manager and unknown state. Neither command starts a process or changes files.
+`doctor` adds a bounded Runtime CLI startup probe using the recorded service interpreter, or the invoking interpreter
+when no service is registered. Output is JSON. Report facts independently, including unsupported manager and unknown
+state. The probe does not start a Server; neither command changes configuration or data. Server liveness remains
+explicitly unknown until checked through the existing Runtime health interface.
 Local inspection remains available when the native manager or endpoint is unavailable.
 
 Server lifecycle uses the existing one-per-user native identity and recorded launcher/endpoint. Before mutations,
@@ -65,17 +68,21 @@ configuration, and business data remain. Package removal and data purging are ou
 Default repair addresses uv's named `powercontext` tool and delegates environment/package replacement to uv.
 An exact release and Runtime profile are required; no `latest`, version substitution, or automatic source fallback.
 An explicit default index follows uv's normal additional-index priority and authentication configuration. Package,
-uv bootstrap, and Python download controls remain independent.
+uv bootstrap, and Python download controls remain independent. Report the requested explicit index or current uv
+configuration as source selection; no stable public uv API proves the original installation source. Reusing a
+private source requires the operator to supply the same explicit index or configuration. Do not reconstruct private
+receipts or claim preservation of unknown original provenance.
 
-An optional explicit interpreter is a user-selected virtual environment. Inspect its interpreter/prefix and
-`powercontext` distribution metadata before mutation; reject system Python, absent/ambiguous identity, or a target
-that is not the requested environment. This path does not infer permission to change another Python installation.
-If its safe identity cannot be established, report the uv/bootstrap recovery action instead.
+Manual-environment repair is outside this bounded command set. Do not infer ownership from the invoking
+interpreter. `--target uv-tool` selects the named tool under the current uv configuration; it can differ from the
+installation invoking Ops. Resolve the selected executable directory through `uv tool dir --bin`, verify its Ops
+launcher and exact package version after installation, and report its Runtime launcher and startup result. Never
+claim that a different invoking installation was repaired.
 
-Repair never starts, stops, or restarts a service automatically. If the selected Runtime backs an active owned
-service, require an explicit stop before replacement. Keep stopped services stopped. Serialize native controls and
+Repair never starts, stops, or restarts a service automatically. An installed owned service must be demonstrably inactive
+before replacement; otherwise require an explicit stop. Keep stopped services stopped. Serialize native controls and
 repair against the existing native-registration lock. After uv succeeds, report the actual installed version and
-CLI startup result. A failed verification leaves the observed package/registration state visible; it is not a
+CLI startup result separately. A failed verification leaves the observed package/registration state visible; it is not a
 successful repair or a promise of program rollback. No operation changes database format or claims data recovery.
 
 The existing wheel supplies one small sibling namespace and console entry. Cleanly relocate shared stdlib native
@@ -89,14 +96,14 @@ requires an explicit caller/distribution plan, rather than permanent aliases int
 Build/install the actual release wheel and execute `powercontext-ops` with Server stopped, Runtime dependency imports
 blocked, and Runtime startup failing. Verify local status, exact ownership refusal, logs, stop/start/restart, and
 uninstall through matching native managers. Controlled manager/file fixtures establish local protocol handling only.
-Exercise exact uv repair, source failure, unavailable release, wrong/system interpreter, active-service refusal,
-and interrupted repair; inspect actual resulting software and retained configuration/data. Qualify whole-environment
+Exercise exact uv repair, source failure, unavailable release, active-service refusal, and retained state after repair failure; inspect actual resulting software and retained configuration/data. Qualify whole-environment
 loss as a bootstrap recovery boundary, not standalone command success.
 
 # Drawbacks
 
 A separate executable is a small discoverability cost and an incremental step toward RFC 1733's independent local
-operations. 
+operations.
+
 # Rationale and alternatives
 
 A managed-runtime record and universal dispatcher would add authorities not justified by the demonstrated

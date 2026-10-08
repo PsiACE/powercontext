@@ -36,7 +36,6 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.runtime.composition import open_builtin_runtime
 from powercontext.builtin.runtime.config import BuiltinConfig
 from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
-from powercontext.cli.env_file import environment_context
 from powercontext.cli.inference_notice import write_inference_capability_notice
 from powercontext.server.authz import PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control
@@ -55,6 +54,7 @@ from powercontext.server.settings import (
     UnauthenticatedNonLoopbackBindError,
 )
 from powercontext.server.tracing import configure_server_tracing
+from powercontext_operations.env_file import environment_context
 
 HELP_OPTION_NAMES = ("-h", "--help")
 

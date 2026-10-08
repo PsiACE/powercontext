@@ -18,20 +18,20 @@ from __future__ import annotations
 
 import sys
 
-from powercontext.service.adapters.base import NativeServiceAdapter, UnsupportedAdapter
+from powercontext_operations.adapters.base import NativeServiceAdapter, UnsupportedAdapter
 
 
 def native_service_adapter() -> NativeServiceAdapter:
     if sys.platform == "linux":
-        from powercontext.service.adapters.systemd import SystemdUserAdapter
+        from powercontext_operations.adapters.systemd import SystemdUserAdapter
 
         return SystemdUserAdapter()
     if sys.platform == "darwin":
-        from powercontext.service.adapters.launchd import LaunchdUserAdapter
+        from powercontext_operations.adapters.launchd import LaunchdUserAdapter
 
         return LaunchdUserAdapter()
     if sys.platform == "win32":
-        from powercontext.service.adapters.windows import WindowsTaskSchedulerAdapter
+        from powercontext_operations.adapters.windows import WindowsTaskSchedulerAdapter
 
         return WindowsTaskSchedulerAdapter()
     return UnsupportedAdapter(f"personal service installation is not supported on {sys.platform}")

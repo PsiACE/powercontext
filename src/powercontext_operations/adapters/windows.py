@@ -27,15 +27,15 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from pathlib import Path
 
-from powercontext.service._windows_command import run_windows_command
-from powercontext.service.adapters.base import (
+from powercontext_operations._windows_command import run_windows_command
+from powercontext_operations.adapters.base import (
     atomic_write,
     decode_metadata,
     encode_metadata,
     inspect_artifact,
     service_python_executable,
 )
-from powercontext.service.model import (
+from powercontext_operations.model import (
     DEFINITION_VERSION,
     OWNERSHIP_MARKER,
     ManagerOwnershipState,

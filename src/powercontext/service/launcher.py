@@ -26,10 +26,10 @@ from typing import TextIO
 from urllib.parse import urlsplit
 
 from powercontext.server.configuration import ServerConfigurationError, server_settings_context
-from powercontext.service.environment import ProtectedEnvironmentFileError, load_protected_environment_file
-from powercontext.service.model import EnvironmentFileIdentity, ProbeState
 from powercontext.service.probe import probe_server
 from powercontext.transport import is_loopback_host
+from powercontext_operations.environment import ProtectedEnvironmentFileError, load_protected_environment_file
+from powercontext_operations.model import EnvironmentFileIdentity, ProbeState
 
 logger = logging.getLogger(__name__)
 

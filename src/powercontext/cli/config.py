@@ -37,8 +37,8 @@ from urllib.parse import urlsplit
 import typer
 from pydantic import ValidationError
 
-from powercontext.cli.env_file import EnvironmentFileError, parse_environment
 from powercontext.cli.inference_notice import write_inference_capability_notice
+from powercontext_operations.env_file import EnvironmentFileError, parse_environment
 
 if TYPE_CHECKING:
     from powercontext.server.settings import ServerSettings

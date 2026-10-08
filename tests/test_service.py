@@ -37,14 +37,15 @@ import powercontext_service_bootstrap.__main__ as service_bootstrap
 from powercontext.paths import POWERCONTEXT_HOME_ENV, powercontext_data_dir
 from powercontext.service import launcher as service_launcher
 from powercontext.service import probe as service_probe
-from powercontext.service.adapters.base import decode_metadata, definition_state, encode_metadata
-from powercontext.service.adapters.launchd import LaunchdUserAdapter
-from powercontext.service.adapters.systemd import SystemdUserAdapter
-from powercontext.service.adapters.windows import WindowsTaskSchedulerAdapter
 from powercontext.service.cli import app as service_app
 from powercontext.service.controller import ServiceController
-from powercontext.service.environment import load_protected_environment_file
-from powercontext.service.model import (
+from powercontext.service.probe import probe_server
+from powercontext_operations.adapters.base import decode_metadata, definition_state, encode_metadata
+from powercontext_operations.adapters.launchd import LaunchdUserAdapter
+from powercontext_operations.adapters.systemd import SystemdUserAdapter
+from powercontext_operations.adapters.windows import WindowsTaskSchedulerAdapter
+from powercontext_operations.environment import load_protected_environment_file
+from powercontext_operations.model import (
     DEFINITION_VERSION,
     OWNERSHIP_MARKER,
     DefinitionState,
@@ -61,7 +62,6 @@ from powercontext.service.model import (
     ServiceStatus,
     SupportState,
 )
-from powercontext.service.probe import probe_server
 
 
 def _definition(tmp_path: Path, **overrides: object) -> ServiceDefinition:
@@ -1336,7 +1336,7 @@ def test_launchd_stop_waits_until_bootout_removes_the_loaded_job(
     monkeypatch.setattr(adapter, "loaded_registration", lambda: next(states))
     run = Mock()
     monkeypatch.setattr(adapter, "_run", run)
-    monkeypatch.setattr("powercontext.service.adapters.launchd.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("powercontext_operations.adapters.launchd.time.sleep", lambda _delay: None)
 
     adapter.stop()
 

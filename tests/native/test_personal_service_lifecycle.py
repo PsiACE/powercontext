@@ -32,12 +32,12 @@ from typing import Any
 
 import pytest
 
-from powercontext.service.adapters.base import NativeServiceAdapter, service_python_executable
-from powercontext.service.adapters.launchd import LaunchdUserAdapter
-from powercontext.service.adapters.systemd import SystemdUserAdapter
-from powercontext.service.adapters.windows import WindowsTaskSchedulerAdapter
 from powercontext.service.controller import ServiceController
-from powercontext.service.model import (
+from powercontext_operations.adapters.base import NativeServiceAdapter, service_python_executable
+from powercontext_operations.adapters.launchd import LaunchdUserAdapter
+from powercontext_operations.adapters.systemd import SystemdUserAdapter
+from powercontext_operations.adapters.windows import WindowsTaskSchedulerAdapter
+from powercontext_operations.model import (
     DEFINITION_VERSION,
     OWNERSHIP_MARKER,
     ManagerOwnershipState,

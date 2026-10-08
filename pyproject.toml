@@ -101,6 +101,7 @@ cli = [
 
 [project.scripts]
 powercontext = "powercontext.cli.app:main"
+powercontext-ops = "powercontext_operations.cli:main"
 
 [project.entry-points."powercontext.cli"]
 connection = "powercontext.cli.connections:connection_app"
@@ -164,7 +165,7 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/powercontext", "src/powercontext_service_bootstrap"]
+packages = ["src/powercontext", "src/powercontext_service_bootstrap", "src/powercontext_operations"]
 
 [tool.ty.environment]
 python = "./.venv"

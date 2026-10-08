@@ -26,7 +26,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from pydantic import ValidationError
 
 from powercontext.http import HealthResponse
-from powercontext.service.model import ProbeResult, ProbeState
+from powercontext_operations.model import ProbeResult, ProbeState
 
 _REQUEST_ID = re.compile(r"^[0-9a-f]{16}$")
 
