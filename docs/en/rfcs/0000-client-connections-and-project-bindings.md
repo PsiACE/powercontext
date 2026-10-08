@@ -5,7 +5,7 @@ description: Explain saved Client endpoints and explicitly manage existing Codex
 
 - Proposal Name: `client_connections_and_project_bindings`
 - Start Date: 2026-10-09
-- Status: Implemented
+- Status: Proposed
 - RFC PR: Not opened
 - Related RFC: [RFC 1733](1733-usability-and-agent-workflows.md)
 
@@ -56,6 +56,8 @@ actual API behavior. Native host activation remains outside this contract.
 
 Inspection reports Client/setup transport policy, not authoritative native MCP registration. `selection_scope` is `client_transport_policy` and `native_host_configuration` is `unobserved`; Codex or another host may have separately configured MCP endpoints. Activation remains unknown.
 
+Qualification: focused tests cover persistence, conflicts, credentials and actual in-process SQLite/HTTP API binding behavior. A separately built `[cli]` wheel resolved Typer 0.27.3 with neither Click nor SQLAlchemy installed and passed the native concurrent-configure/readback subprocess scenario. Native Agent behavior and Windows/macOS were not executed.
+
 # Drawbacks
 
 The file lock coordinates cooperating writers only. Native host files may need an explicit reload, and environment credential references are process-dependent. Project operations currently target Codex workspace keys only.
@@ -79,4 +81,3 @@ acceptance. They do not block this implementation.
 
 Named connections, additional host binding keys, and native secret stores can extend this contract when supported consumers and native acceptance exist.
 
-Qualification: focused tests cover persistence, conflicts, credentials and actual in-process SQLite/HTTP API binding behavior. A separately built `[cli]` wheel resolved Typer 0.27.3 with neither Click nor SQLAlchemy installed and passed the native concurrent-configure/readback subprocess scenario. Native Agent behavior and Windows/macOS were not executed.
