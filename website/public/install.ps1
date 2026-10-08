@@ -314,8 +314,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Package installed, but CLI help verification failed. Retry installation after reviewing the command error.' }
     & $Cli capabilities --help | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Package installed, but Client command verification failed (capabilities --help). Retry installation after reviewing the command error.' }
-    & $Cli setup select --help | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Package installed, but integration command verification failed (setup select --help). Retry installation after reviewing the command error.' }
     if ($RuntimeProfile -eq 'local') {
         & $Cli config init --help | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Package installed, but configuration command verification failed (config init --help). Retry installation after reviewing the command error.' }

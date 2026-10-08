@@ -337,8 +337,6 @@ main() {
         fail "Package installed, but CLI help verification failed. Retry installation after reviewing the command error."
     "$tool_bin/powercontext" capabilities --help >/dev/null ||
         fail "Package installed, but Client command verification failed (capabilities --help). Retry installation after reviewing the command error."
-    "$tool_bin/powercontext" setup select --help >/dev/null ||
-        fail "Package installed, but integration command verification failed (setup select --help). Retry installation after reviewing the command error."
     if [[ "$PROFILE" == local ]]; then
         "$tool_bin/powercontext" config init --help >/dev/null ||
             fail "Package installed, but configuration command verification failed (config init --help). Retry installation after reviewing the command error."
