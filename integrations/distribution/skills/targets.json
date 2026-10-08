@@ -7,7 +7,8 @@
         "SKILL.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/SKILL.md",
         "references/review-publication.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/review-publication.md",
         "references/scope-memory.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/scope-memory.md",
-        "references/work-handoff.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/work-handoff.md"
+        "references/work-handoff.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/work-handoff.md",
+        "references/experience-skills.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/experience-skills.md"
       },
       "retired": []
     },
@@ -17,7 +18,8 @@
         "SKILL.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/SKILL.md",
         "references/review-publication.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/review-publication.md",
         "references/scope-memory.md": "integrations/distribution/skills/overrides/claude-code/references/scope-memory.md",
-        "references/work-handoff.md": "integrations/distribution/skills/overrides/claude-code/references/work-handoff.md"
+        "references/work-handoff.md": "integrations/distribution/skills/overrides/claude-code/references/work-handoff.md",
+        "references/experience-skills.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/experience-skills.md"
       },
       "retired": []
     },
@@ -27,7 +29,8 @@
         "SKILL.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/SKILL.md",
         "references/review-publication.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/review-publication.md",
         "references/scope-memory.md": "integrations/distribution/skills/overrides/workbuddy/references/scope-memory.md",
-        "references/work-handoff.md": "integrations/distribution/skills/overrides/workbuddy/references/work-handoff.md"
+        "references/work-handoff.md": "integrations/distribution/skills/overrides/workbuddy/references/work-handoff.md",
+        "references/experience-skills.md": "integrations/agent-plugin/powercontext/skills/powercontext-project-context/references/experience-skills.md"
       },
       "retired": []
     },
@@ -43,5 +46,10 @@
       },
       "retired": []
     }
+  },
+  "contract_baseline": {
+    "repository_commit": "f28f8edfcb2972ac322f4f12b1f224226a9a40ab",
+    "capabilities": "integrations/capabilities.toml",
+    "optional_maintenance_entry": "Require installed help advertising powercontext-ops; absent entry uses published bootstrap guide."
   }
 }

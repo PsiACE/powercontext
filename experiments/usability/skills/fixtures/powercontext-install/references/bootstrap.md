@@ -7,7 +7,7 @@ for that platform; installing uv does not install PowerContext or configure a pr
 
 When uv is available, the existing manual package path is `uv tool install "powercontext[cli,server]"` for local use,
 or `uv tool install "powercontext[cli]"` for an existing Server. An exact requested release appends `==VERSION` to
-that requirement. For latest stable selection, use uv's `--upgrade --prerelease disallow` controls. Package indexes,
+that requirement. For latest stable selection, use uv's `--upgrade --reinstall-package powercontext --prerelease disallow` controls. Package indexes,
 uv binaries, and Python distributions have separate source controls; an inaccessible Python download is not repaired
 by changing only the package index. Do not switch an explicitly chosen source or version after failure.
 

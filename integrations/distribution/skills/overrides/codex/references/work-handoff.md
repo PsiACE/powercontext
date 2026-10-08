@@ -113,3 +113,14 @@ The recorded Task Outcome can support a later Handoff and the reviewed
 Experience-incubation path; it does not approve Experience or grant execution.
 
 For a preview, use inspected current facts without capture, prepare, or commit. Preserve the complete returned carrier, including required nullable fields and generation receipts.
+
+## Durable milestone and unknown outcome
+
+Ordinary transfer uses the complete prepared carrier and grants no durable commit. When the user explicitly asks
+for a durable milestone and the host exposes `commit_handoff`, pass the exact returned carrier unchanged and report
+only the exact committed revision after success. Keep the returned carrier's generation receipts intact; receiver
+acknowledgement is a separate operation. Reuse sufficient existing authorization; do not ask again
+merely because preparation and commit are separate calls. If the commit outcome is unknown, use its supported
+status/read/idempotency contract before retrying. Preparation alone is not a committed milestone. Preserve receipts,
+nullable fields, evidence, incomplete work and omissions when the receiver continues; acknowledgement is receiving
+state, not proof that the next action executed.
