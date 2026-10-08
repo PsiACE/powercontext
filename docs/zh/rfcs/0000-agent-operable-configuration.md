@@ -41,7 +41,7 @@ Client 操作仅需 `[cli]`；Server 操作需要 Server extras。Client 激活�
 
 应用分别报告持久化与激活：`saved_revision`、`activation: restart_required` 和静态检查结果。没有观察到运行实例时，不声称它已经激活。不得隐式启动服务、探测模型或写入业务记录。JSON 是可组合输出，不代表这些行为的许可。连接工作流可以使用相同概念，无需新建命名连接。
 
-# Acceptance
+## Acceptance
 
 验证类型发现、未知字段拒绝、预览无副作用、局部保留、私密值隐藏、无效组合、过期及并发冲突、0600 读回、多行语法和准确激活状态。通过公共 CLI 与跨进程写入验收；真实网络、模型和宿主需要独立验收。
 
@@ -53,13 +53,13 @@ Client 操作仅需 `[cli]`；Server 操作需要 Server extras。Client 激活�
 
 [执行消融](https://github.com/PsiACE/powercontext/blob/cce34000/experiments/usability/configuration/README.md) 说明需要修订检查、严格修改字段和公共输出白名单，不支持替换 `.env`、加入 TOML 引擎、daemon、任意提供方请求透传或全流程事务。
 
-# Unresolved questions
-
-提供方专用编辑、原生秘密后端和绑定观察结果的在线检查需要具体消费者。它们可独立交付，不阻塞本地静态操作。
-
 # Prior art
 
 [Cida](https://github.com/Xuanwo/cida/blob/a48745e79632f93d6763605d5718ab4b7cea1122/Sources/Cida/ConfigurationFields.swift) 从拥有字段推导 schema、解析与显示；[Jiandao](https://github.com/Xuanwo/jiandao/blob/76a3fbc0501ac9c6f5cb5aa88a16d0923bff97b3/src/utils/setup-document.ts) 将严格意图与存储分离；[Agenvo](https://github.com/Xuanwo/agenvo/blob/235978f9fd9cf70fd75b03292619262d5e86a6e6/docs/installation.md) 区分保存、部署与可达性。这里只检查源码，不将它们描述为已执行的验收。
+
+# Unresolved questions
+
+提供方专用编辑、原生秘密后端和绑定观察结果的在线检查需要具体消费者。它们可独立交付，不阻塞本地静态操作。
 
 # Future possibilities
 
