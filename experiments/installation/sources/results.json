@@ -1,0 +1,496 @@
+{
+  "baseline": "8b2ea9576a92154cd00a2a0609afdb302010cddf",
+  "platform": "Linux-7.1.13-200.fc44.x86_64-x86_64-with-glibc2.43",
+  "python": "3.14.7",
+  "uv": "uv 0.11.14 (x86_64-unknown-linux-gnu)",
+  "qualification": "Real uv and installed fixture CLI on Linux; loopback network fixtures; direct shell helpers; PowerShell 7 on Linux only.",
+  "results": [
+    {
+      "name": "encoded_filename_shell_probe",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 7.33,
+      "requests": [
+        "/encoded/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "Package index does not list PowerContext 1.0.0: <index>/encoded/simple\n"
+    },
+    {
+      "name": "encoded_filename_uv_resolution",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 61.22,
+      "requests": [
+        "/encoded/simple/powercontext/",
+        "/encoded/files/powercontext-1%2E0%2E0-py3-none-any.whl",
+        "/encoded/files/powercontext-1%2E0%2E0-py3-none-any.whl",
+        "/encoded/files/powercontext-1%2E0%2E0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 3ms\nPrepared 1 package in 1ms\nInstalled 1 package in 2ms\n + powercontext==1.0.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "encoded_installed_executable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 37.66,
+      "requests": [],
+      "stdout": "1.0.0\n",
+      "stderr": ""
+    },
+    {
+      "name": "latest_stable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 74.76,
+      "requests": [
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 3ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.25ms\nInstalled 1 package in 2ms\n - powercontext==1.0.0\n + powercontext==1.1.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "latest_installed_executable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 28.43,
+      "requests": [],
+      "stdout": "1.1.0\n",
+      "stderr": ""
+    },
+    {
+      "name": "exact_stable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 70.11,
+      "requests": [
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.26ms\nInstalled 1 package in 2ms\n - powercontext==1.1.0\n + powercontext==1.0.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "exact_installed_executable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 26.66,
+      "requests": [],
+      "stdout": "1.0.0\n",
+      "stderr": ""
+    },
+    {
+      "name": "exact_prerelease",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 70.75,
+      "requests": [
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.2.0rc1-py3-none-any.whl",
+        "/new/files/powercontext-1.2.0rc1-py3-none-any.whl",
+        "/new/files/powercontext-1.2.0rc1-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.23ms\nInstalled 1 package in 2ms\n - powercontext==1.0.0\n + powercontext==1.2.0rc1\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "prerelease_installed_executable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 27.98,
+      "requests": [],
+      "stdout": "1.2.0rc1\n",
+      "stderr": ""
+    },
+    {
+      "name": "unavailable_exact",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 66.54,
+      "requests": [
+        "/new/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext==9.9.9 and you require\n      powercontext==9.9.9, we can conclude that your requirements are\n      unsatisfiable.\n"
+    },
+    {
+      "name": "failure_preserves_runtime",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 26.59,
+      "requests": [],
+      "stdout": "1.2.0rc1\n",
+      "stderr": ""
+    },
+    {
+      "name": "explicit_forbidden_no_fallback",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 68.22,
+      "requests": [
+        "/forbidden/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because powercontext was not found in the package registry and you\n      require powercontext==1.0.0, we can conclude that your requirements\n      are unsatisfiable.\n\n      hint: An index URL (<index>/forbidden/simple) returned\n      a 403 Forbidden error. This could indicate lack of valid authentication\n      credentials, or the package may not exist on this index.\n"
+    },
+    {
+      "name": "additional_index_has_priority",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 72.68,
+      "requests": [
+        "/old/simple/powercontext/",
+        "/old/files/powercontext-1.0.0-py3-none-any.whl",
+        "/old/files/powercontext-1.0.0-py3-none-any.whl",
+        "/old/files/powercontext-1.0.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.23ms\nInstalled 1 package in 2ms\n - powercontext==1.2.0rc1\n + powercontext==1.0.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "first_index_conflict",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 65.82,
+      "requests": [
+        "/old/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext==1.1.0 and you require\n      powercontext==1.1.0, we can conclude that your requirements are\n      unsatisfiable.\n\n      hint: `powercontext` was found on <index>/old/simple,\n      but not at the requested version (powercontext==1.1.0). A\n      compatible version may be available on a subsequent index (e.g.,\n      <index>/new/simple). By default, uv will only consider\n      versions that are published on the first index that contains a given\n      package, to avoid dependency confusion attacks. If all indexes are\n      equally trusted, use `--index-strategy unsafe-best-match` to consider\n      all versions from all indexes, regardless of the order in which they\n      were defined.\n"
+    },
+    {
+      "name": "environment_additional_index",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 69.41,
+      "requests": [
+        "/old/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext==1.1.0 and you require\n      powercontext==1.1.0, we can conclude that your requirements are\n      unsatisfiable.\n\n      hint: `powercontext` was found on <index>/old/simple,\n      but not at the requested version (powercontext==1.1.0). A\n      compatible version may be available on a subsequent index (e.g.,\n      <index>/new/simple). By default, uv will only consider\n      versions that are published on the first index that contains a given\n      package, to avoid dependency confusion attacks. If all indexes are\n      equally trusted, use `--index-strategy unsafe-best-match` to consider\n      all versions from all indexes, regardless of the order in which they\n      were defined.\n"
+    },
+    {
+      "name": "cli_default_overrides_environment",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 71.75,
+      "requests": [
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.24ms\nInstalled 1 package in 2ms\n - powercontext==1.0.0\n + powercontext==1.1.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "missing_additional_index_continues",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 69.93,
+      "requests": [
+        "/missing/simple/powercontext/",
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "/new/files/powercontext-1.1.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.25ms\nInstalled 1 package in 2ms\n ~ powercontext==1.1.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "forbidden_additional_index_stops",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 67.14,
+      "requests": [
+        "/forbidden/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because powercontext was not found in the package registry and you\n      require powercontext==1.1.0, we can conclude that your requirements\n      are unsatisfiable.\n\n      hint: An index URL (<index>/forbidden/simple) returned\n      a 403 Forbidden error. This could indicate lack of valid authentication\n      credentials, or the package may not exist on this index.\n"
+    },
+    {
+      "name": "exact_runtime_reuse_without_network",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 22.93,
+      "requests": [],
+      "stdout": "",
+      "stderr": "`powercontext==1.1.0` is already installed\n"
+    },
+    {
+      "name": "http_proxy_uv_resolution",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 70.48,
+      "requests": [
+        "http://fixture.invalid/new/simple/powercontext/",
+        "http://fixture.invalid/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "http://fixture.invalid/new/files/powercontext-1.1.0-py3-none-any.whl",
+        "http://fixture.invalid/new/files/powercontext-1.1.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.25ms\nInstalled 1 package in 2ms\n ~ powercontext==1.1.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "offline_cached_exact",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 66.89,
+      "requests": [],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 0.66ms\nChecked 1 package in 0.01ms\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "offline_uncached_exact",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 67.88,
+      "requests": [],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext==9.9.9 and you require\n      powercontext==9.9.9, we can conclude that your requirements are\n      unsatisfiable.\n"
+    },
+    {
+      "name": "cn_timezone",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.76,
+      "requests": [],
+      "stdout": "Download region: cn (timezone).\n",
+      "stderr": ""
+    },
+    {
+      "name": "cn_timezone_ablation",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.18,
+      "requests": [],
+      "stdout": "Download region: global (explicit).\n",
+      "stderr": ""
+    },
+    {
+      "name": "cn_locale_utc",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.12,
+      "requests": [],
+      "stdout": "Download region: cn (locale).\n",
+      "stderr": ""
+    },
+    {
+      "name": "cn_locale_utc_ablation",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.13,
+      "requests": [],
+      "stdout": "Download region: global (explicit).\n",
+      "stderr": ""
+    },
+    {
+      "name": "cn_locale_global_timezone",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.08,
+      "requests": [],
+      "stdout": "Download region: global (timezone).\n",
+      "stderr": ""
+    },
+    {
+      "name": "cn_locale_global_timezone_ablation",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.44,
+      "requests": [],
+      "stdout": "Download region: global (explicit).\n",
+      "stderr": ""
+    },
+    {
+      "name": "no_location_hints",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.86,
+      "requests": [],
+      "stdout": "Download region: global (locale).\n",
+      "stderr": ""
+    },
+    {
+      "name": "no_location_hints_ablation",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.03,
+      "requests": [],
+      "stdout": "Download region: global (explicit).\n",
+      "stderr": ""
+    },
+    {
+      "name": "unrelated_config_suppresses_package_mirror",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.1,
+      "requests": [],
+      "stdout": "Using existing uv configuration; uv will check the configured indexes.\nINDEX=\n",
+      "stderr": ""
+    },
+    {
+      "name": "unrelated_config_uv_still_resolves",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 75.26,
+      "requests": [
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.24ms\nInstalled 1 package in 2ms\n - powercontext==1.1.0\n + powercontext==1.0.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "user_config_index",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 67.36,
+      "requests": [
+        "/old/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext==1.1.0 and you require\n      powercontext==1.1.0, we can conclude that your requirements are\n      unsatisfiable.\n"
+    },
+    {
+      "name": "tool_ignores_project_config",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 67.35,
+      "requests": [
+        "/old/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "  × No solution found when resolving dependencies:\n  ╰─▶ Because there is no version of powercontext==1.1.0 and you require\n      powercontext==1.1.0, we can conclude that your requirements are\n      unsatisfiable.\n"
+    },
+    {
+      "name": "automatic_candidate_uv_failure",
+      "exit": 2,
+      "expected_exit": 2,
+      "elapsed_ms": 67.3,
+      "requests": [
+        "/broken/simple/powercontext/"
+      ],
+      "stdout": "",
+      "stderr": "error: Failed to fetch: `<index>/broken/simple/powercontext/`\n  Caused by: HTTP status server error (503 Service Unavailable) for url (<index>/broken/simple/powercontext/)\n"
+    },
+    {
+      "name": "automatic_candidate_fallback_uv_success",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 70.37,
+      "requests": [
+        "/new/simple/powercontext/",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl",
+        "/new/files/powercontext-1.0.0-py3-none-any.whl"
+      ],
+      "stdout": "",
+      "stderr": "Resolved 1 package in 2ms\nPrepared 1 package in 1ms\nUninstalled 1 package in 0.27ms\nInstalled 1 package in 2ms\n ~ powercontext==1.0.0\nInstalled 1 executable: powercontext\nwarning: `<scratch>/bin` is not on your PATH. To use installed tools, add the directory to your PATH.\n"
+    },
+    {
+      "name": "automatic_fallback_installed_executable",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 27.91,
+      "requests": [],
+      "stdout": "1.0.0\n",
+      "stderr": ""
+    },
+    {
+      "name": "reuse_system_python",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 41.35,
+      "requests": [],
+      "stdout": "/home/psiace/.local/bin/python3.13\n",
+      "stderr": ""
+    },
+    {
+      "name": "python_specific_mirror_url",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 22.14,
+      "requests": [],
+      "stdout": "cpython-3.12.13-linux-x86_64-gnu    <index>/python-specific/20260510/cpython-3.12.13%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz\n",
+      "stderr": ""
+    },
+    {
+      "name": "python_explicit_mirror_failure",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 22.16,
+      "requests": [
+        "/broken/20260510/cpython-3.12.13%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+      ],
+      "stdout": "",
+      "stderr": "error: Failed to install cpython-3.12.13-linux-x86_64-gnu\n  Caused by: Failed to download <index>/broken/20260510/cpython-3.12.13%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz\n  Caused by: HTTP status server error (503 Service Unavailable) for url (<index>/broken/20260510/cpython-3.12.13%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz)\n"
+    },
+    {
+      "name": "python_offline_missing",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 22.54,
+      "requests": [],
+      "stdout": "",
+      "stderr": "error: Failed to install cpython-3.12.13-linux-x86_64-gnu\n  Caused by: Failed to download <index>/broken/20260510/cpython-3.12.13%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz\n  Caused by: Network connectivity is disabled, but the requested data wasn't found in the cache for: `<index>/broken/20260510/cpython-3.12.13%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz`\n"
+    },
+    {
+      "name": "explicit_cn_preserves_unrelated_config",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.21,
+      "requests": [],
+      "stdout": "Download region: cn (explicit).\nUsing existing uv configuration; uv will check the configured indexes.\n",
+      "stderr": ""
+    },
+    {
+      "name": "auto_cn_preserves_unrelated_config",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 1.24,
+      "requests": [],
+      "stdout": "Download region: cn (timezone).\nUsing existing uv configuration; uv will check the configured indexes.\n",
+      "stderr": ""
+    },
+    {
+      "name": "powershell_encoded_filename_probe",
+      "exit": 1,
+      "expected_exit": 1,
+      "elapsed_ms": 296.37,
+      "requests": [
+        "/encoded/simple/powercontext/"
+      ],
+      "stdout": "Package index does not list PowerContext 1.0.0: <index>/encoded/simple\n",
+      "stderr": ""
+    },
+    {
+      "name": "powershell_region_cn",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 221.53,
+      "requests": [],
+      "stdout": "Download region: cn (timezone).\ncn\n",
+      "stderr": ""
+    },
+    {
+      "name": "powershell_parse",
+      "exit": 0,
+      "expected_exit": 0,
+      "elapsed_ms": 127.39,
+      "requests": [],
+      "stdout": "",
+      "stderr": ""
+    }
+  ]
+}
