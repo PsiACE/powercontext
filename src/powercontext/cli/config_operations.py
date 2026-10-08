@@ -30,7 +30,6 @@ from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, EnvSettingsSource
 from typing_extensions import override
 
-from powercontext.cli.env_file import EnvironmentFileError, parse_environment
 from powercontext.client.settings import ClientSettings, normalize_server_url
 from powercontext.local_config import (
     ConfigurationConflictError,
@@ -38,6 +37,7 @@ from powercontext.local_config import (
     publish_configuration,
     read_configuration,
 )
+from powercontext_operations.env_file import EnvironmentFileError, parse_environment
 
 
 class ConfigurationInputError(ValueError):
