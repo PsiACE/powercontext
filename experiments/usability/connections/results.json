@@ -1,0 +1,25 @@
+{
+  "baseline": "f28f8edf",
+  "cases": [
+    {
+      "case": "endpoint_bound_consent",
+      "same_endpoint_allowed": true,
+      "changed_endpoint_allowed": false,
+      "without_endpoint_binding_allowed": true
+    },
+    {
+      "case": "runtime_override_conflict",
+      "request_endpoint": "https://chosen.example",
+      "persistent_setup_rejected": true
+    },
+    {
+      "case": "separate_worktrees",
+      "same_binding_key": false
+    },
+    {
+      "case": "server_owned_scope_identity",
+      "new_server_binding_status": 404,
+      "old_scope_on_new_server_status": 404
+    }
+  ]
+}

@@ -103,6 +103,8 @@ cli = [
 powercontext = "powercontext.cli.app:main"
 
 [project.entry-points."powercontext.cli"]
+connection = "powercontext.cli.connections:connection_app"
+project = "powercontext.cli.connections:project_app"
 code = "powercontext.builtin.code.cli:app"
 config = "powercontext.cli.config:app"
 doctor = "powercontext.cli.system:doctor_app"

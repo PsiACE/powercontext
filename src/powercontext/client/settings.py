@@ -16,12 +16,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar, Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
-from powercontext.client.transport_policy import ClientTransportSettings, normalize_client_url
+from powercontext.client.transport_policy import ClientTransportSettings, load_client_settings, normalize_client_url
 from powercontext.transport import is_plaintext_non_loopback
 
 
@@ -51,6 +52,13 @@ class ClientSettings(ClientTransportSettings):
     @model_validator(mode="after")
     def validate_server_url(self) -> Self:
         self.server_url = normalize_server_url(self.server_url, allow_insecure_http=self.allow_insecure_http)
+        saved = load_client_settings("client")
+        reference = saved.get("api_token_env")
+        if self.api_token is None and reference and saved.get("server_url") == self.server_url:
+            value = os.environ.get(reference)
+            if not value:
+                raise ValueError("The saved Client credential reference is unavailable")  # noqa: TRY003
+            self.api_token = SecretStr(value)
         return self
 
 
