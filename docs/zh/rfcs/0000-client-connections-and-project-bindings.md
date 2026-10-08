@@ -60,4 +60,3 @@ description: 解释保存的 Client 端点，并显式管理现有 Codex 检出�
 # Future possibilities
 
 有明确消费者及原生验收时，可扩展命名连接、其他宿主绑定键和原生秘密存储。
-

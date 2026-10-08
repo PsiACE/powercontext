@@ -25,9 +25,10 @@ import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+# Historical f28f8edf import: execute in the pinned cce34000 worktree documented beside this harness.
+from powercontext.cli.env_file import environment_context  # ty: ignore[unresolved-import]
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.cli.env_file import environment_context
 from powercontext.cli.transport import resolve_setup_endpoint
 from powercontext.client.transport_policy import resolve_client_transport
 from powercontext.server.factory import create_server_app

@@ -21,11 +21,12 @@ import json
 import tempfile
 from pathlib import Path
 
+# Historical f28f8edf import: execute in the pinned cce34000 worktree documented beside this harness.
+from powercontext.cli.env_file import parse_environment  # ty: ignore[unresolved-import]
 from typer.testing import CliRunner
 
 from powercontext.cli.app import create_cli
 from powercontext.cli.config import app, write_environment
-from powercontext.cli.env_file import parse_environment
 
 
 def main() -> None:

@@ -90,4 +90,3 @@ remain independently deliverable and do not block the local static operations.
 # Future possibilities
 
 Provider-owned editing and independently authorized online checks can extend this contract when required. Native secret storage and observed running-process activation remain separate work.
-
