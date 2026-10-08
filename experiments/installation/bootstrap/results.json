@@ -1,0 +1,126 @@
+{
+  "environment": {
+    "os": "Linux-7.1.13-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "python_harness": "3.14.7",
+    "bash": "GNU bash, version 5.3.9(1)-release (x86_64-redhat-linux-gnu)",
+    "baseline": "8b2ea957"
+  },
+  "results": [
+    {
+      "scenario": "no_choice",
+      "variant": "baseline",
+      "status": 1,
+      "runtime_written": false,
+      "commands": [],
+      "error": "error: No interactive input. Pass --host HOST or --no-hosts."
+    },
+    {
+      "scenario": "no_choice",
+      "variant": "runtime_only",
+      "status": 0,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin"
+      ],
+      "error": ""
+    },
+    {
+      "scenario": "no_choice",
+      "variant": "explicit_hosts",
+      "status": 0,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin"
+      ],
+      "error": ""
+    },
+    {
+      "scenario": "runtime_explicit",
+      "variant": "baseline",
+      "status": 0,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin"
+      ],
+      "error": ""
+    },
+    {
+      "scenario": "runtime_explicit",
+      "variant": "runtime_only",
+      "status": 0,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin"
+      ],
+      "error": ""
+    },
+    {
+      "scenario": "runtime_explicit",
+      "variant": "explicit_hosts",
+      "status": 0,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin"
+      ],
+      "error": ""
+    },
+    {
+      "scenario": "host_failure",
+      "variant": "baseline",
+      "status": 1,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin",
+        "setup"
+      ],
+      "error": "error: Runtime installed, but integration setup did not complete. Review its results and retry setup with powercontext-v1.2.0."
+    },
+    {
+      "scenario": "host_failure",
+      "variant": "runtime_only",
+      "status": 0,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin"
+      ],
+      "error": ""
+    },
+    {
+      "scenario": "host_failure",
+      "variant": "explicit_hosts",
+      "status": 1,
+      "runtime_written": true,
+      "commands": [
+        "python find --system --no-project --no-python-downloads >=3.11,<4",
+        "tool install --python /fixture/python --no-python-downloads --upgrade --prerelease disallow powercontext[cli,server]",
+        "tool dir --bin",
+        "setup"
+      ],
+      "error": "error: Runtime installed, but integration setup did not complete. Review its results and retry setup with powercontext-v1.2.0."
+    },
+    {
+      "scenario": "shell_help",
+      "status": 0,
+      "error": ""
+    },
+    {
+      "scenario": "python_engine_help",
+      "status": 127,
+      "error": "/bin/sh: line 1: python3: command not found"
+    }
+  ]
+}
