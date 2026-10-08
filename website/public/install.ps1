@@ -37,11 +37,11 @@ Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [options]
   --region REGION   auto, cn, or global (default: POWERCONTEXT_INSTALL_REGION or auto).
   --index-url URL    HTTPS default package index for this installation.
   --host HOST        Install an Agent integration; repeat for multiple hosts.
-  --no-hosts         Skip Agent integration setup.
+  --no-hosts         Compatibility option; integration setup is skipped by default.
   -h, --help         Show this help.
 
-Without host options, an interactive terminal opens powercontext setup select.
-Without a terminal, --host or --no-hosts is required.
+Agent integration setup runs only for explicitly selected --host values.
+After installation, run powercontext setup select to choose hosts interactively.
 
 Region priority: --region, POWERCONTEXT_INSTALL_REGION, named timezone, locale
 territory, then global. No network location service is queried.
@@ -246,11 +246,8 @@ try {
     if ($IndexUrl) { Assert-HttpsUrl $IndexUrl '--index-url' }
     if ($env:POWERCONTEXT_UV_INSTALLER_URL) { Assert-HttpsUrl $env:POWERCONTEXT_UV_INSTALLER_URL 'POWERCONTEXT_UV_INSTALLER_URL' }
     if ($NoHosts -and $Hosts.Count) { throw '--host and --no-hosts cannot be combined.' }
-    if (-not $NoHosts -and -not $Hosts.Count -and (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected)) {
-        throw 'No interactive input. Pass --host HOST or --no-hosts.'
-    }
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Use install.sh on macOS and Linux.' }
-    if (-not $NoHosts -and -not (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)) {
+    if ($Hosts.Count -and -not (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)) {
         throw 'Agent integration setup requires Git. Install Git or use --no-hosts.'
     }
     $TempDir = Join-Path ([IO.Path]::GetTempPath()) ('powercontext-install-' + [Guid]::NewGuid())
@@ -321,7 +318,7 @@ try {
     $PathPrefix = ("$($ToolBin.Trim());$(Split-Path -Parent $Uv)").Replace("'", "''")
     Write-Host ('For a new terminal: $env:Path = ''' + $PathPrefix + ';'' + $env:Path')
     $SetupStatus = 0
-    if (-not $NoHosts) {
+    if ($Hosts.Count) {
         & $Cli setup select --source oceanbase/powercontext --ref "powercontext-v$Version" @Hosts
         $SetupStatus = $LASTEXITCODE
     }

@@ -23,7 +23,6 @@ PYTHON_BIN=""
 INDEX_URL=""
 HOSTS=()
 NO_HOSTS=false
-SETUP_INPUT=/dev/stdin
 TEMP_DIR=""
 UV_BIN=""
 GUIDE=https://powercontext.oceanbase.io/en/docs/get-started/quickstart/
@@ -52,11 +51,11 @@ Usage: bash install.sh [--version VERSION] [--index-url URL] [--host HOST]... [-
   --index-url URL    HTTPS default package index for this installation.
                      Existing additional uv indexes still take precedence.
   --host HOST        Install this Agent integration; repeat for multiple hosts.
-  --no-hosts         Skip Agent integration setup.
+  --no-hosts         Compatibility option; integration setup is skipped by default.
   -h, --help         Show this help.
 
-Without host options, an interactive terminal opens powercontext setup select.
-Without a terminal, --host or --no-hosts is required.
+Agent integration setup runs only for explicitly selected --host values.
+After installation, run powercontext setup select to choose hosts interactively.
 
 Region priority: --region, POWERCONTEXT_INSTALL_REGION, named timezone, locale
 territory, then global. No network location service is queried.
@@ -108,13 +107,6 @@ parse_args() {
     fi
     if [[ "$NO_HOSTS" == true && ${#HOSTS[@]} -gt 0 ]]; then
         fail "--host and --no-hosts cannot be combined."
-    fi
-    if [[ "$NO_HOSTS" == false && ${#HOSTS[@]} -eq 0 && ! -t 0 ]]; then
-        if [[ -t 1 ]] && { : </dev/tty; } 2>/dev/null; then
-            SETUP_INPUT=/dev/tty
-        else
-            fail "No interactive input. Pass --host HOST or --no-hosts."
-        fi
     fi
 }
 
@@ -312,7 +304,7 @@ main() {
     esac
     [[ -n "${HOME:-}" ]] || fail "HOME is not set."
     command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || fail "Install curl or wget first."
-    if [[ "$NO_HOSTS" == false ]]; then
+    if [[ ${#HOSTS[@]} -gt 0 ]]; then
         command -v git >/dev/null 2>&1 || fail "Agent integration setup requires Git. Install Git or use --no-hosts."
     fi
     TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/powercontext-install.XXXXXX")
@@ -350,9 +342,9 @@ main() {
     printf '  export PATH=%q:%q:"%s"\n' "$(dirname "$UV_BIN")" "$tool_bin" "\$PATH"
 
     local setup_status=0
-    if [[ "$NO_HOSTS" == false ]]; then
+    if [[ ${#HOSTS[@]} -gt 0 ]]; then
         "$tool_bin/powercontext" setup select --source oceanbase/powercontext \
-            --ref "powercontext-v$VERSION" ${HOSTS[@]+"${HOSTS[@]}"} <"$SETUP_INPUT" || setup_status=$?
+            --ref "powercontext-v$VERSION" ${HOSTS[@]+"${HOSTS[@]}"} || setup_status=$?
     fi
     if [[ "$PROFILE" == local ]]; then
         printf '\nConfigure PowerContext with: powercontext config init\n  %s\n' "$GUIDE"
