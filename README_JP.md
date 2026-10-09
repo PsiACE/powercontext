@@ -50,13 +50,17 @@ powercontext config init --language en --output .env
 Generation と Embedding の API 接続を設定してください。Agent のサブスクリプションとは別の認証情報が必要です。
 Basic memory は追加のモデル API なしで明示的な保存・検索を利用できます。
 
-生成された設定で Server を起動します：
+個人用 macOS/Linux では、生成された設定でネイティブユーザーサービスを登録します：
 
 ```bash
-powercontext server run --env-file .env
+powercontext config validate --env-file .env
+powercontext service install --env-file .env
+powercontext service status
+powercontext doctor --env-file .env
 ```
 
-Server を起動したまま、別のターミナルで同じ設定ディレクトリに移動し、`.env.next-steps.md` に従って
+サービスはターミナルを閉じても動作します。更新や設定ファイルの変更後は、同じ `--env-file` で `service install` を再実行してください。
+開発、一時的な利用、非対応環境では `powercontext server run` を使用します。`.env.next-steps.md` に従って
 クライアント環境の読み込み、Scope の作成・紐付け、同じバージョンの Agent プラグインのインストールを行います。例：
 
 ```bash

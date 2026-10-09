@@ -56,13 +56,16 @@ Python 依赖下载缓慢或失败时，可按[镜像重试步骤](https://power
 Agent 官方订阅不会自动给 PowerContext Server 提供这些凭据。选择**基础记忆**则可显式保存与召回，无需额外模型 API。
 
 向导生成一个 `.env` 环境文件和 `.env.next-steps.md`。
-选择 seekdb 且缺少依赖时，会在确认后后台增量安装。按照最后打印的连接信息，在当前终端启动 Server：
+选择 seekdb 且缺少依赖时，会在确认后后台增量安装。个人 macOS/Linux 使用原生用户服务管理器运行 Server：
 
 ```bash
-powercontext server run --env-file .env
+powercontext config validate --env-file .env
+powercontext service install --env-file .env
+powercontext service status
+powercontext doctor --env-file .env
 ```
 
-保持 Server 运行，在另一个终端回到 `powercontext-config` 目录，仅加载客户端配置并检查服务：
+服务管理器会在关闭终端后继续运行 Server。在 `powercontext-config` 目录加载客户端配置并检查服务：
 
 ```bash
 set -a
@@ -72,7 +75,9 @@ powercontext ready
 powercontext capabilities
 ```
 
-接着按 `.env.next-steps.md` 创建并绑定 Scope、安装相同版本的插件，再打开新 Agent 会话。
+接着按 `.env.next-steps.md` 创建并绑定 Scope；写入返回的 ID 后，重新执行 `powercontext service install --env-file .env`。
+升级或修改配置后也使用同一文件重新注册。安装相同版本的插件，再打开新 Agent 会话。开发、临时使用或缺少原生
+用户服务管理器时，可以使用 `powercontext server run`。
 [完整安装流程](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/)包含 Codex、Claude Code、Dashboard 登录、
 SSH 隧道、HTTPS 前提及逐项验收。例如，匹配本版本的 Codex 安装命令是：
 

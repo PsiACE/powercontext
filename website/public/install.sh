@@ -23,6 +23,9 @@ PYTHON_BIN=""
 INDEX_URL=""
 HOSTS=()
 NO_HOSTS=false
+CONFIGURE=false
+INSTALL_SERVICE=false
+ENV_FILE=""
 TEMP_DIR=""
 UV_BIN=""
 GUIDE=https://powercontext.oceanbase.io/en/docs/get-started/quickstart/
@@ -52,10 +55,15 @@ Usage: bash install.sh [--version VERSION] [--index-url URL] [--host HOST]... [-
                      Existing additional uv indexes still take precedence.
   --host HOST        Install this Agent integration; repeat for multiple hosts.
   --no-hosts         Compatibility option; integration setup is skipped by default.
+  --configure       Open the configuration wizard in a terminal; requires --env-file.
+  --service         Install and verify the personal service using --env-file.
+  --env-file PATH   Explicit configuration file for configuration, service, and hosts.
   -h, --help         Show this help.
 
 Agent integration setup runs only for explicitly selected --host values.
-After installation, run powercontext setup select to choose hosts interactively.
+After installation, run powercontext setup select --ref "powercontext-v$(powercontext --version)".
+Personal macOS/Linux use: --configure --service --env-file /path/to/powercontext.env.
+For unattended service setup, omit --configure and provide an existing protected file.
 
 Region priority: --region, POWERCONTEXT_INSTALL_REGION, named timezone, locale
 territory, then global. No network location service is queried.
@@ -77,7 +85,7 @@ EOF
 parse_args() {
     while (($#)); do
         case "$1" in
-            --version|--profile|--region|--index-url|--host)
+            --version|--profile|--region|--index-url|--host|--env-file)
                 (($# >= 2)) && [[ -n "$2" && "$2" != --* ]] || fail "$1 requires a value"
                 case "$1" in
                     --version) VERSION=$2 ;;
@@ -85,10 +93,13 @@ parse_args() {
                     --region) REGION=$2 ;;
                     --index-url) INDEX_URL=$2 ;;
                     --host) HOSTS+=(--host "$2") ;;
+                    --env-file) ENV_FILE=$2 ;;
                 esac
                 shift 2
                 ;;
             --no-hosts) NO_HOSTS=true; shift ;;
+            --configure) CONFIGURE=true; shift ;;
+            --service) INSTALL_SERVICE=true; shift ;;
             -h|--help) usage; exit 0 ;;
             *) fail "Unknown option. Run bash install.sh --help." ;;
         esac
@@ -107,6 +118,13 @@ parse_args() {
     fi
     if [[ "$NO_HOSTS" == true && ${#HOSTS[@]} -gt 0 ]]; then
         fail "--host and --no-hosts cannot be combined."
+    fi
+    if [[ "$CONFIGURE" == true || "$INSTALL_SERVICE" == true ]]; then
+        [[ "$PROFILE" == local ]] || fail "--configure and --service require --profile local."
+        [[ -n "$ENV_FILE" ]] || fail "--configure and --service require --env-file PATH."
+    fi
+    if [[ -n "$ENV_FILE" && "$CONFIGURE" == false ]]; then
+        [[ -f "$ENV_FILE" ]] || fail "--env-file must name an existing file unless --configure is selected."
     fi
 }
 
@@ -300,6 +318,11 @@ main() {
     esac
     [[ -n "${HOME:-}" ]] || fail "HOME is not set."
     command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || fail "Install curl or wget first."
+    if [[ "$CONFIGURE" == true ]]; then
+        # The downloaded script owns stdin; give only the opt-in wizard the controlling terminal.
+        [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null ||
+            fail "--configure requires a terminal. For unattended setup, use --service with an existing --env-file."
+    fi
     if [[ ${#HOSTS[@]} -gt 0 ]]; then
         command -v git >/dev/null 2>&1 || fail "Agent integration setup requires Git. Install Git or use --no-hosts."
     fi
@@ -349,14 +372,44 @@ main() {
     printf 'For a new terminal, add these directories to PATH if needed:\n'
     printf '  export PATH=%q:%q:"%s"\n' "$(dirname "$UV_BIN")" "$tool_bin" "\$PATH"
 
+    if [[ "$CONFIGURE" == true ]]; then
+        "$tool_bin/powercontext" config init --output "$ENV_FILE" --require-write <&3 ||
+            fail "Runtime installed, but configuration did not complete. Review the command error or cancellation; retry config init before service setup."
+        printf 'Configuration saved: %s\n' "$ENV_FILE"
+    fi
+    if [[ -n "$ENV_FILE" && "$PROFILE" == local ]]; then
+        "$tool_bin/powercontext" config validate --env-file "$ENV_FILE" ||
+            fail "Runtime installed, but configuration validation failed. Correct the selected environment file before service setup."
+        printf 'Configuration validated: %s\n' "$ENV_FILE"
+    fi
+    if [[ "$INSTALL_SERVICE" == true ]]; then
+        "$tool_bin/powercontext" service install --env-file "$ENV_FILE" ||
+            fail "Runtime installed, but personal service setup did not complete. Inspect service status and retry service install with the same --env-file."
+        "$tool_bin/powercontext" service status ||
+            fail "Runtime installed, but personal service verification failed. Inspect the native service logs."
+        "$tool_bin/powercontext" doctor --env-file "$ENV_FILE" ||
+            fail "Personal service installed, but Server diagnostics did not pass. Review readiness and retry doctor with the same --env-file."
+        printf 'Personal service verified with: %s\n' "$ENV_FILE"
+    fi
+
     local setup_status=0
     if [[ ${#HOSTS[@]} -gt 0 ]]; then
-        "$tool_bin/powercontext" setup select --source oceanbase/powercontext \
+        local setup_args=(setup)
+        [[ -z "$ENV_FILE" ]] || setup_args+=(--env-file "$ENV_FILE")
+        "$tool_bin/powercontext" "${setup_args[@]}" select --source oceanbase/powercontext \
             --ref "powercontext-v$VERSION" ${HOSTS[@]+"${HOSTS[@]}"} || setup_status=$?
     fi
     if [[ "$PROFILE" == local ]]; then
-        printf '\nConfigure PowerContext with: powercontext config init\n  %s\n' "$GUIDE"
-        printf '%s\n' 'Then run: powercontext server run --env-file .env'
+        if [[ "$INSTALL_SERVICE" == true ]]; then
+            printf '%s\n' 'After upgrades or any environment-file edit, rerun service install with the same --env-file.'
+        else
+            local next_env=${ENV_FILE:-.env}
+            [[ -n "$ENV_FILE" ]] || printf '\nConfigure: powercontext config init --output %q\n' "$next_env"
+            printf 'Then run: powercontext service install --env-file %q\n' "$next_env"
+            printf '  powercontext service status\n  powercontext doctor --env-file %q\n' "$next_env"
+            printf '%s\n' 'A native user-service manager and loopback Server bind are required. For development or temporary use, run powercontext server run.'
+        fi
+        printf '  %s\n' "$GUIDE"
     else
         printf '\nConnect to your existing Server:\n  %s\n' \
             'https://powercontext.oceanbase.io/en/docs/operate/connect-remote-server/'

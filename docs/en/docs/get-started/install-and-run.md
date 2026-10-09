@@ -52,6 +52,51 @@ For an existing remote Server, add `--profile client` to install only the CLI an
 configuration or data. For a local installation, continue with `powercontext config init` and [Quick Start](quickstart.md).
 Client-only installations use endpoint settings in the [remote connection guide](../operate/connect-remote-server.md).
 
+## Configure and install a personal service
+
+For personal macOS/Linux use, the recommended lifecycle is a native current-user service. The installer can
+explicitly compose configuration and service registration:
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- \
+  --configure --service --env-file "$HOME/.config/powercontext/powercontext.env"
+```
+
+`--configure` opens the existing wizard through the controlling terminal and requires `--env-file`. Save the file
+to continue; cancellation stops service and host setup. Choose loopback binding for a personal service. Linux needs
+an available `systemd --user` manager. In a non-interactive environment, provide an existing protected file instead:
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- \
+  --service --env-file /path/to/powercontext.env
+```
+
+The installer validates that file, runs `service install`, checks `service status`, and runs `doctor --env-file`
+against the Server settings in the same file. An explicit `--host` also receives this file and the installed release
+ref. Client-only installations reject `--configure` and `--service` before installation. `--env-file` alone can supply
+connection settings to an explicitly selected host without installing a local service.
+
+Windows supports the same explicit options experimentally; `--service` opts into login auto-start. Run `--configure`
+in an interactive console. Protect an existing file using the ACL steps in [Deploy the Server](../operate/deploy-server.md).
+
+These options need an installed release providing `config init --require-write` and `doctor --env-file`. If the selected
+release lacks them, the installer reports the failed stage and retains the Runtime; use a compatible release or the
+separate configuration/service commands. Runtime installation, saved configuration, service registration, and Server
+readiness are separate outcomes. `degraded` diagnostics return nonzero. A failed post-install stage does not roll back
+packages, delete configuration, or remove an already committed service registration.
+
+After any file edit, including writing returned Scope IDs, reconcile using the original file:
+
+```bash
+powercontext service install --env-file /path/to/powercontext.env
+powercontext service status
+powercontext doctor --env-file /path/to/powercontext.env
+```
+
+`doctor --env-file` gives the file authority over shell defaults. A Server file selects its listener; a client-only
+file selects its Client URL. `--server-url` can explicitly override the diagnostic target. Generated next-step instructions
+cover Scope creation and Agent acceptance; a running service does not establish an Agent workflow.
+
 ## Choose a version
 
 The default `--version latest` installs or upgrades to the newest stable release available from the selected index
@@ -146,9 +191,16 @@ Follow the [guide for each integration](../integrations/index.md) for Agent inst
 
 ## Run the local Server
 
+On personal macOS/Linux, install the native current-user service:
+
 ```bash
-powercontext server run
+powercontext service install
+powercontext service status
+powercontext doctor
 ```
+
+Use `powercontext server run` for development, debugging, temporary use, and platforms without a supported native manager.
+Stop an existing foreground instance before installing the service. Service installation remains an explicit operation.
 
 Without environment variables or an environment file, the Server:
 
@@ -158,7 +210,8 @@ Without environment variables or an environment file, the Server:
 - creates a persistent SQLite database in the operating system's user data directory;
 - supports explicit Memory operations without an inference provider.
 
-`Ctrl-C` performs a clean shutdown. Restarting the command reopens the same database.
+The service manager owns startup and restart. Reinstall its definition after relevant upgrades or configuration changes.
+A foreground `server run` stops cleanly on `Ctrl-C`. Both entry points reopen the same configured database.
 
 The Dashboard is an optional content viewer for personal use and demonstrations. It is disabled by default and needs
 no separate frontend installation or model configuration. To enable it locally without a token, save these settings
@@ -177,7 +230,9 @@ also offers this choice when enabling Dashboard locally.
 ```bash
 chmod 600 /path/to/powercontext.env
 powercontext config validate --env-file /path/to/powercontext.env
-powercontext server run --env-file /path/to/powercontext.env
+powercontext service install --env-file /path/to/powercontext.env
+powercontext service status
+powercontext doctor --env-file /path/to/powercontext.env
 ```
 
 Open `http://127.0.0.1:8000/dashboard/home`, using the actual port if you change it. With authentication disabled, the
@@ -265,6 +320,9 @@ The Dashboard must be explicitly enabled; static Bearer authentication is option
 [Deploy the Server](../operate/deploy-server.md). Remote plaintext HTTP connections require explicit client consent;
 see [Connect to a remote Server](../operate/connect-remote-server.md).
 
+For a registered personal service, use `powercontext service uninstall` to stop it while preserving data. After
+the package update, repeat `service install --env-file` with the original path.
+
 To upgrade to the latest stable version, rerun the installer. To keep an exact release, add `--version`:
 
 ```bash
@@ -277,8 +335,9 @@ To replace the installed tool with another Git ref:
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@<ref>"
 ```
 
-Update each installed host using its [integration guide](../integrations/index.md) and the same ref. Restart the Server and open a new host session
-after updating. Existing SQLite data remains in the user data directory unless `POWERCONTEXT_HOME` or the database URL
+Update each installed host using its [integration guide](../integrations/index.md) and the same ref. After updating,
+rerun `powercontext service install --env-file /path/to/powercontext.env` with the original file, check `service status`
+and `doctor --env-file`, then open a new host session. Existing SQLite data remains in the user data directory unless `POWERCONTEXT_HOME` or the database URL
 changes.
 
 ## Install a Python role

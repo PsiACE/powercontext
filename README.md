@@ -58,13 +58,16 @@ Choose **Basic memory** to save and retrieve memories explicitly without additio
 
 The wizard writes one `.env` environment file and `.env.next-steps.md`.
 If seekdb needs installing, it asks once and installs the dependency in the background. Follow the printed
-connection details and start Server in this terminal:
+connection details. On personal macOS/Linux, install the native user service:
 
 ```bash
-powercontext server run --env-file .env
+powercontext config validate --env-file .env
+powercontext service install --env-file .env
+powercontext service status
+powercontext doctor --env-file .env
 ```
 
-Keep Server running. In another terminal, return to `powercontext-config`, load only the client settings,
+The service manager keeps Server running after you close the terminal. In `powercontext-config`, load the client settings
 and check the connection:
 
 ```bash
@@ -75,8 +78,9 @@ powercontext ready
 powercontext capabilities
 ```
 
-Continue with `.env.next-steps.md` to create and bind the selected Scopes, install the matching plugins, and launch
-a new Agent session. The [complete walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
+Continue with `.env.next-steps.md` to create and bind Scopes, then rerun `powercontext service install --env-file .env`
+after saving their IDs. Use the same file after upgrades or any configuration edit. Install matching plugins and launch
+a new Agent session. For development, temporary use, or an unavailable native user manager, use `powercontext server run`. The [complete walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
 covers Codex and Claude Code, Dashboard login, SSH forwarding, HTTPS prerequisites, and observable acceptance checks.
 For example, the matching Codex installation is:
 

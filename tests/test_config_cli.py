@@ -404,18 +404,28 @@ def test_init_refuses_to_replace_an_existing_environment_without_force(
     assert environment.read_text(encoding="utf-8") == "EXISTING=value\n"
 
 
-def test_init_force_defaults_to_preserving_existing_inference_configuration(tmp_path: Path) -> None:
+@pytest.mark.parametrize("require_write", [False, True])
+def test_init_force_defaults_to_preserving_existing_inference_configuration(
+    tmp_path: Path, require_write: bool
+) -> None:
     environment = tmp_path / ".env"
     original = config_cli.render_managed_block(_configuration())
     environment.write_text(original, encoding="utf-8")
 
     result = CliRunner().invoke(
         config_cli.app,
-        ["init", "--template", "--output", str(environment), "--force"],
+        [
+            "init",
+            "--template",
+            "--output",
+            str(environment),
+            "--force",
+            *(["--require-write"] if require_write else []),
+        ],
         input="\n",
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == (130 if require_write else 0)
     assert "will remove existing model, embedding, inference schedule, or provider credential settings" in result.output
     assert "A mode-0600 backup will be created" in result.output
     assert "Replace them with a model-free configuration? [y/N]" in result.output

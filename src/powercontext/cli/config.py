@@ -288,13 +288,18 @@ def init_command(
     template: Annotated[
         bool, typer.Option("--template", help="Use the basic model-free template instead of the guided setup.")
     ] = False,
+    require_write: Annotated[
+        bool, typer.Option(help="Exit with status 130 if configuration is cancelled without saving.")
+    ] = False,
 ) -> None:
     """Create a working configuration through a short guided setup."""
 
     if not template:
         from powercontext.cli.config_wizard import run_wizard
 
-        run_wizard(output, language=None if language is None else language.value, advanced=advanced)
+        written = run_wizard(output, language=None if language is None else language.value, advanced=advanced)
+        if require_write and not written:
+            raise typer.Exit(130)
         return
 
     if output.exists() and not force:
@@ -307,6 +312,8 @@ def init_command(
         content = update_environment_document(existing, configuration)
         if not _confirm_environment_write(output, existing=existing, updated=content):
             typer.echo("No changes written.")
+            if require_write:
+                raise typer.Exit(130)
             return
         backup = write_environment(output, content, backup=output.exists())
     except (ConfigError, EnvironmentFileError, OSError, UnicodeError, ValidationError) as error:
@@ -1025,6 +1032,8 @@ def _removes_inference_configuration(existing: str, updated: str) -> bool:
 
 
 def _print_next_steps(path: Path) -> None:
+    from powercontext.cli.config_startup import server_startup_commands
+
     quoted = shlex.quote(str(path.resolve()))
     typer.secho("\nEnvironment file", bold=True, fg=typer.colors.CYAN)
     typer.echo(f"  Path          {path.resolve()} (mode 0600)")
@@ -1033,7 +1042,12 @@ def _print_next_steps(path: Path) -> None:
         "  If Bearer authentication is enabled, read POWERCONTEXT_SERVER_AUTH_TOKEN from this file;"
         " the value is never printed."
     )
-    typer.echo(f"\nStart Server:\n  powercontext server run --env-file {quoted}")
+    typer.echo("\nStart Server:")
+    for command in server_startup_commands(
+        path.resolve(),
+        host=parse_environment(path.read_text(encoding="utf-8")).get("POWERCONTEXT_SERVER_HTTP_HOST", "127.0.0.1"),
+    ):
+        typer.echo(f"  {command}")
     write_inference_capability_notice(generation_model=None, embedding_model=None)
     typer.secho("\nSupported Coding Agents (choose one):", bold=True, fg=typer.colors.CYAN)
     for host, (name, setup, launch) in AGENTS.items():

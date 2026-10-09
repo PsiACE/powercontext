@@ -48,6 +48,45 @@ PATH。`UV_INSTALL_DIR` 指定缺少 uv 时的安装目录，`UV_TOOL_BIN_DIR` �
 两种模式都不会启动 Server、注册服务或覆盖配置与数据。本地安装使用 `powercontext config init`，继续阅读
 [快速开始](quickstart.md)；Client-only 安装按[远程连接指南](../operate/connect-remote-server.md)设置地址和认证。
 
+## 配置并安装个人服务
+
+个人 macOS/Linux 推荐使用原生当前用户服务。安装器可以显式串联配置向导和服务注册：
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- \
+  --configure --service --env-file "$HOME/.config/powercontext/powercontext.env"
+```
+
+`--configure` 通过控制终端打开现有向导，需要显式 `--env-file`。保存后才能继续；取消会中止后续服务和宿主安装。
+个人服务选择 loopback 绑定；Linux 需要可用的 `systemd --user`。无人值守环境使用已有受保护文件：
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- \
+  --service --env-file /path/to/powercontext.env
+```
+
+安装器验证配置，执行 `service install`、`service status`，再通过 `doctor --env-file` 检查同一文件中的 Server。
+显式 `--host` 也会使用该文件及实际安装版本对应的 ref。Client-only 模式在安装前拒绝 `--configure` 和 `--service`；
+单独使用 `--env-file` 可以为显式宿主安装提供连接配置，而不安装本地服务。
+
+Windows 的相同选项仍为试验性支持；`--service` 显式启用登录自启动。`--configure` 需要交互控制台。
+已有文件的 ACL 保护方式见[部署 Server](../operate/deploy-server.md)。
+
+这些选项要求所选发行版提供 `config init --require-write` 和 `doctor --env-file`。缺少时，安装器报告失败阶段并保留
+Runtime；使用兼容发行版，或分开执行配置与服务命令。Runtime 安装、配置保存、服务注册和 Server 就绪分别报告。
+`degraded` 诊断返回非零状态；后续失败不会回滚包文件、删除配置或移除已提交的服务注册。
+
+任何文件修改，包括写入返回的 Scope ID 后，都要使用原文件重新注册：
+
+```bash
+powercontext service install --env-file /path/to/powercontext.env
+powercontext service status
+powercontext doctor --env-file /path/to/powercontext.env
+```
+
+`doctor --env-file` 以文件为准，覆盖调用者 shell 的默认配置。Server 文件选择其监听地址，Client-only 文件选择 Client URL；
+显式 `--server-url` 可以覆盖诊断目标。生成的后续步骤仍负责引导 Scope 创建和 Agent 验收；服务运行不代表 Agent 工作流已完成。
+
 ## 选择版本
 
 默认 `--version latest` 安装或升级到所选包源中与当前 Python 兼容的最新稳定版，排除预发布版本。
@@ -132,9 +171,16 @@ Agent 的安装、连接参数和验证步骤见[各自的集成文档](../integ
 
 ## 运行本地 Server
 
+个人 macOS/Linux 推荐安装原生当前用户服务：
+
 ```bash
-powercontext server run
+powercontext service install
+powercontext service status
+powercontext doctor
 ```
+
+开发、调试、临时使用或没有可用原生 manager 的平台使用 `powercontext server run`。已有前台实例时，先停止再安装服务。
+服务安装始终是显式操作。
 
 没有环境变量或环境文件时，Server 会：
 
@@ -144,7 +190,8 @@ powercontext server run
 - 在操作系统的用户数据目录中创建持久化 SQLite 数据库；
 - 无需推理服务即可支持显式 Memory 操作。
 
-按 `Ctrl-C` 可正常关闭。再次运行该命令会打开同一个数据库。
+原生服务管理器负责启动和重启；升级或修改配置后重新注册。前台 `server run` 可以通过 `Ctrl-C` 正常关闭。
+两种入口都会打开同一个已配置数据库。
 
 Dashboard 是个人使用和演示的可选内容查看器，默认关闭。它不需要单独安装前端或配置模型。
 本地免 token 启用时，在环境文件中设置以下值：
@@ -161,7 +208,9 @@ POWERCONTEXT_SERVER_ACCESS_MODE=disabled
 ```bash
 chmod 600 /path/to/powercontext.env
 powercontext config validate --env-file /path/to/powercontext.env
-powercontext server run --env-file /path/to/powercontext.env
+powercontext service install --env-file /path/to/powercontext.env
+powercontext service status
+powercontext doctor --env-file /path/to/powercontext.env
 ```
 
 打开 `http://127.0.0.1:8000/dashboard/home`，更改端口后使用实际端口。未启用认证时可直接进入页面；
@@ -239,6 +288,9 @@ Server、客户端和 Agent 集成需一起升级。Dashboard 需要显式启用
 见[部署 Server](../operate/deploy-server.md)；远程明文 HTTP 连接需要客户端明确同意，
 见[连接远程 Server](../operate/connect-remote-server.md)。
 
+个人服务可以通过 `powercontext service uninstall` 停止，数据会保留。包升级后，使用原配置路径重新执行
+`service install --env-file`。
+
 重新运行安装器可升级到最新稳定版；需要保持指定版本时，加上 `--version`：
 
 ```bash
@@ -251,7 +303,8 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@<ref>"
 ```
 
-按[各自的集成文档](../integrations/index.md)更新已安装宿主，并使用同一个 ref。更新后重启 Server，再开启新的宿主会话。只要没有修改
+按[各自的集成文档](../integrations/index.md)更新已安装宿主，并使用同一个 ref。更新后使用原来的文件重新执行 `powercontext service install --env-file /path/to/powercontext.env`，
+检查 `service status` 和 `doctor --env-file`，再开启新的宿主会话。只要没有修改
 `POWERCONTEXT_HOME` 或数据库 URL，现有 SQLite 数据会继续保留。
 
 ## 为 Python 项目安装角色

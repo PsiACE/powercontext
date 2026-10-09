@@ -14,7 +14,8 @@ description: 通过 Bash 和 PowerShell 安装最新或指定版本，独立管�
 `--version` 可以指定准确版本。脚本补齐缺少的 uv 和 Python，安装所选 Runtime profile，并按需调用现有 Agent 集成
 适配器，使用与实际安装的 Runtime 对应的 tag。
 
-安装、配置、诊断和服务运行各自承担独立职责。安装软件不会配置推理服务、启动 Server 或注册持久服务。
+安装、配置、诊断和服务运行各自承担独立职责。默认安装软件不会配置推理服务、启动 Server 或注册持久服务。显式 `--configure` 和 `--service` 可以通过
+现有 CLI 串联这些操作，并使用同一份 `--env-file`。
 README 和快速开始将脚本及其安装指南作为首选路径。
 
 # Motivation
@@ -66,8 +67,44 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1
 已安装的 CLI 提供准确版本，形成 `powercontext-vVERSION`。宿主安装不再次解析 `latest`，也不默认使用 `master`。
 宿主安装失败时，保留已安装的 Runtime，脚本返回非零状态，并提示按该 tag 重试 setup；各适配器提供其已有的宿主结果。
 
-本地模式随后运行 `powercontext config init` 和 `powercontext server run --env-file .env`；Client-only 模式
-则按远程连接指南设置 Server 地址和认证。持久服务仍由用户显式注册。
+个人 macOS/Linux 配置受保护文件后，运行 `powercontext service install --env-file .env`、`powercontext service status`
+和 `powercontext doctor --env-file .env`，由原生用户服务管理器负责生命周期。开发、调试、临时使用或缺少 manager 时，
+保留前台 `server run`。Client-only 模式按远程连接指南设置地址和认证。持久服务仍由用户显式注册。
+
+## 显式配置与个人服务安装
+
+安装器提供三个可以组合的选项：
+
+| 选项 | 契约 |
+| --- | --- |
+| `--configure` | 通过控制终端运行 `config init --require-write --output PATH` |
+| `--service` | 验证所选文件，安装原生用户服务，检查状态与就绪 |
+| `--env-file PATH` | 为配置、服务、诊断和宿主安装选择同一份显式文件 |
+
+```bash
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- \
+  --configure --service --env-file "$HOME/.config/powercontext/powercontext.env"
+```
+
+`--configure` 和 `--service` 要求 local profile 及显式文件。无人值守安装省略 `--configure`，提供已有文件。
+无效组合、缺少已有文件或交互终端时，在 Runtime 安装前失败。Bash 将 `/dev/tty` 单独交给向导，避免与下载脚本的
+stdin 混用；PowerShell 要求交互控制台。普通安装继续支持无人值守。
+
+配置 CLI 增加 `--require-write`，保留独立使用时的取消行为。指定该选项时，取消保存返回 130，即使已有有效旧文件，
+也不会继续修改服务或宿主。两个入口分别报告配置保存、验证、服务验证以及后续失败。
+
+服务安装复用现有服务层的文件保护、loopback、manager 支持、注册归属、reconcile 和启动规则。
+Windows 仍为试验性；入口的显式 `--service` 同时同意登录自启动。完成注册后，还必须通过 `service status` 和
+`doctor --env-file` 的就绪诊断；`degraded` 返回非零状态。
+
+`doctor --env-file` 复用严格的 Python 环境加载器，结束后恢复进程设置。Server 文件选择其监听地址，不受 SSH 转发
+所用 Client URL 或调用者旧配置影响；Client-only 文件选择 Client URL，显式诊断 `--server-url` 优先。
+Shell 不执行文件内容。宿主安装使用 `setup --env-file PATH select`，并绑定实际安装版本对应的 tag。
+
+所选发行版必须提供新增 CLI 选项；旧版缺少时，报告失败阶段并保留 Runtime。发布需要协调包含这些选项的包与网站。
+任何文件修改（包括 Scope ID）或升级后，使用原文件重新执行 `service install --env-file`。
+配置输出和后续步骤统一推荐这一路径，并在 Scope 创建后提示重新注册。后续失败保留包、已保存文件和已提交的服务注册，
+供用户显式恢复。
 
 ## 选择下载来源
 
@@ -135,7 +172,8 @@ Shell 环境变化局限于安装器进程；PowerShell 在 `finally` 恢复临�
 
 ## 持久化与兼容性
 
-安装器不读取或改写 `.env`、凭据、数据目录或数据库 schema，也不停止或重启运行中的服务。
+普通包安装不读取或改写 `.env`、凭据、数据目录或数据库 schema，也不停止或重启服务。显式 `--configure`
+由 CLI 保存所选文件；显式 `--service` 由原生层 reconcile 自有注册，并按既有契约在需要时重启。
 启动升级后的 Server 时，用户按现有升级和迁移指南操作。准确版本重试可以使用缓存；`latest` 则明确允许升级。
 
 `UV_OFFLINE=1` 只支持已有 uv、兼容 Python 和全部依赖时的缓存重装，同时禁用安装器源探测和 uv 网络访问，
@@ -150,7 +188,8 @@ Windows 保持产品的试验性支持状态。原生验收在 Linux、macOS 和
 `tests/fixtures/installation/*.json` 定义两个 shell 适配器共享的公开输入与预期结果。
 `tests/test_installation_contract.py` 使用真实 uv 和小型离线 fixture wheel 执行宿主显式选择、profile、准确版本
 校验、命令缺失和宿主部分失败用例。用例观察安装后的能力、所选宿主、发行 ref 和退出结果，不固定内部函数边界或
-调用顺序。同一组用例在各操作系统原生执行；模拟宿主执行不等于真实 Agent 验收。
+调用顺序。同一组用例在各操作系统原生执行；模拟宿主或服务执行不等于真实原生服务或 Agent 验收。POSIX 控制终端用例覆盖管道安装中的配置请求与取消；
+原生服务 CI 通过安装后的脚本验证记忆持久化、文件修改后的重新注册和停止服务后的升级。
 
 `tests/native/test_installation.py` 执行真实 shell 安装器、uv、安装后的 PowerContext CLI 和 HTTP Server。
 从被测提交构建 wheel，使用发行版形式的元数据和直接本地文件约束。该约束选定被测产物，不构成独立执行的校验和验证。
@@ -219,4 +258,6 @@ Shell 正则无法实现这些契约。
 # Future possibilities
 
 当安装计划需要不可变组件清单、独立集成版本或持久组件修复记录时，脚本可以引导发行版维护的独立安装引擎。
-离线包也可以显式携带全部所需产物。这些扩展都不应隐式启动 Server 或注册服务。
+离线包也可以显式携带全部所需产物。这些扩展继续保持 Server 启动与服务注册的显式同意。
+
+个人服务引导工作关联 [Issue #1900](https://github.com/oceanbase/powercontext/issues/1900)。
