@@ -1384,7 +1384,7 @@ def _next_steps(state: Wizard, output: Path, client_file: Path) -> str:
             "```",
             "",
         ]
-    lines += _agent_installation_steps(state)
+    lines += _agent_installation_steps(state, env_file=client_file)
     if "profile" in state.features:
         lines += _profile_policy_steps(state)
     lines += ["## " + ui.text("Checks and pending steps", "验收与待完成项"), ""]
@@ -1538,7 +1538,7 @@ def _profile_policy_script(address: str, scope_name: str, authorization_name: st
         """).splitlines()
 
 
-def _agent_installation_steps(state: Wizard) -> list[str]:
+def _agent_installation_steps(state: Wizard, *, env_file: Path | None = None) -> list[str]:
     if not state.agents:
         return []
     source = installation_source(Path(__file__))
@@ -1562,7 +1562,10 @@ def _agent_installation_steps(state: Wizard) -> list[str]:
         if source is None:
             lines.append(f"powercontext setup {agent} --help")
             continue
-        command = f"powercontext setup {agent} --source {shlex.quote(source.source)}"
+        command = "powercontext setup"
+        if env_file is not None:
+            command += f" --env-file {shlex.quote(str(env_file))}"
+        command += f" {agent} --source {shlex.quote(source.source)}"
         if source.ref:
             command += f" --ref {shlex.quote(source.ref)}"
         if spec.setup_server_url:

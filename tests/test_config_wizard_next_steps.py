@@ -77,8 +77,9 @@ def test_scope_binding_reloads_client_environment_before_agent_installation(tmp_
     steps = wizard._next_steps(state, tmp_path / ".env", client_file)
 
     creation = steps.index("POST http://127.0.0.1:8000/v1/scopes")
-    installation = steps.index("powercontext setup claude-code")
+    installation = steps.index(" claude-code --source")
     assert f". {client_file}" in steps[creation:installation]
+    assert f"powercontext setup --env-file {client_file} claude-code" in steps
     assert "Reload the edited client environment before starting a new Agent" in steps
 
 
@@ -91,7 +92,7 @@ def test_startup_guidance_matches_personal_service_support(tmp_path, monkeypatch
     environment = tmp_path / ".env"
     steps = wizard._next_steps(state, environment, environment)
     creation = steps.index("POST http://127.0.0.1:8000/v1/scopes")
-    installation = steps.index("powercontext setup claude-code")
+    installation = steps.index(" claude-code --source")
     if platform == "win32":
         assert "powercontext server run --env-file" in steps[:creation]
         assert "powercontext service install" not in steps

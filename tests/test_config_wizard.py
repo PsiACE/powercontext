@@ -269,7 +269,7 @@ def test_openclaw_next_steps_use_plugin_configuration_contract(tmp_path: Path) -
     client = parse_environment(output.read_text())
     assert not any(name.startswith("POWERCONTEXT_OPENCLAW_") for name in client)
     steps = output.with_name("server.env.next-steps.md").read_text()
-    assert "powercontext setup openclaw" in steps
+    assert f"powercontext setup --env-file {output} openclaw" in steps
     assert "--server-url http://127.0.0.1:17429" in steps
     assert "plugins.entries.memory-powercontext.config.endpoint" in steps
     assert "plugins.entries.memory-powercontext.config.autoCapture true" in steps
