@@ -1849,14 +1849,26 @@ async def _validate_selected_scopes(connection: AsyncConnection, scopes: tuple[s
     rows = tuple(
         (
             await connection.execute(
-                select(SCOPES_TABLE.c.scope_id, SCOPES_TABLE.c.parent_scope_id).where(
-                    SCOPES_TABLE.c.scope_id.in_(scopes)
-                )
+                select(
+                    SCOPES_TABLE.c.scope_id,
+                    SCOPES_TABLE.c.parent_scope_id,
+                    SCOPES_TABLE.c.lifecycle_state,
+                ).where(SCOPES_TABLE.c.scope_id.in_(scopes))
             )
         ).mappings()
     )
     if {str(row["scope_id"]) for row in rows} != selected:
         raise BundleFormatError("one or more selected scopes do not exist")
+    # A portable bundle is an ordinary read of every record it copies, so it
+    # stops at the deletion cutoff. `archived` is deliberately still exportable:
+    # archive stops writes, not reads, and archiving is a supported backup. An
+    # internal maintenance or recovery caller with its own contract is a separate
+    # entry point, not this ordinary serving path.
+    unavailable = sorted(str(row["scope_id"]) for row in rows if str(row["lifecycle_state"]) in {"deleting", "deleted"})
+    if unavailable:
+        from powercontext.builtin.scope.errors import ScopeNotWritableError
+
+        raise ScopeNotWritableError(unavailable[0], "deleting")
     if any(row["parent_scope_id"] is not None and str(row["parent_scope_id"]) not in selected for row in rows):
         raise BundleFormatError("selected scope set omits a required parent scope")
     referenced = (

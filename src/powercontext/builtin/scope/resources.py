@@ -112,10 +112,73 @@ class UnsupportedScopeResourceHandler(ScopeResourceHandler):
         raise NotImplementedError(self.reason)
 
 
-def default_handlers() -> tuple[ScopeResourceHandler, ...]:
-    """The only handler this build ships: the owned relational resources."""
+class ScopeEvidenceHandler(ScopeResourceHandler):
+    """Remove the retained evidence rows this build stores beside Artifacts.
 
-    return (ScopeResourceHandler(),)
+    `pc_source_evidence_bindings` is the authoritative binding record for a
+    captured Source, and the Atomic Memory evidence history holds the exact
+    sources an approved Memory adopted. Both are this Scope's own content, both
+    live in schema modules outside `BUILTIN_TABLES`, and both must go for a
+    `complete` operation to mean what it says. Retention of a body-free operation
+    receipt is separate: deletion operation and progress rows are deliberately
+    kept (see ``SCOPE_DELETIONS``/``SCOPE_DELETION_PROGRESS`` and the note in
+    ``persistence.scope_lifecycle``).
+    """
+
+    name = "evidence"
+
+    @override
+    async def purge(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        from powercontext.builtin.persistence.atomic_memory_evidence_schema import (
+            ATOMIC_MEMORY_EVIDENCE_HISTORY_TABLE,
+            SOURCE_EVIDENCE_BINDINGS_TABLE,
+        )
+
+        await connection.execute(
+            delete(ATOMIC_MEMORY_EVIDENCE_HISTORY_TABLE).where(
+                ATOMIC_MEMORY_EVIDENCE_HISTORY_TABLE.c.scope_id == scope_id
+            )
+        )
+        await connection.execute(
+            delete(SOURCE_EVIDENCE_BINDINGS_TABLE).where(SOURCE_EVIDENCE_BINDINGS_TABLE.c.scope_id == scope_id)
+        )
+
+
+class ScopeProjectionHandler(ScopeResourceHandler):
+    """Ask each projection owner to remove this Scope's rows from its own tables.
+
+    The Atomic Memory index and the approved-head lexical index keep projection
+    tables in their own schemas, outside `BUILTIN_TABLES`. This handler delegates
+    to those owners instead of deleting by column match, so each owner decides
+    what it stores, and a store that cannot answer raises a normal failure that
+    keeps the operation visible and retryable.
+    """
+
+    name = "projections"
+
+    def __init__(self, atomic_memory_index, experience_index) -> None:
+        self._atomic_memory_index = atomic_memory_index
+        self._experience_index = experience_index
+
+    @override
+    async def purge(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        await self._atomic_memory_index.purge_scope(connection, scope_id)
+        await self._experience_index.purge_scope(connection, scope_id)
+
+
+def default_handlers(*, atomic_memory_index=None, experience_index=None) -> tuple[ScopeResourceHandler, ...]:
+    """Every handler this build ships for the resources it actually owns.
+
+    The plain relational handler always applies. The evidence handler covers the
+    retained evidence modules. The projection handler is included only when the
+    composition supplies the owners, so a Runtime without them never claims to
+    have cleaned up tables it does not know about.
+    """
+
+    handlers: tuple[ScopeResourceHandler, ...] = (ScopeResourceHandler(), ScopeEvidenceHandler())
+    if atomic_memory_index is not None and experience_index is not None:
+        handlers += (ScopeProjectionHandler(atomic_memory_index, experience_index),)
+    return handlers
 
 
 def require_supported_handlers(handlers: tuple[ScopeResourceHandler, ...]) -> None:
@@ -129,6 +192,8 @@ def require_supported_handlers(handlers: tuple[ScopeResourceHandler, ...]) -> No
 
 
 __all__ = [
+    "ScopeEvidenceHandler",
+    "ScopeProjectionHandler",
     "ScopeResourceHandler",
     "UnsupportedScopeResourceHandler",
     "default_handlers",

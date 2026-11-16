@@ -216,6 +216,7 @@ from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
 from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication, ScopeDeletionApplication
+from powercontext.builtin.scope.resources import default_handlers
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.source_eligibility import is_generation_eligible, require_source_eligible
 from powercontext.builtin.sources import (
@@ -535,10 +536,6 @@ class RelationalContexts:
     ) -> None:
         self.database = database
         self.scopes = ScopeApplication(database, cursor_secret=cursor_secret)
-        # Deletion reuses the Scope application for structural resolution and
-        # shares its write lock, so a preview/confirmation cannot interleave with
-        # an unrelated Scope mutation.
-        self.scope_deletions = ScopeDeletionApplication(database, self.scopes)
         self.source_registry = source_registry or BUILTIN_SOURCE_REGISTRY
         self.topic_memory_index = NoTopicMemoryIndex() if topic_memory_index is None else topic_memory_index
         self.experience_index = NoExperienceIndex() if experience_index is None else experience_index
@@ -750,6 +747,19 @@ class RelationalContexts:
         self._memory_rerank_candidate_limit = memory_rerank_candidate_limit
         self._handoff_artifact_id = handoff_artifact_id
         self._tracing = tracing
+        # Deletion reuses the Scope application for structural resolution and
+        # shares its write lock, so a preview/confirmation cannot interleave with
+        # an unrelated Scope mutation. It is built here, after the projection
+        # owners, so their own purge contracts are part of the confirmed cleanup
+        # rather than a table list this service guesses at.
+        self.scope_deletions = ScopeDeletionApplication(
+            database,
+            self.scopes,
+            handlers=default_handlers(
+                atomic_memory_index=self.atomic_memory_index,
+                experience_index=self.experience_index,
+            ),
+        )
         self._scope_states: dict[str, _ScopeState] = {}
 
     @property

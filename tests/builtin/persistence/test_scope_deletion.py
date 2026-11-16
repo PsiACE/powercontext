@@ -439,3 +439,207 @@ def test_deletion_preview_refuses_an_over_budget_range_instead_of_truncating(tmp
             assert (await deletion.state_of(root.scope_id)).lifecycle_state == "writable"
 
     _run(scenario)
+
+
+def test_exact_parent_and_child_set_completes_in_either_id_order(tmp_path) -> None:
+    """Removal follows parent edges, not the confirmed order or lexical ids.
+
+    An `exact` selection returns members sorted by `scope_id`, so a child whose id
+    sorts first used to be removed after its parent and the operation never
+    finalized. Topology decides, so both id orders converge.
+    """
+
+    async def scenario() -> None:
+        for parent_sorts_first in (True, False):
+            async with _family(tmp_path) as (_opened, _scopes, deletion, root, child, _sibling):
+                # `_family` ids are random; select the pair explicitly in both
+                # orders to cover the exact-selection shape directly.
+                ordered = (child.scope_id, root.scope_id) if parent_sorts_first else (root.scope_id, child.scope_id)
+                selection = ScopeSelection(mode="exact", scope_ids=ordered)
+                preview = await deletion.preview(selection)
+                assert len(preview.members) == 2
+                assert preview.outside_children == ()
+                receipt = await deletion.confirm(selection, preview.membership_digest)
+                assert receipt.complete, (parent_sorts_first, receipt.state, receipt.progress)
+                assert {item.state for item in receipt.progress} == {"done"}
+                # Both member rows are gone, whatever order they were confirmed in.
+                for member in preview.members:
+                    assert (await _state_or_none(deletion, member.scope_id)) is None
+
+    _run(scenario)
+
+
+async def _state_or_none(deletion, scope_id: str):
+    try:
+        return await deletion.state_of(scope_id)
+    except ScopeNotFoundError:
+        return None
+
+
+def test_single_scope_delete_refuses_a_multi_member_set_before_any_cutoff(tmp_path) -> None:
+    """`single_scope=True` is a size contract, not only a childlessness one."""
+
+    async def scenario() -> None:
+        async with _family(tmp_path) as (_opened, _scopes, deletion, root, _child, sibling):
+            # Two unrelated leaves: neither has children, so only the size rule can
+            # refuse this set.
+            selection = ScopeSelection(mode="exact", scope_ids=(_child.scope_id, sibling.scope_id))
+            preview = await deletion.preview(selection)
+            assert len(preview.members) == 2
+            assert preview.outside_children == ()
+            with pytest.raises(ScopeDeletionConflictError):
+                await deletion.confirm(selection, preview.membership_digest, single_scope=True)
+            # Refused before any cutoff: both members are still untouched.
+            assert (await deletion.state_of(_child.scope_id)).lifecycle_state == "writable"
+            assert (await deletion.state_of(sibling.scope_id)).lifecycle_state == "writable"
+
+            # A parent with its own child is a multi-member set too, and must not
+            # execute under the single-Scope contract.
+            pair = ScopeSelection(mode="exact", scope_ids=(root.scope_id, _child.scope_id))
+            pair_preview = await deletion.preview(pair)
+            assert len(pair_preview.members) == 2
+            with pytest.raises(ScopeDeletionConflictError):
+                await deletion.confirm(pair, pair_preview.membership_digest, single_scope=True)
+            assert (await deletion.state_of(root.scope_id)).lifecycle_state == "writable"
+
+    _run(scenario)
+
+
+def test_complete_deletion_removes_owner_content_but_keeps_the_operation_receipt(tmp_path) -> None:
+    """`complete` means this Scope's own authoritative content is gone.
+
+    Atomic Memory keeps its current projection, its adopted evidence and the
+    captured-Source bindings in schema modules outside `BUILTIN_TABLES`, so those
+    owners must purge their own rows before an operation may report success. The
+    deletion operation and its progress rows are body-free evidence of what
+    happened and are deliberately retained.
+    """
+
+    async def scenario() -> None:
+        from sqlalchemy import func, select
+
+        from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+        from powercontext.builtin.persistence.atomic_memory_evidence_schema import (
+            ATOMIC_MEMORY_EVIDENCE_HISTORY_TABLE,
+            SOURCE_EVIDENCE_BINDINGS_TABLE,
+        )
+        from powercontext.builtin.persistence.atomic_memory_index_schema import ATOMIC_MEMORY_EVIDENCE_PROJECTION_TABLE
+        from powercontext.builtin.persistence.tables import (
+            SCOPE_DELETION_PROGRESS_TABLE,
+            SCOPE_DELETIONS_TABLE,
+        )
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'content.db'}")
+        async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            assert runtime.scopes is not None and runtime.scope_deletions is not None
+            assert runtime.atomic_memory is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Orders", summary="Project", idempotency_key="content")
+            )
+            await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(kind="rule", text="customer-private-rule-42"),
+            ))
+            selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+            preview = await runtime.scope_deletions.preview(selection)
+            receipt = await runtime.scope_deletions.confirm(selection, preview.membership_digest)
+            assert receipt.complete
+            assert {item.state for item in receipt.progress} == {"done"}
+
+            owner_tables = (
+                ATOMIC_MEMORY_EVIDENCE_HISTORY_TABLE,
+                SOURCE_EVIDENCE_BINDINGS_TABLE,
+                ATOMIC_MEMORY_EVIDENCE_PROJECTION_TABLE,
+            )
+            async with runtime.primary_database.transaction() as connection:
+                for table in owner_tables:
+                    remaining = await connection.scalar(
+                        select(func.count()).select_from(table).where(table.c.scope_id == scope.scope_id)
+                    )
+                    assert remaining == 0, table.name
+                # The operation receipt is retained: body-free evidence of the act.
+                assert (
+                    await connection.scalar(
+                        select(func.count())
+                        .select_from(SCOPE_DELETIONS_TABLE)
+                        .where(SCOPE_DELETIONS_TABLE.c.operation_id == receipt.operation_id)
+                    )
+                    == 1
+                )
+                progress_rows = await connection.scalar(
+                    select(func.count())
+                    .select_from(SCOPE_DELETION_PROGRESS_TABLE)
+                    .where(SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == receipt.operation_id)
+                )
+                assert (progress_rows or 0) > 0
+
+    _run(scenario)
+
+
+def test_read_cutoff_refuses_publishing_from_and_exporting_a_deleting_scope(tmp_path) -> None:
+    """Ordinary reads stop at the deletion cutoff, and archive stays readable.
+
+    Publication and portable export are ordinary reads of Scope content. An
+    archived source must stay publishable and exportable (archive stops writes,
+    not reads); only a `deleting` Scope is unavailable.
+    """
+
+    async def scenario() -> None:
+        from sqlalchemy import update
+
+        from powercontext.artifacts import ArtifactAddress, ArtifactRef
+        from powercontext.builtin.persistence.tables import SCOPES_TABLE
+        from powercontext.builtin.portability.bundle import PortableBundleService
+        from powercontext.builtin.publication import ArtifactPublicationRequest
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'cutoff.db'}")
+        async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            assert runtime.scopes is not None and runtime.publications is not None
+            publications = runtime.publications
+            source = await runtime.scopes.create(ScopeDraft(title="Origin", summary="Work", idempotency_key="origin"))
+            target = await runtime.scopes.create(
+                ScopeDraft(title="Orders", summary="Project", idempotency_key="target")
+            )
+            artifact = await runtime.records.for_scope(source.scope_id).create_artifact(
+                "experience", ArtifactWrite(content=_experience("Origin lesson").model_dump(mode="json"))
+            )
+
+            def publication(key: str) -> ArtifactPublicationRequest:
+                return ArtifactPublicationRequest(
+                    source=ArtifactAddress(
+                        scope_id=source.scope_id,
+                        artifact=ArtifactRef(family="experience", artifact_id=artifact.artifact_id, revision=1),
+                    ),
+                    target_scope_id=target.scope_id,
+                    idempotency_key=key,
+                )
+
+            async def export(scope_id: str, name: str) -> None:
+                await PortableBundleService(runtime.primary_database).export(
+                    [scope_id], tmp_path / name, authorize=_allow_export
+                )
+
+            # Archived source: publication and export are still allowed reads.
+            archived = await runtime.scopes.archive(
+                source.scope_id, (await runtime.scopes.get(source.scope_id)).version
+            )
+            assert archived.lifecycle_state == "archived"
+            await publications.publish(publication("from-archived"))
+            await export(source.scope_id, "archived.pcb")
+
+            # Deletion cutoff: the same reads are refused.
+            async with runtime.primary_database.transaction() as connection:
+                await connection.execute(
+                    update(SCOPES_TABLE)
+                    .where(SCOPES_TABLE.c.scope_id == source.scope_id)
+                    .values(lifecycle_state="deleting")
+                )
+            with pytest.raises(ScopeNotWritableError):
+                await publications.publish(publication("from-deleting"))
+            with pytest.raises(ScopeNotWritableError):
+                await export(source.scope_id, "deleting.pcb")
+
+    _run(scenario)
+
+
+async def _allow_export(_scopes, /) -> None:
+    return None

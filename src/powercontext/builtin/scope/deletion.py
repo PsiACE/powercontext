@@ -136,6 +136,14 @@ class ScopeDeletionApplication:
                     current.root_scope_id, "the structural set changed since it was previewed"
                 )
             if single_scope:
+                # "Single-Scope delete" is a size contract, not just a
+                # childlessness one: a multi-member set must never execute under
+                # it, including a parent together with its own child.
+                if len(current.members) != 1:
+                    raise ScopeDeletionConflictError(
+                        current.root_scope_id,
+                        "a single-Scope delete requires exactly one confirmed Scope",
+                    )
                 await self._require_childless(connection, current)
             if current.outside_children:
                 raise ScopeDeletionConflictError(
@@ -203,7 +211,7 @@ class ScopeDeletionApplication:
         confirmed set is ever deleted to force this to succeed.
         """
 
-        members = tuple(reversed(receipt_scope_ids(receipt)))
+        members = removal_order(receipt.members)
         try:
             async with self._database.transaction() as connection:
                 # Inbound references recorded after the cutoff are removed here, so
@@ -310,13 +318,49 @@ class ScopeDeletionApplication:
 
 
 def receipt_scope_ids(receipt: ScopeDeletionReceipt, /) -> tuple[str, ...]:
-    """Members in confirmed order: root first, then structural descendants.
-
-    ``pc_scopes.parent_scope_id`` references ``pc_scopes`` itself, so the Scope
-    rows must be removed in the reverse of this order.
-    """
+    """The confirmed member identities, unchanged and in recorded order."""
 
     return tuple(member.scope_id for member in receipt.members)
+
+
+def removal_order(members: tuple[ScopeDeletionMember, ...], /) -> tuple[str, ...]:
+    """Order the confirmed members so every child is removed before its parent.
+
+    ``pc_scopes.parent_scope_id`` references ``pc_scopes`` itself, so the rows
+    must go deepest-first. The confirmed members arrive in resolver order, which
+    differs between an ``exact`` selection (sorted by id) and a ``subtree``
+    (root-first), so the order that satisfies the constraint has to come from the
+    parent edges in the set itself — never from the member order or from lexical
+    id order. A set that genuinely contains a cycle cannot be ordered, and the
+    remaining members are returned as-is for the caller's failure path.
+    """
+
+    children: dict[str | None, list[str]] = {}
+    for member in members:
+        children.setdefault(member.parent_scope_id, []).append(member.scope_id)
+    ordered: list[str] = []
+    ready = sorted(children.get(None, ()))
+    # Depth-first from each root: a node is emitted only after its own children,
+    # so a parent never precedes a child that is still in the set.
+    pending = {member.scope_id for member in members}
+
+    def emit(scope_id: str) -> None:
+        for child in sorted(children.get(scope_id, ())):
+            if child in pending:
+                emit(child)
+        if scope_id in pending:
+            pending.discard(scope_id)
+            ordered.append(scope_id)
+
+    for root in ready:
+        if root in pending:
+            emit(root)
+    # A member whose parent lies outside the set (an `exact` selection with the
+    # root omitted) is still a member; emit it after its own children.
+    for member in sorted(members, key=lambda item: item.scope_id):
+        if member.scope_id in pending:
+            emit(member.scope_id)
+    return tuple(ordered)
 
 
 def _encode_members(members: tuple[ScopeDeletionMember, ...]) -> bytes:

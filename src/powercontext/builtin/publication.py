@@ -36,6 +36,7 @@ from powercontext.builtin.persistence.experience_index import ExperienceIndex
 from powercontext.builtin.persistence.tables import ARTIFACT_PUBLICATIONS_TABLE
 from powercontext.builtin.persistence.topic_memory_management import TopicMemoryManagementWriter
 from powercontext.builtin.scope import ScopeApplication, ScopeNotFoundError
+from powercontext.builtin.scope.errors import ScopeNotWritableError
 from powercontext.errors import PowerContextError
 from powercontext.limits import MAX_SCOPE_IDEMPOTENCY_KEY_LENGTH
 
@@ -119,11 +120,7 @@ class ArtifactPublicationApplication:
     ) -> ArtifactPublication:
         if request.source.artifact.family == "atomic-memory":
             raise ArtifactPublicationUnsupportedError("atomic-memory")
-        scope_ids = (request.source.scope_id, request.target_scope_id)
-        existing_scopes = {scope.scope_id for scope in await self._scopes.list(scope_ids=scope_ids)}
-        for scope_id in scope_ids:
-            if scope_id not in existing_scopes:
-                raise ScopeNotFoundError(scope_id)
+        await self._require_publishable(request)
         projection = None
         if request.source.artifact.family == TopicMemory.family:
             writer = self._topic_memory_writer
@@ -144,6 +141,27 @@ class ArtifactPublicationApplication:
             if existing is None:
                 raise
             return _resolve_request(existing, request)
+
+    async def _require_publishable(self, request: ArtifactPublicationRequest, /) -> None:
+        """Check both ends at the boundary that reads and writes them.
+
+        Publishing reads the source Artifact and writes into the target, so the
+        target must be writable and the source must still be readable. An archived
+        source stays publishable: archive stops that Scope's own writes and keeps
+        authorised reads, which is exactly what a publication from it is. Only the
+        deletion cutoff makes the source unavailable.
+        """
+        scope_ids = (request.source.scope_id, request.target_scope_id)
+        existing = {scope.scope_id: scope for scope in await self._scopes.list(scope_ids=scope_ids)}
+        for scope_id in scope_ids:
+            if scope_id not in existing:
+                raise ScopeNotFoundError(scope_id)
+        source_state = existing[request.source.scope_id].lifecycle_state
+        if source_state in {"deleting", "deleted"}:
+            raise ScopeNotWritableError(request.source.scope_id, source_state)
+        target_state = existing[request.target_scope_id].lifecycle_state
+        if target_state != "writable":
+            raise ScopeNotWritableError(request.target_scope_id, target_state)
 
     async def _publish(
         self,

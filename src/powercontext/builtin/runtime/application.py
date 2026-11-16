@@ -4271,6 +4271,7 @@ class BuiltinRuntime:
         decision_model: DecisionModel | None = None,
         publication_application: ArtifactPublicationApplication | None = None,
         scope_application: ScopeApplication | None = None,
+        scope_deletion_application: ScopeDeletionApplication | None = None,
         readiness: RuntimeReadinessChecks | None = None,
         clock: Clock | None = None,
         tracing: RuntimeTracing | None = None,
@@ -4368,11 +4369,7 @@ class BuiltinRuntime:
         # Lifecycle deletion is a separate capability because it needs the Scope
         # application's structural resolution and its write lock, not a second
         # authority over Scope identity.
-        self.scope_deletions: ScopeDeletionApplication | None = (
-            None
-            if scope_application is None or primary_database is None
-            else ScopeDeletionApplication(primary_database, scope_application)
-        )
+        self.scope_deletions: ScopeDeletionApplication | None = scope_deletion_application
         self._scope_operations: dict[tuple[asyncio.Task[Any] | None, str], ScopeDescriptor] = {}
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness
         self._clock = _utc_now if clock is None else clock
