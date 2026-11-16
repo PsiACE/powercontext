@@ -4070,7 +4070,9 @@ def test_origin_commit_refuses_when_storage_predates_origins(tmp_path: Path) -> 
                 target=None,
                 reason="Admitted from another Scope.",
             )
-            # A managed database whose revision chain predates recorded origins.
+            # Simulated absent storage: the relation is dropped from this unmanaged
+            # runtime, which is the supported pre-relation state. This is not a real
+            # managed upgrade and establishes nothing about managed-backend qualification.
             async with contexts.database.transaction() as connection:
                 await connection.execute(text("DROP TABLE pc_artifact_lineage_origins"))
 
@@ -4091,3 +4093,243 @@ def test_origin_commit_refuses_when_storage_predates_origins(tmp_path: Path) -> 
             assert readable.lineage.origins == ()
 
     asyncio.run(scenario())
+
+
+def test_archive_refuses_origin_payloads_its_reader_could_not_decode(tmp_path: Path) -> None:
+    """An accepted archive must imply a readable origin, so malformed ones are refused.
+
+    Each bundle is canonical (record, total digests and bundle id recomputed), so the
+    only defect is the origin value itself. Both the dry run and the restore refuse,
+    and the target keeps no rows and no receipt.
+    """
+
+    from sqlalchemy import text
+
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.portability import BundleCompatibilityError, BundleFormatError
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+
+    def origin(record) -> dict[str, object] | None:
+        return record["payload"] if record["record_type"] == "artifact_lineage_origin" else None
+
+    def bad_digest(record) -> None:
+        payload = origin(record)
+        if payload is not None and record["identity"]["ordinal"] == 0:
+            payload["digest"] = "sha256:" + "z" * 64
+
+    def blank_scope(record) -> None:
+        payload = origin(record)
+        if payload is not None and record["identity"]["ordinal"] == 0:
+            payload["origin_scope_id"] = " "
+
+    def over_long_artifact_id(record) -> None:
+        payload = origin(record)
+        if payload is not None and payload["origin_kind"] == "artifact":
+            payload["origin_id"] = "a" * 200
+
+    async def scenario() -> None:
+        source = tmp_path / "bundle.pcb"
+        await _build_origin_archive(tmp_path, proposal)
+        for name, mutate in (
+            ("digest", bad_digest),
+            ("scope", blank_scope),
+            ("artifact_id", over_long_artifact_id),
+        ):
+            bundle = tmp_path / f"{name}.pcb"
+            _rewrite_archive(source, bundle, mutate)
+            config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / f'{name}.db'}"))
+            async with open_builtin_contexts(config) as contexts:
+                with pytest.raises((BundleFormatError, BundleCompatibilityError)):
+                    await contexts.portability.validate(bundle)
+                with pytest.raises((BundleFormatError, BundleCompatibilityError)):
+                    await contexts.portability.restore(bundle)
+                async with contexts.database.transaction() as connection:
+                    receipts = await connection.scalar(text("SELECT COUNT(*) FROM pc_portable_restore_receipts"))
+                    rows = await connection.scalar(text("SELECT COUNT(*) FROM pc_artifact_lineage_origins"))
+                assert (receipts, rows) == (0, 0)
+
+    asyncio.run(scenario())
+
+
+def test_origin_archive_refuses_target_without_origin_storage(tmp_path: Path) -> None:
+    """Dry run reports the missing capability and restore refuses before any write.
+
+    Simulated absent storage: the relation is dropped from an unmanaged runtime, which is
+    the supported pre-relation state. This establishes nothing about managed-backend
+    qualification. An origin-free archive still restores on that same target.
+    """
+
+    from sqlalchemy import text
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.portability import BundleCompatibilityError
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.sources import SourceRef
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+
+    async def authorize(_scopes) -> None:
+        return None
+
+    async def build(archive: Path, *, with_origins: bool) -> str:
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'source.db'}"))
+        async with open_builtin_contexts(config) as contexts:
+            scope_id = (
+                await contexts.scopes.create(
+                    ScopeDraft(title="Orders", summary="s", idempotency_key=f"t-{with_origins}")
+                )
+            ).scope_id
+            created = await contexts.records.create_artifact(
+                scope_id, "experience", ArtifactWrite(content=proposal.model_dump(mode="json"))
+            )
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            if with_origins:
+                candidate = await review.propose_experience_from_origins(
+                    proposal,
+                    sources=(),
+                    artifacts=(citation,),
+                    origins=(
+                        RecordedOrigin(
+                            scope_id="scp_alice",
+                            source=SourceRef(source_type="content", source_id="note"),
+                            digest=content_digest(b"alice"),
+                        ),
+                    ),
+                    target=None,
+                    reason="Reconciled the two channels.",
+                )
+            else:
+                candidate = await review.propose_experience(
+                    proposal, sources=(), artifacts=(citation,), target=None, reason="Local only."
+                )
+            await review.approve(candidate.candidate_id, candidate.version)
+            await contexts.portability.export([scope_id], archive, authorize=authorize)
+            return scope_id
+
+    async def scenario() -> None:
+        with_origins = tmp_path / "with-origins.pcb"
+        without = tmp_path / "without-origins.pcb"
+        await build(with_origins, with_origins=True)
+        await build(without, with_origins=False)
+
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'target.db'}"))
+        async with open_builtin_contexts(config) as contexts:
+            async with contexts.database.transaction() as connection:
+                await connection.execute(text("DROP TABLE pc_artifact_lineage_origins"))
+
+            validation = await contexts.portability.validate(with_origins)
+            assert validation.compatible is False
+            assert validation.missing_capabilities == ("artifact_lineage_origins",)
+            with pytest.raises(BundleCompatibilityError):
+                await contexts.portability.restore(with_origins)
+            async with contexts.database.transaction() as connection:
+                receipts = await connection.scalar(text("SELECT COUNT(*) FROM pc_portable_restore_receipts"))
+                revisions = await connection.scalar(text("SELECT COUNT(*) FROM pc_artifacts"))
+            assert (receipts, revisions) == (0, 0)
+
+            # An origin-free archive is unaffected by the missing capability.
+            receipt = await contexts.portability.restore(without)
+            assert receipt.inserted > 0
+
+    asyncio.run(scenario())
+
+
+def _rewrite_archive(source: Path, destination: Path, mutate) -> None:
+    """Rewrite one portable bundle, recomputing record, total digests and identity."""
+
+    import hashlib
+    import uuid
+    import zipfile
+
+    with zipfile.ZipFile(source) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        records = [json.loads(line) for line in archive.read("records.ndjson").decode().splitlines()]
+    for record in records:
+        mutate(record)
+        canonical = {
+            "record_type": record["record_type"],
+            "schema_version": record["schema_version"],
+            "identity": record["identity"],
+            "payload": record["payload"],
+        }
+        encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        record["digest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    total = "sha256:" + hashlib.sha256("\n".join(item["digest"] for item in records).encode("ascii")).hexdigest()
+    manifest["total_digest"] = total
+    manifest["record_count"] = len(records)
+    counts: dict[str, int] = {}
+    for item in records:
+        counts[item["record_type"]] = counts.get(item["record_type"], 0) + 1
+    manifest["records_by_type"] = dict(sorted(counts.items()))
+    manifest["bundle_id"] = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"powercontext:portable:v{manifest['format_version']}:{total}",
+        )
+    )
+    body = "".join(
+        json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" for item in records
+    )
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as out:
+        out.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode())
+        out.writestr("records.ndjson", body.encode())
+
+
+async def _build_origin_archive(tmp_path: Path, proposal: ExperienceContent) -> None:
+    """Export one committed origin-bearing revision from a fresh database."""
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.sources import SourceRef
+
+    async def authorize(_scopes) -> None:
+        return None
+
+    archive = tmp_path / "bundle.pcb"
+    config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'source.db'}"))
+    async with open_builtin_contexts(config) as contexts:
+        scope_id = (await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))).scope_id
+        created = await contexts.records.create_artifact(
+            scope_id, "experience", ArtifactWrite(content=proposal.model_dump(mode="json"))
+        )
+        citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+        review = contexts.review(scope_id)
+        candidate = await review.propose_experience_from_origins(
+            proposal,
+            sources=(),
+            artifacts=(citation,),
+            origins=(
+                RecordedOrigin(
+                    scope_id="scp_alice",
+                    source=SourceRef(source_type="content", source_id="note"),
+                    digest=content_digest(b"alice"),
+                ),
+                RecordedOrigin(
+                    scope_id="scp_bob",
+                    artifact=ArtifactRef(family="experience", artifact_id="shared", revision=4),
+                    digest=content_digest(b"bob"),
+                ),
+            ),
+            target=None,
+            reason="Reconciled the two channels.",
+        )
+        await review.approve(candidate.candidate_id, candidate.version)
+        await contexts.portability.export([scope_id], archive, authorize=authorize)
