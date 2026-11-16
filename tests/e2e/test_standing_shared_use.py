@@ -168,6 +168,31 @@ async def _seed(access: AccessControlService, alice: str, bob: str, orders: str)
     }
 
 
+async def _trusted_freeform_accept(service: ShareRuleService, rule: ShareRule, origin_scope_id: str):
+    """Reproduce the durable state an unconfigured trusted Runtime would have written.
+
+    The validator is a bound-callback view, so this temporarily clears it on the
+    service instance the test owns -- the same shape an unbound embedding produces.
+    """
+
+    validator = service._authorize_acceptance
+    target_check = service._authorize_target
+    service._authorize_acceptance = None
+    service._authorize_target = None
+    try:
+        return await service.accept(
+            rule.scope_id,
+            rule.rule_id,
+            rule.version,
+            "origin",
+            actor="legacy-alice",
+            covered_scope_ids=(origin_scope_id,),
+        )
+    finally:
+        service._authorize_acceptance = validator
+        service._authorize_target = target_check
+
+
 async def _accept(
     standing: StandingAccess,
     runtime: BuiltinRuntime,
@@ -682,6 +707,129 @@ def _binding_query(scope_id: str):
     from powercontext.builtin.authz import BindingSearchRequest
 
     return BindingSearchRequest(management_resource=ResourceRef.scope(scope_id))
+
+
+def test_unreadable_legacy_consent_does_not_veto_a_valid_canonical_one(tmp_path: Path) -> None:
+    """A legacy free-form actor must not abort admission for a valid canonical record.
+
+    Supported state: an unconfigured trusted Runtime writes free-form rows, then the
+    same database reopens with the enforced adapter and real actors record canonical
+    rows. One valid required consent suffices; an unreadable one is not a candidate.
+    A sole unreadable consent still denies clearly.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "mixed_state.db"
+        async with composed(database) as (runtime, access, standing):
+            alice, bob, orders = await _three_scopes(runtime)
+            await _seed(access, alice, bob, orders)
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            service = _service(runtime)
+            # A free-form row, exactly what the unconfigured trusted path stores. Written
+            # through the service directly to reproduce that durable state; the enforced
+            # validator would refuse such a spelling (covered by the F7 tests).
+            assert _service(runtime) is service
+            legacy = await _trusted_freeform_accept(service, rule, alice)
+            # A genuine authenticated acceptance for the same required origin.
+            canonical = await _accept(standing, runtime, rule, "origin", (alice,), ALICE)
+            await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+
+            await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+
+            # Admission does not depend on which row D returns first.
+            grant = await _use(standing, runtime, rule, run.run_id)
+            assert canonical.acceptance_id in grant.acceptance_ids
+            assert len(grant.acceptance_ids) == len(set(grant.acceptance_ids))
+
+            # With only the unreadable record left, the run is clearly denied.
+            alice_bindings = await access.list_bindings(ADMIN, _binding_query(alice), context=AUDIT)
+            alice_binding = next(
+                item for item in alice_bindings.items if item.subject == ALICE and item.role is AccessRole.SCOPE_ADMIN
+            )
+            await access.revoke_binding(
+                ADMIN,
+                alice_binding.binding_id,
+                expected_version=alice_binding.version,
+                idempotency_key="revoke-canonical-origin",
+                context=AUDIT,
+            )
+            with pytest.raises(AccessDeniedError):
+                await _use(standing, runtime, rule, run.run_id)
+            assert legacy.acceptance_id
+
+    asyncio.run(scenario())
+
+
+def test_grant_reports_one_record_once_for_multiple_origins(tmp_path: Path) -> None:
+    """A root record covering several origins is reported once, not once per origin."""
+
+    async def scenario() -> None:
+        database = tmp_path / "dedup.db"
+        async with composed(database) as (runtime, access, standing):
+            assert runtime.scopes is not None
+            root = (await runtime.scopes.create(ScopeDraft(title="Root", summary="W", idempotency_key="r"))).scope_id
+            children = [
+                (
+                    await runtime.scopes.create(
+                        ScopeDraft(title=f"C{i}", summary="W", parent_scope_id=root, idempotency_key=f"c{i}")
+                    )
+                ).scope_id
+                for i in range(3)
+            ]
+            orders = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="o"))
+            ).scope_id
+            await _bind(access, ALICE, root, AccessRole.SCOPE_ADMIN, "alice-root")
+            for index, child in enumerate(children):
+                await _bind(access, ALICE, child, AccessRole.SCOPE_ADMIN, f"alice-child-{index}")
+                await _bind(access, RUNNER, child, AccessRole.SCOPE_VIEWER, f"runner-child-{index}")
+            await _bind(access, CAROL, orders, AccessRole.SCOPE_ADMIN, "carol")
+            await _bind(access, RUNNER, orders, AccessRole.SCOPE_CONTRIBUTOR, "runner")
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    ShareRuleDraft(
+                        selection=ScopeSelection(mode="subtree", root_scope_id=root),
+                        source_types=("content",),
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            # ONE root acceptance covering all three descendants.
+            root_consent = await _accept(standing, runtime, rule, "origin", (root,), ALICE)
+            target_consent = await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+            for index, child in enumerate(children):
+                await runtime.sources.for_scope(child).capture(
+                    CaptureSource(source_id=f"fact{index}", content="Fact.", metadata={})
+                )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+            assert sorted(run.origin_scopes()) == sorted(children)
+
+            grant = await _use(standing, runtime, rule, run.run_id)
+            assert len(grant.acceptance_ids) == len(set(grant.acceptance_ids))
+            assert set(grant.acceptance_ids) == {root_consent.acceptance_id, target_consent.acceptance_id}
+
+    asyncio.run(scenario())
 
 
 def test_redundant_invalid_acceptor_does_not_veto_a_valid_one(tmp_path: Path) -> None:

@@ -53,6 +53,7 @@ from powercontext.builtin.authz.models import AccessAction, PrincipalRef, Resour
 from powercontext.builtin.authz.service import AccessAuditContext, AccessControlService
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
+    ShareAcceptanceContribution,
     ShareAcceptanceSide,
     ShareRule,
     ShareRuleAcceptanceError,
@@ -92,6 +93,8 @@ class StandingUseAuthorization:
     def __init__(self, access: AccessControlService, *, transport: str = "background") -> None:
         self.access = access
         self._transport = transport
+        # Rebuilt for each admission in require_run_use; never shared or reused.
+        self._contributions: dict[str, ShareAcceptanceContribution] = {}
 
     def context(self, operation: str, request_id: str | None = None) -> AccessAuditContext:
         return AccessAuditContext(transport=self._transport, operation=operation, request_id=request_id)
@@ -205,6 +208,9 @@ class StandingUseAuthorization:
             raise ShareRuleAcceptanceError(rule.rule_id, rule.version, "audience:run")
 
         await self._require_audience_member(principal, coverage, context)
+        # Per-admission memo: a record's contribution is immutable within one check and
+        # is never reused across requests, so no authority decision is cached.
+        self._contributions = {}
         used = await self._require_run_acceptors(service, rule, coverage, run, context)
         await self._require_checks(principal, self._execution_checks(rule, run), context)
         return StandingUseGrant(
@@ -216,7 +222,7 @@ class StandingUseAuthorization:
             accepted_origin_scope_ids=coverage.covered_origin_scope_ids,
             accepted_audience_scope_ids=coverage.accepted_audience_scope_ids,
             run_origin_scope_ids=coverage.run_origin_scope_ids,
-            acceptance_ids=used,
+            acceptance_ids=_unique(used),
         )
 
     async def _require_run_acceptors(
@@ -246,8 +252,12 @@ class StandingUseAuthorization:
         audiences = set(coverage.declared_audience_scope_ids)
         if audiences:
             records = await service.acceptances_for(rule.scope_id, rule.rule_id, rule.version)
+            # Sorted so the outcome cannot depend on storage order: any one valid record
+            # per required audience suffices, and an unreadable legacy row is simply not
+            # a candidate rather than a fatal error.
+            ordered = sorted(records, key=lambda record: record.acceptance_id)
             for scope_id in sorted(audiences):
-                for record in records:
+                for record in ordered:
                     if record.side != "target" or scope_id not in record.covered_scope_ids:
                         continue
                     if await self._actor_holds(record.actor, rule, "target", (scope_id,), context):
@@ -268,14 +278,34 @@ class StandingUseAuthorization:
     ) -> str | None:
         """The first acceptance for this origin whose actor still holds authority there."""
 
-        for acceptance_id in acceptance_ids:
-            contribution = await service.acceptance_contribution(rule.scope_id, run.run_id, acceptance_id)
+        for acceptance_id in sorted(acceptance_ids):
+            contribution = await self._contribution(service, rule, run, acceptance_id)
             if origin not in contribution.contributed_origin_scope_ids:
                 # This record does not contribute to this pinned manifest.
                 continue
             if await self._actor_holds(contribution.actor, rule, "origin", (origin,), context):
                 return contribution.acceptance_id
         return None
+
+    async def _contribution(
+        self,
+        service: ShareRuleService,
+        rule: ShareRule,
+        run: ShareRun,
+        acceptance_id: str,
+    ) -> ShareAcceptanceContribution:
+        """One authoritative row's contribution to this run, loaded at most once.
+
+        A record covering N origins answers the same question for all of them, so the
+        whole-run contribution is memoized per admission instead of re-derived per
+        origin. The value is immutable within this check and nothing is kept after it.
+        """
+
+        cached = self._contributions.get(acceptance_id)
+        if cached is None:
+            cached = await service.acceptance_contribution(rule.scope_id, run.run_id, acceptance_id)
+            self._contributions[acceptance_id] = cached
+        return cached
 
     async def _actor_holds(
         self,
@@ -534,6 +564,15 @@ async def _rule(service: ShareRuleService, scope_id: str, rule_id: str, version:
     return await service.get(scope_id, rule_id, version=version)
 
 
+def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Keep first-seen order: one record covering N origins is reported once."""
+
+    seen: dict[str, None] = {}
+    for value in values:
+        seen.setdefault(value, None)
+    return tuple(seen)
+
+
 def principal_key(principal: PrincipalRef | None) -> str:
     """The stable actor spelling D reserves, matching its own identity form."""
 
@@ -543,9 +582,16 @@ def principal_key(principal: PrincipalRef | None) -> str:
 
 
 def principal_ref(actor: str) -> PrincipalRef:
+    """Read back the canonical actor spelling, refusing forms this boundary cannot vouch for.
+
+    Raises the Access refusal, not a sharing-domain error: parsing an identity is this
+    boundary's own step, and callers decide whether an unreadable record is skipped or
+    fatal. A free-form legacy actor (no ``type:`` prefix) is not a principal here.
+    """
+
     kind, _, identifier = actor.partition(":")
     if not identifier or kind not in {"user", "service"}:
-        raise ShareRuleAcceptanceError("", 0, "actor")
+        raise AccessInvalidRequestError("shared_use_acceptance")
     return PrincipalRef(type=kind, id=identifier)
 
 
