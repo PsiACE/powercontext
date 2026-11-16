@@ -519,6 +519,96 @@ def test_unused_contributor_withdrawal_does_not_veto_the_pinned_run(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_extra_exact_origin_outside_the_range_root_is_its_own_authority(tmp_path: Path) -> None:
+    """A pinned run that reached only an exact extra Scope needs that Scope's acceptor.
+
+    The rule selects a subtree root plus an exact Scope outside it. When the run
+    reaches only that extra Scope, the unused subtree root's authority cannot veto
+    it -- but revoking the extra Scope's own acceptor still blocks it.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "extra.db"
+        async with composed(database) as (runtime, access, standing):
+            assert runtime.scopes is not None
+            alice_root = (
+                await runtime.scopes.create(ScopeDraft(title="Alice", summary="W", idempotency_key="ar"))
+            ).scope_id
+            alice_child = (
+                await runtime.scopes.create(
+                    ScopeDraft(title="Child", summary="W", parent_scope_id=alice_root, idempotency_key="ac")
+                )
+            ).scope_id
+            bob_extra = (
+                await runtime.scopes.create(ScopeDraft(title="Bob", summary="W", idempotency_key="bx"))
+            ).scope_id
+            orders = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="o"))
+            ).scope_id
+            # The child is structural, so the root's range really does qualify it; this
+            # scenario is about an extra exact Scope outside that range, not about
+            # whether the expansion itself works.
+            child_descriptor = await runtime.scopes.get(alice_child)
+            assert child_descriptor.parent_scope_id == alice_root
+            assert runtime.sharing is not None
+            bindings = {
+                "alice": await _bind(access, ALICE, alice_root, AccessRole.SCOPE_ADMIN, "alice-root"),
+                "bob": await _bind(access, BOB, bob_extra, AccessRole.SCOPE_ADMIN, "bob-extra"),
+                "carol": await _bind(access, CAROL, orders, AccessRole.SCOPE_ADMIN, "carol"),
+                "runner": await _bind(access, RUNNER, orders, AccessRole.SCOPE_CONTRIBUTOR, "runner"),
+            }
+            await _bind(access, RUNNER, bob_extra, AccessRole.SCOPE_VIEWER, "runner-bob")
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    ShareRuleDraft(
+                        selection=ScopeSelection(mode="subtree", root_scope_id=alice_root),
+                        exact_scope_ids=(bob_extra,),
+                        source_types=("content",),
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            await _accept(standing, runtime, rule, "origin", (alice_root,), ALICE)
+            await _accept(standing, runtime, rule, "origin", (bob_extra,), BOB)
+            await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+
+            # Only the extra Scope has material, so the pinned run reached it alone.
+            await runtime.sources.for_scope(bob_extra).capture(
+                CaptureSource(source_id="extra-only", content="Outside the range.", metadata={})
+            )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (bob_extra,)
+            await _use(standing, runtime, rule, run.run_id)
+
+            # The unused subtree root's authority is irrelevant to this run.
+            await access.revoke_binding(
+                ADMIN,
+                bindings["alice"].binding_id,
+                expected_version=bindings["alice"].version,
+                idempotency_key="revoke-unused-root",
+                context=AUDIT,
+            )
+            await _use(standing, runtime, rule, run.run_id)
+
+            # Revoking the extra Scope's own acceptor blocks that same run.
+            await access.revoke_binding(
+                ADMIN,
+                bindings["bob"].binding_id,
+                expected_version=bindings["bob"].version,
+                idempotency_key="revoke-extra-acceptor",
+                context=AUDIT,
+            )
+            with pytest.raises(AccessDeniedError):
+                await _use(standing, runtime, rule, run.run_id)
+
+    asyncio.run(scenario())
+
+
 def test_one_contributor_cannot_admit_a_run_that_reached_another(tmp_path: Path) -> None:
     async def scenario() -> None:
         database = tmp_path / "compose.db"

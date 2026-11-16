@@ -220,33 +220,66 @@ class StandingUseAuthorization:
         required_origin_scope_ids: Collection[str],
         context: AccessAuditContext,
     ) -> None:
-        """Recheck the acceptors whose recorded coverage this run actually needs.
+        """Require a currently valid acceptor for each origin and audience this run needs.
 
-        Only a Scope this pinned run required, and only a declared audience, can make
-        an acceptance necessary. A contributor who agreed to a Scope the run never
-        reached is not re-read, so losing authority nobody used cannot veto a
-        genuinely covered run -- while losing the authority that admitted a required
-        origin still blocks it.
+        Relevance is decided by the run, not by the rule: an acceptance matters only
+        when it recorded the very Scope the pinned run reached, or a declared audience.
+        A Scope the run never used cannot veto it.
+
+        Authority is checked at the required Scope, never at a structural ancestor.
+        Even when the selector's range root qualifies a child, that root's
+        administrator is not the child's authority: the actor must hold current
+        authority where the material actually is.
         """
 
-        required = set(required_origin_scope_ids)
-        audiences = set(rule.terms_binding().audience_scope_ids)
-        # A declared range root covers the material its subtree qualifies, which is
-        # D's own expansion rule; reuse it instead of walking the Scope tree here.
-        root = rule.selection.root_scope_id
-        for acceptance in acceptances:
-            recorded = set(acceptance.covered_scope_ids)
-            if acceptance.side == "origin":
-                # Needed when it names a required origin it recorded, or when it is the
-                # range acceptance whose subtree produced those origins.
-                relevant = recorded & (required | ({root} if root is not None and required else set()))
+        # Structural range applicability (a declared root qualifying a descendant) is
+        # the owning selector's rule; until D exposes it per acceptance, coverage of a
+        # child by a recorded root is fail-closed rather than assumed here.
+        await self._require_scope_consent(
+            acceptances,
+            rule,
+            side="origin",
+            required_scope_ids=required_origin_scope_ids,
+            context=context,
+        )
+        await self._require_scope_consent(
+            acceptances,
+            rule,
+            side="target",
+            required_scope_ids=rule.terms_binding().audience_scope_ids,
+            context=context,
+        )
+
+    async def _require_scope_consent(
+        self,
+        acceptances: tuple[ShareAcceptance, ...],
+        rule: ShareRule,
+        *,
+        side: ShareAcceptanceSide,
+        required_scope_ids: Collection[str],
+        context: AccessAuditContext,
+    ) -> None:
+        """One currently valid acceptor is needed for every Scope this side requires."""
+
+        for scope_id in sorted(set(required_scope_ids)):
+            applicable = tuple(
+                acceptance
+                for acceptance in acceptances
+                if acceptance.side == side and scope_id in acceptance.covered_scope_ids
+            )
+            if not applicable:
+                # No recorded consent names this required Scope.
+                raise AccessDeniedError
+            for acceptance in applicable:
+                checks = tuple(item for _, item in self._coverage_checks(rule, side, (scope_id,)))
+                try:
+                    await self._require_checks(principal_ref(acceptance.actor), checks, context)
+                except AccessDeniedError:
+                    continue
+                # A redundant acceptor losing authority does not veto a valid one.
+                break
             else:
-                relevant = audiences & recorded
-            if not relevant:
-                # This actor's agreement is not part of what admitted the run.
-                continue
-            checks = tuple(item for _, item in self._coverage_checks(rule, acceptance.side, tuple(sorted(relevant))))
-            await self._require_checks(principal_ref(acceptance.actor), checks, context)
+                raise AccessDeniedError
 
     # -- origin checks D calls during discovery ------------------------------
 
