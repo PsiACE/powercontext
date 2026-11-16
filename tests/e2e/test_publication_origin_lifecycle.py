@@ -108,14 +108,18 @@ def test_published_copy_survives_origin_purge_with_exact_provenance(tmp_path: Pa
             # The retained provenance still names the exact origin and digest it was published from.
             async with runtime.primary_database.transaction() as connection:
                 row = (
-                    await connection.execute(
-                        text(
-                            "SELECT source_scope_id, source_family, source_artifact_id, source_revision, "
-                            "content_digest FROM pc_artifact_publications WHERE target_artifact_id=:target"
-                        ),
-                        {"target": published.target.artifact.artifact_id},
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT source_scope_id, source_family, source_artifact_id, source_revision, "
+                                "content_digest FROM pc_artifact_publications WHERE target_artifact_id=:target"
+                            ),
+                            {"target": published.target.artifact.artifact_id},
+                        )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
             assert row["source_scope_id"] == work.scope_id
             assert row["source_artifact_id"] == created.artifact_id
             assert row["source_revision"] == 1
@@ -160,9 +164,7 @@ def test_surviving_copy_and_provenance_survive_restart_and_two_hops(tmp_path: Pa
             final_scope = carried["final_scope"]
             final_artifact = carried["final_artifact"]
             assert isinstance(final_scope, str) and isinstance(final_artifact, str)
-            survivor = await runtime.records.for_scope(final_scope).get_artifact(
-                "experience", final_artifact
-            )
+            survivor = await runtime.records.for_scope(final_scope).get_artifact("experience", final_artifact)
             assert survivor.revision == 1
             replayed = await _publish(runtime, carried["source"], final_scope, "hop-2")
             assert replayed.target.artifact.artifact_id == final_artifact
