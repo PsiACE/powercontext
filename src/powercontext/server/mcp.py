@@ -86,8 +86,10 @@ from powercontext.http._generated.operations import (
     REPLACE_ARTIFACT,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
+    RESOLVE_SCOPE_SELECTION,
     REVISE_CANDIDATE,
     SCAN_EXTERNAL_SKILLS,
+    SEARCH_ARTIFACTS,
     SEARCH_MEMORY,
     SEARCH_TOPIC_MEMORY,
     SET_SCOPE_BINDING,
@@ -120,6 +122,11 @@ metadata gaps, not absent memories. Other context families are not covered by th
 Use list_atomic_memories for explicit state filters and pagination. get_memory_entry accepts only a legacy logical
 target; it returns current Atomic Memory and does not follow merged_into_id automatically. Historical citations are
 unsupported.
+search_artifacts queries one Artifact Family in one explicitly named Scope and returns complete exact revisions; it
+searches only that Scope and never its structural children or Context References. Open a hit with get_artifact_revision
+at the returned revision, which rechecks current access. Use resolve_scope_selection only to inspect which Scopes an
+all, exact, or subtree selection currently resolves to; it performs no retrieval, and a resolved descriptor is not
+authority to read that Scope's contents.
 For new identities use get_artifact for the current content and get_artifact_revision for exact historical content.
 get_artifact and replace_artifact return {artifact, etag, status_code}; etag is the exact HTTP content ETag.
 The MCP replace_artifact tool supports family atomic-memory only.
@@ -218,9 +225,11 @@ _MCP_OPERATION_IDS = frozenset({
     LIST_SCOPES.operation_id,
     GET_SCOPE.operation_id,
     RESOLVE_SCOPE_BINDING.operation_id,
+    RESOLVE_SCOPE_SELECTION.operation_id,
     SET_SCOPE_BINDING.operation_id,
     CLEAR_SCOPE_BINDING.operation_id,
     PUBLISH_ARTIFACT.operation_id,
+    SEARCH_ARTIFACTS.operation_id,
 })
 _MCP_READ_ONLY_OPERATION_IDS = frozenset({
     "pc_source_capabilities",
@@ -255,6 +264,8 @@ _MCP_READ_ONLY_OPERATION_IDS = frozenset({
     LIST_SCOPES.operation_id,
     GET_SCOPE.operation_id,
     RESOLVE_SCOPE_BINDING.operation_id,
+    RESOLVE_SCOPE_SELECTION.operation_id,
+    SEARCH_ARTIFACTS.operation_id,
 })
 _MCP_CANDIDATE_WRITE_OPERATION_IDS = frozenset({
     GENERATE_EXPERIENCE.operation_id,
