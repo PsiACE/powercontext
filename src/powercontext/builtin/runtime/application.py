@@ -212,7 +212,6 @@ from powercontext.builtin.runtime.context_reuse import (
     prepare_reuse,
     validate_reuse,
 )
-from powercontext.builtin.runtime.cross_scope_query import CrossScopeQueryApplication
 from powercontext.builtin.runtime.decision_model import DecisionModel
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
 from powercontext.builtin.runtime.extraction_diagnostics import ExtractionDiagnostics
@@ -312,6 +311,7 @@ from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecove
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
+from powercontext.builtin.sharing.application import ShareApplication
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_ADAPTER,
     CONTENT_SOURCE_NAME,
@@ -368,6 +368,7 @@ if TYPE_CHECKING:
     from powercontext.builtin.portability import PortableBundleService
     from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
     from powercontext.builtin.runtime.scope_reads import ScopeReadSnapshot
+    from powercontext.builtin.sharing.service import ShareRuleService
 
 
 class TopicMemorySearch(Protocol):
@@ -4250,6 +4251,7 @@ class BuiltinRuntime:
         decision_model: DecisionModel | None = None,
         publication_application: ArtifactPublicationApplication | None = None,
         scope_application: ScopeApplication | None = None,
+        share_rule_service: ShareRuleService | None = None,
         readiness: RuntimeReadinessChecks | None = None,
         clock: Clock | None = None,
         tracing: RuntimeTracing | None = None,
@@ -4344,6 +4346,8 @@ class BuiltinRuntime:
         self.decision_model = decision_model
         self.publications = publication_application
         self.scopes = scope_application
+        # Standing rules require the Scope application: they name target and origins.
+        self.share_rules = share_rule_service if scope_application is not None else None
         self._scope_operations: dict[tuple[asyncio.Task[Any] | None, str], ScopeDescriptor] = {}
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness
         self._clock = _utc_now if clock is None else clock
@@ -4370,8 +4374,8 @@ class BuiltinRuntime:
         self.bootstrap = BootstrapApplication(self)
         self.experience = ExperienceApplication(self)
         self.artifacts = ArtifactApplication(self)
-        self.cross_scope = CrossScopeQueryApplication(self)
         self.dream = DreamApplication(self)
+        self.sharing = ShareApplication(self)
         self.external_skills = ExternalSkillApplication(self)
         self.handoff = HandoffApplication(self)
         self.work = WorkApplication(self)
