@@ -93,8 +93,7 @@ def test_recorded_origins_persist_exactly_and_stay_out_of_public_payloads(tmp_pa
             )
             # The admitted origin set is real: equal local ids stay two origins with their own digest.
             assert [
-                (item.scope_id, item.artifact and item.artifact.artifact_id, item.digest)
-                for item in candidate.origins
+                (item.scope_id, item.artifact and item.artifact.artifact_id, item.digest) for item in candidate.origins
             ] == [(alice, shared_id, content_digest(b"alice")), (bob, shared_id, content_digest(b"bob"))]
 
             approved = await review.approve(candidate.candidate_id, candidate.version)

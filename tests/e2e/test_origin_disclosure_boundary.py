@@ -154,22 +154,27 @@ def test_enforced_search_discloses_no_origin_address(tmp_path: Path) -> None:
                 assert response.status_code == 200, response.text
                 body = response.json()
                 assert body["results"], body
-                hit = body["results"][0]
-                # The permitted target content and direct evidence are unchanged.
-                assert hit["content"]["lesson"] == EXPERIENCE["lesson"]
-                assert sorted(hit["lineage"]) == [
-                    "artifacts",
-                    "publication_digest",
-                    "publication_source",
-                    "sources",
-                ]
-                # No origin address, reference, or digest crosses the boundary.
-                serialized = json.dumps(hit)
+                # The target Scope legitimately returns more than one hit, and the committed
+                # revision carrying the origins is not necessarily first, so every hit is checked
+                # rather than one fixed position.
+                assert {hit["artifact_id"] for hit in body["results"]} >= {committed_ref.artifact_id}
+                carrier = next(hit for hit in body["results"] if hit["artifact_id"] == committed_ref.artifact_id)
+                assert carrier["content"]["lesson"] == EXPERIENCE["lesson"]
+                for hit in body["results"]:
+                    # The permitted target content and direct evidence are unchanged.
+                    assert sorted(hit["lineage"]) == [
+                        "artifacts",
+                        "publication_digest",
+                        "publication_source",
+                        "sources",
+                    ]
+                    assert "origins" not in hit["lineage"]
+                # No origin address, reference, or digest crosses the boundary in any hit.
+                serialized = json.dumps(body["results"])
                 for scope_id in (alice, bob):
                     assert scope_id not in serialized, serialized
                 for digest in (content_digest(b"alice"), content_digest(b"bob")):
                     assert digest not in serialized, serialized
-                assert "origins" not in hit["lineage"]
 
                 # The SDK sees the same bytes.
                 async with PowerContextClient(
