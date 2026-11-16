@@ -67,6 +67,7 @@ class AccessRole(StrEnum):
     ARTIFACT_VIEWER = "artifact.viewer"
     PROMPT_USER = "prompt.user"
     ARTIFACT_OWNER = "artifact.owner"
+    ARTIFACT_MAINTAINER = "artifact.maintainer"
     SCOPE_VIEWER = "scope.viewer"
     SCOPE_CONTRIBUTOR = "scope.contributor"
     SCOPE_REVIEWER = "scope.reviewer"
@@ -375,6 +376,8 @@ ROLE_ACTIONS: dict[AccessRole, frozenset[AccessAction]] = {
         AccessAction.ARTIFACT_SHARE,
         AccessAction.HANDOFF_EVIDENCE_INSPECT,
     }),
+    # Shared maintenance of one exact Artifact: content write without ownership or disclosure.
+    AccessRole.ARTIFACT_MAINTAINER: frozenset({AccessAction.ARTIFACT_READ, AccessAction.ARTIFACT_WRITE}),
     AccessRole.SCOPE_VIEWER: frozenset({AccessAction.SCOPE_READ}),
     AccessRole.SCOPE_CONTRIBUTOR: frozenset({AccessAction.SCOPE_READ, AccessAction.SCOPE_CONTRIBUTE}),
     AccessRole.SCOPE_REVIEWER: frozenset({AccessAction.SCOPE_READ, AccessAction.SCOPE_REVIEW}),
@@ -419,6 +422,7 @@ ROLE_RESOURCE_TYPES: dict[AccessRole, AccessResourceType] = {
     AccessRole.ARTIFACT_VIEWER: AccessResourceType.ARTIFACT,
     AccessRole.PROMPT_USER: AccessResourceType.ARTIFACT,
     AccessRole.ARTIFACT_OWNER: AccessResourceType.ARTIFACT,
+    AccessRole.ARTIFACT_MAINTAINER: AccessResourceType.ARTIFACT,
     AccessRole.SCOPE_VIEWER: AccessResourceType.SCOPE,
     AccessRole.SCOPE_CONTRIBUTOR: AccessResourceType.SCOPE,
     AccessRole.SCOPE_REVIEWER: AccessResourceType.SCOPE,
@@ -442,6 +446,7 @@ ROLE_SUBJECT_TYPES: dict[AccessRole, frozenset[str]] = {
 }
 ROLE_SUBJECT_TYPES[AccessRole.HANDOFF_RECEIVER] = frozenset({"user", "service"})
 ROLE_SUBJECT_TYPES[AccessRole.ARTIFACT_OWNER] = frozenset({"user", "service"})
+ROLE_SUBJECT_TYPES[AccessRole.ARTIFACT_MAINTAINER] = frozenset({"user", "service"})
 
 
 def _valid_text(value: object, *, maximum: int) -> bool:

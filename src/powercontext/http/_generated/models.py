@@ -4078,6 +4078,7 @@ class AccessRole(StrEnum):
     ARTIFACT_VIEWER = "artifact.viewer"
     PROMPT_USER = "prompt.user"
     ARTIFACT_OWNER = "artifact.owner"
+    ARTIFACT_MAINTAINER = "artifact.maintainer"
     SCOPE_VIEWER = "scope.viewer"
     SCOPE_CONTRIBUTOR = "scope.contributor"
     SCOPE_REVIEWER = "scope.reviewer"

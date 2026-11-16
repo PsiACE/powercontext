@@ -6113,7 +6113,7 @@ export interface components {
             next_cursor: string | null;
         };
         /** @enum {string} */
-        AccessRole: "handoff.viewer" | "handoff.receiver" | "artifact.viewer" | "prompt.user" | "artifact.owner" | "scope.viewer" | "scope.contributor" | "scope.reviewer" | "scope.delegator" | "scope.admin" | "gateway.user" | "server.observer" | "server.admin";
+        AccessRole: "handoff.viewer" | "handoff.receiver" | "artifact.viewer" | "prompt.user" | "artifact.owner" | "artifact.maintainer" | "scope.viewer" | "scope.contributor" | "scope.reviewer" | "scope.delegator" | "scope.admin" | "gateway.user" | "server.observer" | "server.admin";
         /** @enum {string} */
         AccessRoleCardinality: "many_per_resource" | "one_per_resource";
         ListAccessRolesRequest: {

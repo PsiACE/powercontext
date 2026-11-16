@@ -14295,6 +14295,7 @@ components:
         - artifact.viewer
         - prompt.user
         - artifact.owner
+        - artifact.maintainer
         - scope.viewer
         - scope.contributor
         - scope.reviewer

@@ -33,12 +33,14 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
 from powercontext.builtin.artifacts.handoff import HandoffDraft, HandoffGenerationRequest, HandoffStatement
 from powercontext.builtin.authz import AccessControlService, PrincipalRef, ResourceRef
 from powercontext.builtin.authz.composition import open_builtin_access_control, open_casbin_access_control
+from powercontext.builtin.authz.service import AccessAuditContext
 from powercontext.builtin.inference import GenerationResult
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
-from powercontext.client import ForbiddenResponseError, PowerContextClient
+from powercontext.client import ForbiddenResponseError, PowerContextClient, ServerResponseError
 from powercontext.http import (
     AccessAction,
+    AccessCheckRequest,
     AccessResourceType,
     AcknowledgeHandoffRequest,
     ActivateHandoffRequest,
@@ -1038,3 +1040,418 @@ async def _client(app, token: str) -> AsyncIterator[PowerContextClient]:
         ) as client,
     ):
         yield client
+
+
+def test_profile_maintainer_grant_enables_shared_write_without_owner_transfer(tmp_path: Path) -> None:
+    """A second project maintainer writes the shared Profile without becoming its owner.
+
+    The workflow a project actually needs: M1 owns the project Profile, M2 contributes, reviews and
+    administers the Scope but cannot rewrite the Profile; an existing manager grants M2 explicit
+    maintenance of that one Profile; M2 then writes it and can lose that ability on revoke. Owner
+    retention, personal-Profile isolation and other Families staying unmaintainable are asserted in
+    the same story because they are the guarantees that keep the grant narrow.
+    """
+
+    owner_principal = PrincipalRef(type="user", id="m1")
+    maintainer_principal = PrincipalRef(type="user", id="m2")
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'profile-maintainer.db'}")
+        await asyncio.to_thread(prepare_server_database, ServerSettings(database=database))
+        async with open_builtin_access_control(
+            database, bootstrap_administrators=(ADMIN,), deployment_id=DEPLOYMENT_ID
+        ) as access:
+            async with _client(_app(database, access, ADMIN, "admin-token"), "admin-token") as admin:
+                project = await admin.create_scope(
+                    CreateScopeRequest(
+                        title="Orders",
+                        summary="Shared project memory",
+                        idempotency_key="profile-maintainer-project",
+                    )
+                )
+                personal = await admin.create_scope(
+                    CreateScopeRequest(
+                        title="M1 personal",
+                        summary="M1 private work",
+                        idempotency_key="profile-maintainer-personal",
+                    )
+                )
+                for scope_id, role, key in (
+                    (project.scope_id, "scope.contributor", "m1-contributor"),
+                    (project.scope_id, "scope.admin", "m1-scope-admin"),
+                    (project.scope_id, "scope.contributor", "m2-contributor"),
+                    (project.scope_id, "scope.reviewer", "m2-reviewer"),
+                    (project.scope_id, "scope.admin", "m2-scope-admin"),
+                    (personal.scope_id, "scope.contributor", "m1-personal-contributor"),
+                    (personal.scope_id, "scope.admin", "m1-personal-admin"),
+                ):
+                    subject = owner_principal if "m1" in key else maintainer_principal
+                    await admin.create_access_binding(
+                        CreateAccessBindingRequest.model_validate({
+                            "subject": {"type": subject.type, "id": subject.id},
+                            "resource": {"type": "scope", "scope_id": scope_id},
+                            "role": role,
+                            "idempotency_key": key,
+                        })
+                    )
+
+            async with _client(_app(database, access, owner_principal, "m1-token"), "m1-token") as owner:
+                project_profile = await owner.create_artifact(
+                    project.scope_id,
+                    CreateArtifactRequest.model_validate({
+                        "family": "profile",
+                        "content": {"content": "# Orders\n\nRetry only with an idempotency key."},
+                    }),
+                )
+                personal_profile = await owner.create_artifact(
+                    personal.scope_id,
+                    CreateArtifactRequest.model_validate({
+                        "family": "profile",
+                        "content": {"content": "# M1\n\nPrivate."},
+                    }),
+                )
+
+            resource = {
+                "type": "artifact",
+                "scope_id": project.scope_id,
+                "identity": {"family": "profile", "artifact_id": project_profile.artifact_id},
+                "selector": None,
+            }
+            async with _client(_app(database, access, maintainer_principal, "m2-token"), "m2-token") as maintainer:
+                head = await maintainer.get_artifact(project.scope_id, "profile", project_profile.artifact_id)
+                assert head is not None
+                write = ReplaceArtifactRequest.model_validate({
+                    "content": {"content": "# Orders\n\nCheck transaction status first."},
+                })
+
+                # Scope contributor + reviewer + admin is still not write authority for a Profile.
+                with pytest.raises(ForbiddenResponseError):
+                    await maintainer.replace_artifact(
+                        project.scope_id,
+                        "profile",
+                        project_profile.artifact_id,
+                        write,
+                        expected_etag=f'"revision:{head.revision}"',
+                    )
+
+            # An existing manager grants explicit shared maintenance of this one logical Profile.
+            async with _client(_app(database, access, owner_principal, "m1-token"), "m1-token") as owner:
+                binding = await owner.create_access_binding(
+                    CreateAccessBindingRequest.model_validate({
+                        "subject": {"type": maintainer_principal.type, "id": maintainer_principal.id},
+                        "resource": resource,
+                        "role": "artifact.maintainer",
+                        "idempotency_key": "m2-maintains-orders-profile",
+                    })
+                )
+
+            async with _client(_app(database, access, maintainer_principal, "m2-token"), "m2-token") as maintainer:
+                head = await maintainer.get_artifact(project.scope_id, "profile", project_profile.artifact_id)
+                assert head is not None
+                revised = await maintainer.replace_artifact(
+                    project.scope_id,
+                    "profile",
+                    project_profile.artifact_id,
+                    ReplaceArtifactRequest.model_validate({
+                        "content": {"content": "# Orders\n\nCheck transaction status first."},
+                    }),
+                    expected_etag=f'"revision:{head.revision}"',
+                )
+                assert revised.revision == head.revision + 1
+
+                allowed = await maintainer.check_access(
+                    AccessCheckRequest.model_validate({
+                        "match": "all",
+                        "requirements": [{"action": AccessAction.ARTIFACT_WRITE.value, "resource": resource}],
+                    })
+                )
+                assert allowed.decisions[0].allowed is True
+
+            # Revocation stops future writes, and the owner keeps ownership throughout.
+            async with _client(_app(database, access, owner_principal, "m1-token"), "m1-token") as owner:
+                await owner.revoke_access_binding(
+                    RevokeAccessBindingRequest(
+                        binding_id=binding.binding_id,
+                        expected_version=binding.version,
+                        idempotency_key="m2-maintainer-revoked",
+                    )
+                )
+                head = await owner.get_artifact(project.scope_id, "profile", project_profile.artifact_id)
+                assert head is not None
+                still_owned = await owner.replace_artifact(
+                    project.scope_id,
+                    "profile",
+                    project_profile.artifact_id,
+                    ReplaceArtifactRequest.model_validate({
+                        "content": {"content": "# Orders\n\nOwned wording retained."},
+                    }),
+                    expected_etag=f'"revision:{head.revision}"',
+                )
+                assert still_owned.revision == head.revision + 1
+
+            async with _client(_app(database, access, maintainer_principal, "m2-token"), "m2-token") as maintainer:
+                head = await maintainer.get_artifact(project.scope_id, "profile", project_profile.artifact_id)
+                assert head is not None
+                with pytest.raises(ForbiddenResponseError):
+                    await maintainer.replace_artifact(
+                        project.scope_id,
+                        "profile",
+                        project_profile.artifact_id,
+                        ReplaceArtifactRequest.model_validate({
+                            "content": {"content": "# Orders\n\nUnauthorized rewrite."},
+                        }),
+                        expected_etag=f'"revision:{head.revision}"',
+                    )
+
+            # The personal Profile was never granted, and shared maintenance is not a Family-wide right.
+            async with _client(_app(database, access, ADMIN, "admin-token"), "admin-token") as admin:
+                personal_resource = {
+                    "type": "artifact",
+                    "scope_id": personal.scope_id,
+                    "identity": {"family": "profile", "artifact_id": personal_profile.artifact_id},
+                    "selector": None,
+                }
+                personal_decision = await admin.check_access(
+                    AccessCheckRequest.model_validate({
+                        "match": "all",
+                        "requirements": [{"action": AccessAction.ARTIFACT_WRITE.value, "resource": personal_resource}],
+                    })
+                )
+                assert personal_decision.decisions[0].allowed is False
+                for family in ("experience", "skill", "atomic-memory"):
+                    with pytest.raises(ServerResponseError) as refused:
+                        await admin.create_access_binding(
+                            CreateAccessBindingRequest.model_validate({
+                                "subject": {"type": maintainer_principal.type, "id": maintainer_principal.id},
+                                "resource": {
+                                    "type": "artifact",
+                                    "scope_id": project.scope_id,
+                                    "identity": {"family": family, "artifact_id": "any"},
+                                    "selector": None,
+                                },
+                                "role": "artifact.maintainer",
+                                "idempotency_key": f"maintainer-{family}-refused",
+                            })
+                        )
+                    assert refused.value.status_code == 422
+                    assert refused.value.code == "invalid_access_request"
+
+    asyncio.run(scenario())
+
+
+def test_profile_candidate_approval_requires_target_write_from_the_approver(tmp_path: Path) -> None:
+    """A reviewer who may review the Scope still cannot publish an owner's Profile proposal.
+
+    Approval is not implied by `scope.review`: the approving principal needs current write
+    authority on the Candidate's exact target Artifact. A second reviewer therefore cannot approve
+    an owner-authored pending Profile Candidate unless that same principal also holds
+    `artifact.maintainer`, and revoking it stops the approval again.
+    """
+
+    admin = PrincipalRef(type="service", id="approval-admin")
+    author = PrincipalRef(type="user", id="approval-author")
+    reviewer = PrincipalRef(type="user", id="approval-reviewer")
+    audit = AccessAuditContext(transport="http", operation="profile-approval")
+
+    class Proposal:
+        config_id = "profile-approval-test"
+
+        async def generate(self, value):
+            from powercontext.builtin.artifacts.profile.models import ProfileWriteContent
+            from powercontext.builtin.dream.models import DreamPlan
+            from powercontext.builtin.inference.models import GenerationResult
+
+            source_ids = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    intent="correct",
+                    reason="The captured note supersedes the previous advice.",
+                    proposal=ProfileWriteContent(content="# Orders\n\nAlways check transaction status first."),
+                    evidence_ids=source_ids,
+                )
+            )
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz import AccessRole, CreateBinding
+        from powercontext.builtin.records import ArtifactWrite
+        from powercontext.builtin.runtime import (
+            BuiltinConfig,
+            CaptureSource,
+            CreateDreamRunRequest,
+            GetDreamRunRequest,
+        )
+        from powercontext.builtin.scope import ScopeDraft
+        from powercontext.server.dream_access import DreamAccess
+        from tests.e2e.dream_support import open_dream_runtime, process_pending
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'profile-approval.db'}")
+        async with open_builtin_access_control(
+            database, bootstrap_administrators=(admin,), deployment_id=DEPLOYMENT_ID
+        ) as access:
+            adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database),
+                dream_generator=Proposal(),
+                dream_authorizer=adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+                dream_candidate_attester=adapter.attest_candidate,
+            ) as runtime:
+                assert runtime.scopes is not None
+                scope_id = (
+                    await runtime.scopes.create(
+                        ScopeDraft(title="Approval", summary="Profile approval gate", idempotency_key="approval")
+                    )
+                ).scope_id
+                for subject, role, key in (
+                    (author, AccessRole.SCOPE_CONTRIBUTOR, "author-contributor"),
+                    (author, AccessRole.SCOPE_REVIEWER, "author-reviewer"),
+                    (reviewer, AccessRole.SCOPE_CONTRIBUTOR, "reviewer-contributor"),
+                    (reviewer, AccessRole.SCOPE_REVIEWER, "reviewer-reviewer"),
+                ):
+                    await access.create_binding(
+                        admin,
+                        CreateBinding(
+                            subject=subject,
+                            resource=ResourceRef.scope(scope_id),
+                            role=role,
+                            idempotency_key=key,
+                        ),
+                        context=audit,
+                    )
+                from starlette.middleware import Middleware
+
+                from powercontext.server.app import create_app
+                from powercontext.server.authentication import StaticBearerAuthenticationProvider
+                from powercontext.server.middleware import AuthenticationMiddleware
+
+                def app_for(principal) -> tuple:
+                    token = f"{principal.type}-{principal.id}-token"
+                    provider = StaticBearerAuthenticationProvider(token, principal)
+                    app = create_app(
+                        application=runtime,
+                        access_control=access,
+                        access_mode="enforced",
+                        authentication_provider=provider,
+                        middleware=[Middleware(AuthenticationMiddleware, provider=provider)],
+                    )
+                    return app, token
+
+                records = runtime.records.for_scope(scope_id)
+                source = await runtime.sources.for_scope(scope_id).capture(
+                    CaptureSource(source_id="approval-note", content="Check transaction status first.", metadata={})
+                )
+                initial = await records.create_artifact(
+                    "profile", ArtifactWrite(content={"content": "# Orders\n\nRetry immediately."})
+                )
+                await access.establish_artifact_owner(
+                    ResourceRef.artifact(scope_id, family="profile", artifact_id=initial.artifact_id),
+                    author,
+                    idempotency_key="approval-profile-owner",
+                    context=audit,
+                )
+                from powercontext.artifacts import ArtifactRef
+
+                target = ArtifactRef(family="profile", artifact_id=initial.artifact_id, revision=initial.revision)
+                # The run records the executing principal, so it is created over HTTP as the author.
+                author_app, author_token = app_for(author)
+                async with (
+                    author_app.router.lifespan_context(author_app),
+                    httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=author_app),
+                        base_url="http://testserver",
+                        headers={
+                            "Authorization": f"Bearer {author_token}",
+                            "X-PowerContext-Dream-Contract": "2",
+                        },
+                    ) as author_client,
+                ):
+                    dream_response = await author_client.post(
+                        f"/v1/scopes/{scope_id}/dream",
+                        json=CreateDreamRunRequest(
+                            operation="revise_profile",
+                            sources=(source.source_ref,),
+                            target=target,
+                            artifacts=(target,),
+                            idempotency_key="approval-dream",
+                        ).model_dump(mode="json"),
+                    )
+                    assert dream_response.status_code in {200, 202}, dream_response.text
+                    created = GetDreamRunRequest(run_id=dream_response.json()["run_id"])
+                await process_pending(runtime)
+                # Read the run through the same authorized author session that created it.
+                author_read_app, author_read_token = app_for(author)
+                async with (
+                    author_read_app.router.lifespan_context(author_read_app),
+                    httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=author_read_app),
+                        base_url="http://testserver",
+                        headers={
+                            "Authorization": f"Bearer {author_read_token}",
+                            "X-PowerContext-Dream-Contract": "2",
+                        },
+                    ) as run_client,
+                ):
+                    run_payload = await run_client.get(f"/v1/scopes/{scope_id}/dream/{created.run_id}")
+                    assert run_payload.status_code == 200, run_payload.text
+                    candidate_id = (run_payload.json().get("candidate") or {}).get("candidate_id")
+                assert candidate_id is not None
+
+                async def approve(principal) -> httpx.Response:
+                    app, token = app_for(principal)
+                    async with (
+                        app.router.lifespan_context(app),
+                        httpx.AsyncClient(
+                            transport=httpx.ASGITransport(app=app),
+                            base_url="http://testserver",
+                            headers={
+                                "Authorization": f"Bearer {token}",
+                                "X-PowerContext-Dream-Contract": "2",
+                            },
+                        ) as client,
+                    ):
+                        return await client.post(
+                            "/v1/candidates/approve",
+                            json={
+                                "scope_id": scope_id,
+                                "candidate_id": candidate_id,
+                                "expected_version": 1,
+                            },
+                        )
+
+                # Review authority alone does not authorize publishing the owner's Profile.
+                assert (await approve(reviewer)).status_code == 403
+                assert (await records.get_artifact("profile", initial.artifact_id)).revision == target.revision
+
+                profile_resource = ResourceRef.artifact(scope_id, family="profile", artifact_id=initial.artifact_id)
+                binding = await access.create_binding(
+                    admin,
+                    CreateBinding(
+                        subject=reviewer,
+                        resource=profile_resource,
+                        role=AccessRole.ARTIFACT_MAINTAINER,
+                        idempotency_key="reviewer-maintains-profile",
+                    ),
+                    context=audit,
+                )
+                approved = await approve(reviewer)
+                assert approved.status_code == 200, approved.text
+                assert (await records.get_artifact("profile", initial.artifact_id)).revision == target.revision + 1
+
+                # The same binding also governs whether the owner may approve a later proposal.
+                await access.revoke_binding(
+                    admin,
+                    binding.binding_id,
+                    expected_version=binding.version,
+                    idempotency_key="reviewer-maintainer-revoked",
+                    context=audit,
+                )
+                denied = await access.check(
+                    reviewer,
+                    AccessAction.ARTIFACT_WRITE,
+                    profile_resource,
+                    context=audit,
+                )
+                assert denied.allowed is False
+
+    asyncio.run(scenario())
