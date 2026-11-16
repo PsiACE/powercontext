@@ -72,6 +72,15 @@ from powercontext.builtin.authz.service import (
     ResourceSearchRequest,
     access_control_for_mode,
 )
+from powercontext.builtin.authz.shared_use import (
+    SharedOrigin,
+    SharedPermissionScope,
+    SharedRetention,
+    SharedUse,
+    SharedUseAuthorization,
+    SharedUseGrant,
+    SharedUseTerms,
+)
 
 if TYPE_CHECKING:
     from powercontext.builtin.authz.authzen import AuthZenAuthorizationProvider
@@ -144,6 +153,13 @@ __all__ = (
     "ReplaceBinding",
     "ResourceRef",
     "ResourceSearchRequest",
+    "SharedOrigin",
+    "SharedPermissionScope",
+    "SharedRetention",
+    "SharedUse",
+    "SharedUseAuthorization",
+    "SharedUseGrant",
+    "SharedUseTerms",
     "access_control_for_mode",
     "bounded_idempotency_key",
 )
