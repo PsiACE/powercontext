@@ -7947,6 +7947,7 @@ components:
       type: object
     DreamInputManifest:
       additionalProperties: false
+      x-powercontext-omit-if-empty: [scoped]
       properties:
         transform_version:
           default: powercontext.dream.evidence.v1
@@ -7961,6 +7962,17 @@ components:
           items:
             $ref: '#/components/schemas/DreamSourceReference'
           type: array
+        scoped:
+          type: array
+          default: []
+          description: >-
+            Evidence admitted with its owning Scope, exactly as the run pinned it. Each entry names one
+            Scope and one unqualified Artifact or Source reference there, so a stored selection stays
+            readable without reinterpreting it. Present only on a run that admitted scoped evidence;
+            omitted, not empty, for a run whose selection is local. It is a record of what one run
+            selected, not a grant: reading the referenced material still needs authority at that Scope.
+          items:
+            $ref: '#/components/schemas/DreamScopedEvidence'
         nodes:
           default: []
           items:
@@ -7987,6 +7999,32 @@ components:
       - projection_digest
       - projection_bytes
       type: object
+    DreamScopedEvidence:
+      additionalProperties: false
+      description: >-
+        One admitted reference together with the Scope that owns it. The reference stays unqualified
+        because the owning Scope is the separate field; naming the run Scope is the same selection as a
+        local one.
+      required: [scope_id]
+      properties:
+        scope_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '.*\S.*'
+        artifact:
+          allOf:
+            - $ref: '#/components/schemas/ArtifactReference'
+          nullable: true
+          description: >-
+            The exact Artifact revision in this Scope. Exactly one of artifact or source is set; the
+            other is stored as null, so a persisted selection reads back without reinterpretation.
+        source:
+          allOf:
+            - $ref: '#/components/schemas/DreamSourceReference'
+          nullable: true
+          description: The exact Source in this Scope, with its locator when one was recorded.
+      type: object
     DreamEvidenceNode:
       additionalProperties: false
       description: An immutable content digest and its exact provenance, never its body.
@@ -8005,6 +8043,15 @@ components:
           nullable: true
         role:
           $ref: '#/components/schemas/DreamEvidenceRole'
+        origin_scope_id:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 256
+          pattern: '.*\S.*'
+          description: >-
+            The Scope that owns this evidence when it differs from the run Scope. Omitted for a node from
+            the run Scope, so an existing local run keeps the exact shape it recorded.
         historical:
           default: false
           type: boolean
@@ -8023,6 +8070,15 @@ components:
           items:
             $ref: '#/components/schemas/DreamSourceReference'
           type: array
+        scope_id:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 256
+          pattern: '.*\S.*'
+          description: >-
+            The Scope owning this group of root Sources when it is not the run Scope. Omitted for a group
+            of run-Scope Sources.
         independence:
           default: unknown
           $ref: '#/components/schemas/DreamEvidenceIndependence'

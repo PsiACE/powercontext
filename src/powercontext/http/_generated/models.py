@@ -5161,6 +5161,23 @@ class CreateDreamRunRequest(BaseModel):
     idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
 
 
+class DreamScopedEvidence(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    artifact: Annotated[
+        ArtifactReference | None,
+        Field(
+            description="The exact Artifact revision in this Scope. Exactly one of artifact or source is set; the other is stored as null, so a persisted selection reads back without reinterpretation."
+        ),
+    ] = None
+    source: Annotated[
+        DreamSourceReference | None,
+        Field(description="The exact Source in this Scope, with its locator when one was recorded."),
+    ] = None
+
+
 class DreamEvidenceNode(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -5171,6 +5188,15 @@ class DreamEvidenceNode(BaseModel):
     source: DreamSourceReference | None = None
     artifact: ArtifactReference | None = None
     role: DreamEvidenceRole
+    origin_scope_id: Annotated[
+        StrictStr | None,
+        Field(
+            description="The Scope that owns this evidence when it differs from the run Scope. Omitted for a node from the run Scope, so an existing local run keeps the exact shape it recorded.",
+            max_length=256,
+            min_length=1,
+            pattern=".*\\S.*",
+        ),
+    ] = None
     historical: StrictBool = False
 
 
@@ -5180,6 +5206,15 @@ class DreamRootEvidenceGroup(BaseModel):
     )
     group_id: StrictStr
     sources: list[DreamSourceReference]
+    scope_id: Annotated[
+        StrictStr | None,
+        Field(
+            description="The Scope owning this group of root Sources when it is not the run Scope. Omitted for a group of run-Scope Sources.",
+            max_length=256,
+            min_length=1,
+            pattern=".*\\S.*",
+        ),
+    ] = None
     independence: DreamEvidenceIndependence = DreamEvidenceIndependence.UNKNOWN
 
 
@@ -6098,6 +6133,14 @@ class DreamInputManifest(BaseModel):
     transform_version: StrictStr = "powercontext.dream.evidence.v1"
     artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
     sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
+    scoped: Annotated[
+        list[DreamScopedEvidence],
+        Field(
+            description="Evidence admitted with its owning Scope, exactly as the run pinned it. Each entry names one Scope and one unqualified Artifact or Source reference there, so a stored selection stays readable without reinterpreting it. Present only on a run that admitted scoped evidence; omitted, not empty, for a run whose selection is local. It is a record of what one run selected, not a grant: reading the referenced material still needs authority at that Scope.",
+            validate_default=True,
+            exclude_if=lambda value: not value,
+        ),
+    ] = []
     nodes: Annotated[list[DreamEvidenceNode], Field(validate_default=True)] = []
     edges: Annotated[list[DreamEvidenceEdge], Field(validate_default=True)] = []
     root_groups: Annotated[list[DreamRootEvidenceGroup], Field(validate_default=True)] = []

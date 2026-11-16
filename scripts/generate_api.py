@@ -195,6 +195,7 @@ def _generate_models(
     source = _with_code_validation(source, contract_schemas)
     source = _with_source_locator_validation(source, contract_schemas)
     source = _with_exclusive_fields(source, exclusive_schemas)
+    source = _with_omitted_empty_fields(source, contract_schemas)
     source = _with_artifact_search_validation(source, contract_schemas)
     source = _with_family_dispatch(source, contract_schemas)
     return _with_candidate_evidence_limits(source, evidence_models)
@@ -249,6 +250,73 @@ def _with_exclusive_fields(source: str, schemas: dict[str, Schema]) -> str:
 """
         source = f"{source[:insert_at].rstrip()}\n{validator.rstrip()}\n\n{source[insert_at:].lstrip()}"
     return source
+
+
+def _with_omitted_empty_fields(source: str, schemas: dict[str, Schema | Reference]) -> str:
+    """Omit a declared field from output when its value is empty.
+
+    A stored record can leave a field absent, and its wire shape must keep that absence instead of
+    adding an empty value the record never carried. OpenAPI cannot express output omission, so the
+    schema names the fields with ``x-powercontext-omit-if-empty`` and this applies it to the
+    generated default, keeping the declared validation.
+    """
+
+    for name, schema in schemas.items():
+        if not isinstance(schema, Schema):
+            continue
+        omitted = (schema.model_extra or {}).get("x-powercontext-omit-if-empty", [])
+        if not omitted:
+            continue
+        if not isinstance(omitted, list) or not all(isinstance(field, str) for field in omitted):
+            raise ContractGenerationError("x-powercontext-omit-if-empty", omitted)
+        for field in omitted:
+            source = _omit_generated_field(source, name, field)
+    return source
+
+
+def _source_offsets(source: str) -> tuple[list[str], list[int]]:
+    lines = source.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    return lines, offsets
+
+
+def _omit_generated_field(source: str, model_name: str, field: str) -> str:
+    """Add output omission to one generated ``Field`` declaration."""
+
+    model = next(
+        (node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == model_name),
+        None,
+    )
+    if model is None:
+        raise ContractGenerationError("generated model class", model_name)  # noqa: TRY003
+    declared = next(
+        (
+            node
+            for node in model.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == field
+        ),
+        None,
+    )
+    if declared is None:
+        raise ContractGenerationError("generated omitted field", field)  # noqa: TRY003
+    # The omission belongs on the field's Field(), which lives in its annotation.
+    annotation = ast.get_source_segment(source, declared.annotation) or ""
+    if "exclude_if=" in annotation:
+        raise ContractGenerationError("generated omitted field already excluded", field)  # noqa: TRY003
+    replaced = annotation.replace(
+        "validate_default=True",
+        "validate_default=True, exclude_if=lambda value: not value",
+    )
+    if replaced == annotation:
+        raise ContractGenerationError("generated omitted field validation", field)  # noqa: TRY003
+    if declared.annotation.end_lineno is None or declared.annotation.end_col_offset is None:
+        raise ContractGenerationError("generated omitted field bounds", field)  # noqa: TRY003
+    _, offsets = _source_offsets(source)
+    begin = offsets[declared.annotation.lineno - 1] + declared.annotation.col_offset
+    finish = offsets[declared.annotation.end_lineno - 1] + declared.annotation.end_col_offset
+    return source[:begin] + replaced + source[finish:]
 
 
 def _with_family_dispatch(source: str, schemas: dict[str, Schema | Reference]) -> str:

@@ -3423,6 +3423,11 @@ export interface components {
             artifacts: components["schemas"]["ArtifactReference"][];
             /** @default [] */
             sources: components["schemas"]["DreamSourceReference"][];
+            /**
+             * @description Evidence admitted with its owning Scope, exactly as the run pinned it. Each entry names one Scope and one unqualified Artifact or Source reference there, so a stored selection stays readable without reinterpreting it. Present only on a run that admitted scoped evidence; omitted, not empty, for a run whose selection is local. It is a record of what one run selected, not a grant: reading the referenced material still needs authority at that Scope.
+             * @default []
+             */
+            scoped: components["schemas"]["DreamScopedEvidence"][];
             /** @default [] */
             nodes: components["schemas"]["DreamEvidenceNode"][];
             /** @default [] */
@@ -3434,6 +3439,14 @@ export interface components {
             /** @default false */
             incomplete: boolean;
         };
+        /** @description One admitted reference together with the Scope that owns it. The reference stays unqualified because the owning Scope is the separate field; naming the run Scope is the same selection as a local one. */
+        DreamScopedEvidence: {
+            scope_id: string;
+            /** @description The exact Artifact revision in this Scope. Exactly one of artifact or source is set; the other is stored as null, so a persisted selection reads back without reinterpretation. */
+            artifact?: components["schemas"]["ArtifactReference"] | null;
+            /** @description The exact Source in this Scope, with its locator when one was recorded. */
+            source?: components["schemas"]["DreamSourceReference"] | null;
+        };
         /** @description An immutable content digest and its exact provenance, never its body. */
         DreamEvidenceNode: {
             evidence_id: string;
@@ -3442,12 +3455,16 @@ export interface components {
             source?: components["schemas"]["DreamSourceReference"];
             artifact?: components["schemas"]["ArtifactReference"];
             role: components["schemas"]["DreamEvidenceRole"];
+            /** @description The Scope that owns this evidence when it differs from the run Scope. Omitted for a node from the run Scope, so an existing local run keeps the exact shape it recorded. */
+            origin_scope_id?: string | null;
             /** @default false */
             historical: boolean;
         };
         DreamRootEvidenceGroup: {
             group_id: string;
             sources: components["schemas"]["DreamSourceReference"][];
+            /** @description The Scope owning this group of root Sources when it is not the run Scope. Omitted for a group of run-Scope Sources. */
+            scope_id?: string | null;
             /** @default unknown */
             independence: components["schemas"]["DreamEvidenceIndependence"];
         };
