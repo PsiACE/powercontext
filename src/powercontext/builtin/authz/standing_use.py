@@ -44,7 +44,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from powercontext.artifacts import ArtifactAddress
-from powercontext.builtin.authz.errors import AccessDeniedError, AccessInvalidRequestError
+from powercontext.builtin.authz.errors import (
+    AccessControlError,
+    AccessDeniedError,
+    AccessInvalidRequestError,
+)
 from powercontext.builtin.authz.models import AccessAction, PrincipalRef, ResourceRef
 from powercontext.builtin.authz.service import AccessAuditContext, AccessControlService
 from powercontext.builtin.sharing.models import (
@@ -55,6 +59,7 @@ from powercontext.builtin.sharing.models import (
     ShareRuleInvalidatedError,
     ShareRun,
     ShareRunCoverage,
+    ShareRunOriginCoverage,
 )
 from powercontext.sources import SourceRef
 
@@ -183,19 +188,24 @@ class StandingUseAuthorization:
         run = await service.get_run(rule.scope_id, run_id)
         if run.rule_id != rule_id or run.rule_version != version:
             raise AccessInvalidRequestError("shared_use_terms")
-        coverage = await service.coverage(rule.scope_id, rule_id, version)
-        if coverage.terms_digest != rule.terms_binding().digest():
-            # The accepting actors agreed to a different standing selector.
-            raise AccessInvalidRequestError("shared_use_terms")
         await self._require_head_status(service, rule)
-        await self._require_coverage(rule, run, coverage)
+
+        # One pinned manifest, not the version-wide union: this answers whose consent
+        # applies to the origins *this* run recorded.
+        coverage = await service.run_origin_coverage(rule.scope_id, run_id)
+        if coverage.terms_digest != rule.terms_binding().digest():
+            raise AccessInvalidRequestError("shared_use_terms")
+        if set(coverage.run_origin_scope_ids) != set(run.origin_scopes()):
+            # The projection and the manifest disagree; never admit on that.
+            raise AccessInvalidRequestError("shared_use_terms")
+        if not coverage.origins_covered:
+            raise ShareRuleAcceptanceError(rule.rule_id, rule.version, "origin:run")
+        if not coverage.audiences_covered:
+            # A declared audience nobody accepted is not a suppressed audience.
+            raise ShareRuleAcceptanceError(rule.rule_id, rule.version, "audience:run")
+
         await self._require_audience_member(principal, coverage, context)
-        await self.require_acceptors_current(
-            await service.acceptances_for(rule.scope_id, rule_id, version),
-            rule,
-            required_origin_scope_ids=tuple(sorted(run.origin_scopes())),
-            context=context,
-        )
+        used = await self._require_run_acceptors(service, rule, coverage, run, context)
         await self._require_checks(principal, self._execution_checks(rule, run), context)
         return StandingUseGrant(
             rule_id=rule_id,
@@ -203,14 +213,91 @@ class StandingUseAuthorization:
             terms_digest=coverage.terms_digest,
             use=rule.terms.use,
             audience=rule.terms.audience,
-            accepted_origin_scope_ids=coverage.accepted_origin_scope_ids,
+            accepted_origin_scope_ids=coverage.covered_origin_scope_ids,
             accepted_audience_scope_ids=coverage.accepted_audience_scope_ids,
             run_origin_scope_ids=coverage.run_origin_scope_ids,
-            acceptance_ids=tuple(
-                acceptance.acceptance_id
-                for acceptance in await service.acceptances_for(rule.scope_id, rule_id, version)
-            ),
+            acceptance_ids=used,
         )
+
+    async def _require_run_acceptors(
+        self,
+        service: ShareRuleService,
+        rule: ShareRule,
+        coverage: ShareRunOriginCoverage,
+        run: ShareRun,
+        context: AccessAuditContext,
+    ) -> tuple[str, ...]:
+        """Check the consent records that actually contribute to this pinned run.
+
+        Each required origin needs at least one contributing acceptance whose actor
+        still holds authority *where that material is*; a record that contributes
+        nothing to this manifest cannot veto it. Audiences work the same way.
+        """
+
+        used: list[str] = []
+        for origin in coverage.covered_origin_scope_ids:
+            contributor = await self._first_valid_contributor(
+                service, rule, run, origin, coverage.acceptance_ids_for(origin), context
+            )
+            if contributor is None:
+                raise AccessDeniedError
+            used.append(contributor)
+
+        audiences = set(coverage.declared_audience_scope_ids)
+        if audiences:
+            records = await service.acceptances_for(rule.scope_id, rule.rule_id, rule.version)
+            for scope_id in sorted(audiences):
+                for record in records:
+                    if record.side != "target" or scope_id not in record.covered_scope_ids:
+                        continue
+                    if await self._actor_holds(record.actor, rule, "target", (scope_id,), context):
+                        used.append(record.acceptance_id)
+                        break
+                else:
+                    raise AccessDeniedError
+        return tuple(used)
+
+    async def _first_valid_contributor(
+        self,
+        service: ShareRuleService,
+        rule: ShareRule,
+        run: ShareRun,
+        origin: str,
+        acceptance_ids: tuple[str, ...],
+        context: AccessAuditContext,
+    ) -> str | None:
+        """The first acceptance for this origin whose actor still holds authority there."""
+
+        for acceptance_id in acceptance_ids:
+            contribution = await service.acceptance_contribution(rule.scope_id, run.run_id, acceptance_id)
+            if origin not in contribution.contributed_origin_scope_ids:
+                # This record does not contribute to this pinned manifest.
+                continue
+            if await self._actor_holds(contribution.actor, rule, "origin", (origin,), context):
+                return contribution.acceptance_id
+        return None
+
+    async def _actor_holds(
+        self,
+        actor: str,
+        rule: ShareRule,
+        side: ShareAcceptanceSide,
+        scope_ids: tuple[str, ...],
+        context: AccessAuditContext,
+    ) -> bool:
+        """Whether one recorded actor currently holds its claimed authority."""
+
+        try:
+            principal = principal_ref(actor)
+        except AccessControlError:
+            # A record this boundary cannot read is not a live consent.
+            return False
+        checks = tuple(item for _, item in self._coverage_checks(rule, side, scope_ids))
+        try:
+            await self._require_checks(principal, checks, context)
+        except AccessControlError:
+            return False
+        return True
 
     async def require_acceptors_current(
         self,
@@ -351,7 +438,7 @@ class StandingUseAuthorization:
     async def _require_audience_member(
         self,
         principal: PrincipalRef,
-        coverage: ShareRunCoverage,
+        coverage: ShareRunOriginCoverage,
         context: AccessAuditContext,
     ) -> None:
         """The reading principal must belong to the declared audience.

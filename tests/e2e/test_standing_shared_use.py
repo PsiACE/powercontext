@@ -404,7 +404,12 @@ def test_run_use_checks_head_acceptors_and_current_authority_together(tmp_path: 
             with run_as(RUNNER):
                 run = await sharing.resolve(rule.rule_id)
             grant = await _use(standing, runtime, rule, run.run_id)
-            assert grant.acceptance_ids == tuple(item.acceptance_id for item in acceptances)
+            # Only the records that actually admitted this manifest are reported: the
+            # run reached Alice alone, plus the target consent it declares. Bob's
+            # origin consent is not part of this run's authority.
+            alice_origin, bob_origin, carol_target = (item.acceptance_id for item in acceptances)
+            assert set(grant.acceptance_ids) == {alice_origin, carol_target}
+            assert bob_origin not in grant.acceptance_ids
 
             # A different requested use is not silently treated as supported.
             with pytest.raises(AccessInvalidRequestError):
@@ -531,6 +536,212 @@ def test_unused_contributor_withdrawal_does_not_veto_the_pinned_run(tmp_path: Pa
             assert sorted(both.origin_scopes()) == sorted([alice, bob])
             with pytest.raises(AccessDeniedError):
                 await _use(standing, runtime, rule, both.run_id)
+
+    asyncio.run(scenario())
+
+
+def test_grant_reports_only_the_consent_this_pinned_run_used(tmp_path: Path) -> None:
+    """F1: identity and consent belong to THIS manifest, not the version's union.
+
+    Run 1 pins Alice alone. After Bob captures material, run 2 pins both. Run 1's
+    grant must still report only Alice's origin and only the records that admitted
+    it -- a later run, and a version v2 elsewhere, cannot pollute that projection.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "grant_identity.db"
+        async with composed(database) as (runtime, access, standing):
+            alice, bob, orders = await _three_scopes(runtime)
+            await _seed(access, alice, bob, orders)
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            alice_consent = await _accept(standing, runtime, rule, "origin", (alice,), ALICE)
+            bob_consent = await _accept(standing, runtime, rule, "origin", (bob,), BOB)
+            carol_consent = await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+
+            await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                first = await sharing.resolve(rule.rule_id)
+            assert first.origin_scopes() == (alice,)
+            grant = await _use(standing, runtime, rule, first.run_id)
+            assert grant.run_origin_scope_ids == (alice,)
+            assert set(grant.acceptance_ids) == {alice_consent.acceptance_id, carol_consent.acceptance_id}
+            assert bob_consent.acceptance_id not in grant.acceptance_ids
+
+            # Bob's later material belongs to a new run, not to run 1.
+            await runtime.sources.for_scope(bob).capture(
+                CaptureSource(source_id="later", content="Bob's counterexample.", metadata={})
+            )
+            with run_as(RUNNER):
+                second = await sharing.resolve(rule.rule_id)
+            assert sorted(second.origin_scopes()) == sorted([alice, bob])
+
+            again = await _use(standing, runtime, rule, first.run_id)
+            assert again.run_origin_scope_ids == (alice,)
+            assert bob_consent.acceptance_id not in again.acceptance_ids
+            # Run 2 legitimately needs both contributors.
+            both = await _use(standing, runtime, rule, second.run_id)
+            assert bob_consent.acceptance_id in both.acceptance_ids
+
+            # A v2 elsewhere cannot pollute v1's projection.
+            with run_as(CAROL):
+                v2 = await sharing.update(
+                    rule.rule_id,
+                    1,
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    ),
+                )
+            assert v2.version == 2
+            # A superseded version is no longer a live agreement, so v2 cannot be used
+            # to keep admitting v1's run either -- the head check refuses explicitly.
+            with pytest.raises(ShareRuleInvalidatedError):
+                await _use(standing, runtime, rule, first.run_id)
+
+    asyncio.run(scenario())
+
+
+def test_subtree_root_admits_child_only_with_authority_at_the_child(tmp_path: Path) -> None:
+    """Structural coverage is selection, never permission.
+
+    An accepted range root admits a descendant only when the accepting actor holds
+    current authority AT that descendant. Root administration alone must deny.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "subtree_consent.db"
+        async with composed(database) as (runtime, access, standing):
+            assert runtime.scopes is not None
+            root = (await runtime.scopes.create(ScopeDraft(title="Root", summary="W", idempotency_key="r"))).scope_id
+            child = (
+                await runtime.scopes.create(
+                    ScopeDraft(title="Child", summary="W", parent_scope_id=root, idempotency_key="c")
+                )
+            ).scope_id
+            orders = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="o"))
+            ).scope_id
+            await _bind(access, ALICE, root, AccessRole.SCOPE_ADMIN, "alice-root")
+            await _bind(access, CAROL, orders, AccessRole.SCOPE_ADMIN, "carol")
+            await _bind(access, RUNNER, orders, AccessRole.SCOPE_CONTRIBUTOR, "runner")
+            await _bind(access, RUNNER, child, AccessRole.SCOPE_VIEWER, "runner-child-reader")
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    ShareRuleDraft(
+                        selection=ScopeSelection(mode="subtree", root_scope_id=root),
+                        source_types=("content",),
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            await _accept(standing, runtime, rule, "origin", (root,), ALICE)
+            await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+            await runtime.sources.for_scope(child).capture(
+                CaptureSource(source_id="child-fact", content="Agreed descendant.", metadata={})
+            )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (child,)
+
+            # NEGATIVE: root administration alone is not authority at the child.
+            with pytest.raises(AccessDeniedError):
+                await _use(standing, runtime, rule, run.run_id)
+
+            # POSITIVE: the same actor with current authority AT the child admits it.
+            await _bind(access, ALICE, child, AccessRole.SCOPE_ADMIN, "alice-child")
+            grant = await _use(standing, runtime, rule, run.run_id)
+            assert grant.run_origin_scope_ids == (child,)
+
+    asyncio.run(scenario())
+
+
+def _binding_query(scope_id: str):
+    from powercontext.builtin.authz import BindingSearchRequest
+
+    return BindingSearchRequest(management_resource=ResourceRef.scope(scope_id))
+
+
+def test_redundant_invalid_acceptor_does_not_veto_a_valid_one(tmp_path: Path) -> None:
+    """Two records cover the same required origin: one valid is enough."""
+
+    async def scenario() -> None:
+        database = tmp_path / "redundant.db"
+        async with composed(database) as (runtime, access, standing):
+            alice, bob, orders = await _three_scopes(runtime)
+            bindings = await _seed(access, alice, bob, orders)
+            await _bind(access, MEMBER, alice, AccessRole.SCOPE_ADMIN, "member-alice-admin")
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            alice_consent = await _accept(standing, runtime, rule, "origin", (alice,), ALICE)
+            # A second, redundant consent for the same origin.
+            member_consent = await _accept(standing, runtime, rule, "origin", (alice,), MEMBER)
+            await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+            await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+
+            # Losing the redundant acceptor leaves the run admissible.
+            member_binding = await access.list_bindings(ADMIN, _binding_query(alice), context=AUDIT)
+            redundant = next(
+                item for item in member_binding.items if item.subject == MEMBER and item.role is AccessRole.SCOPE_ADMIN
+            )
+            await access.revoke_binding(
+                ADMIN,
+                redundant.binding_id,
+                expected_version=redundant.version,
+                idempotency_key="revoke-redundant",
+                context=AUDIT,
+            )
+            grant = await _use(standing, runtime, rule, run.run_id)
+            assert alice_consent.acceptance_id in grant.acceptance_ids
+            assert member_consent.acceptance_id not in grant.acceptance_ids
+
+            # Losing the only valid consent for that origin denies.
+            await access.revoke_binding(
+                ADMIN,
+                bindings["alice"].binding_id,
+                expected_version=bindings["alice"].version,
+                idempotency_key="revoke-only-consent",
+                context=AUDIT,
+            )
+            with pytest.raises(AccessDeniedError):
+                await _use(standing, runtime, rule, run.run_id)
 
     asyncio.run(scenario())
 
