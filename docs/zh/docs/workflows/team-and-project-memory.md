@@ -219,18 +219,20 @@ Scope 树或引用而获得它。
 因此可以读取项目结论的成员，若没有在存放该证据的 Scope 上另行获得授权，仍会被拒绝查看背后的私有事故报告。这种拒绝是预期
 行为而不是缺陷。
 
-项目用自己的 Source Journal 产出的 Revision，其证据在项目 Scope 内解析。
-
-Dream 选择也可以显式准入一个来自其他 Scope 的引用，该引用会按其实际拥有它的 Scope 解析，而不是当前 Scope。运行会记录并回读
-它使用的来源，因此事后可以查看到确切被准入的选择：
+项目用自己的 Source Journal 产出的 Revision，其证据在项目 Scope 内解析。运行会以它被准入时的同一限定形式保存选择，因此事后可以从
+运行的 `input_manifest` 读到该运行确切使用的 Scope 与引用：
 
 ```json
-"selection":{"scoped":[{"scope_id":"S_ALICE_WORK",
-                        "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}}]}
+{"input_manifest":{"scoped":[{"scope_id":"S_PROJECT",
+                              "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}}]}}
 ```
 
-仍有两个限制。该证据必须被操作准入用于此用途，而部署无法执行的用途会在任何生成发生之前以 `unsupported_shared_use` 拒绝，
-而不是被静默降级。*从*外部 Scope 产出项目结论仍然不可用，自动发现应当准入哪些外部 Scope 也不可用；选择始终是显式的。
+这是同 Scope 运行的结果存储，而不是请求字段：该限定形式命名的是运行自身的 Scope。本地选择保留既有的本地形式，回读本身不授予任何
+新权限——打开所引 Revision 仍然是上文所述的那次独立的确切读取。
+
+在 Dream 运行中选择*另一个* Scope 的材料目前会被拒绝。每一个这样的选择——而不只是本部署无法执行的那些——都会在运行被接受之前、
+在任何证据被读取之前、在任何生成被尝试之前，以 `unsupported_shared_use` 失败。因此项目结论目前只能由项目 Scope 自身的证据产出，
+而且公开的 Dream 创建请求根本没有提供指定其他 Scope 的途径。从贡献者 Scope 产出结论，以及自动发现可能准入哪些外部 Scope，都不可用。
 
 ## 一次查询多个成员 Scope
 

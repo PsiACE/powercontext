@@ -241,21 +241,25 @@ needs authority at *that* origin, checked on the request that opens it, and no p
 member who may read the project conclusion is therefore refused the private incident report behind it unless they
 separately hold a grant on the Scope that stores it. That refusal is the intended behavior rather than a defect.
 
-Evidence for a revision the project produced from its own Source Journal resolves inside the project Scope.
-
-A Dream selection may also name an explicitly admitted reference from another Scope, and that reference resolves
-against the Scope that actually owns it rather than this one. A run records and reads back the origin it used, so
-the exact admitted selection is inspectable afterwards:
+Evidence for a revision the project produced from its own Source Journal resolves inside the project Scope. A run
+keeps its selection in the same qualified shape it was admitted with, so the exact Scope and reference a run used
+is readable afterwards from the run's `input_manifest`:
 
 ```json
-"selection":{"scoped":[{"scope_id":"S_ALICE_WORK",
-                        "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}}]}
+{"input_manifest":{"scoped":[{"scope_id":"S_PROJECT",
+                              "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}}]}}
 ```
 
-Two limits remain. The evidence must be admitted by the operation for this use, and a use the deployment cannot
-enforce is refused with `unsupported_shared_use` before any generation happens rather than being silently
-downgraded. Producing a project conclusion *from* foreign Scopes remains unavailable, as does any automatic
-discovery of which foreign Scopes to admit; the selection is always explicit.
+That is a stored result of a same-Scope run, not a request field: the qualified shape names the run's own Scope.
+A local selection keeps its existing local shape, and the readback adds no authority of its own — opening the
+cited revision is still the separate exact read described above.
+
+Selecting *another* Scope's material in a Dream run is refused today. Every such selection, not only one this
+deployment cannot enforce, fails with `unsupported_shared_use` before the run is accepted, before any evidence is
+read, and before any generation is attempted. So a project conclusion is currently produced from the project
+Scope's own evidence, and the public Dream create request still has no way to name another Scope at all. Producing
+a conclusion from contributor Scopes, and any automatic discovery of which foreign Scopes might be admitted, are
+not available.
 
 ## Query several member Scopes at once
 
