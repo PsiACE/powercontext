@@ -47,11 +47,12 @@ class EvidenceLimits(BaseModel):
 
 
 class ScopedEvidence(BaseModel):
-    """One explicitly admitted reference, resolved in the Scope that owns it.
+    """One explicitly admitted reference, named with the Scope that owns it.
 
     The reference stays unqualified, exactly as a local selection is, because the
-    owning Scope is the separate field. A local reference and the same reference
-    selected here from another Scope are different inputs.
+    owning Scope is the separate field. Naming the run Scope is therefore the same
+    selection as a local one; naming another Scope asks to use that Scope's material,
+    which needs an agreed use rather than only read authority there.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -59,7 +60,6 @@ class ScopedEvidence(BaseModel):
     scope_id: str
     artifact: ArtifactRef | None = None
     source: SourceRef | None = None
-    role: Literal["support", "counterexample"] = "support"
 
     @field_validator("scope_id")
     @classmethod
