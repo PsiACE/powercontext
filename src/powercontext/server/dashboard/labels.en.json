@@ -289,6 +289,7 @@
   "error_413": "The content exceeds the download size limit. No attachment was created.",
   "review": "Review inbox",
   "profile_mode_dream_review_approved": "Dream review approved",
+  "profile_mode_initialize_review_approved": "First Profile initialized",
   "review_resource": "Candidate type",
   "review_all": "All",
   "review_artifact": "Artifact candidates",

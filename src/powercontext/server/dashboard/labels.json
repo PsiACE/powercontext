@@ -289,6 +289,7 @@
   "error_413": "内容超过下载大小限制，未生成附件。",
   "review": "审核收件箱",
   "profile_mode_dream_review_approved": "Dream 审核通过",
+  "profile_mode_initialize_review_approved": "首次 Profile 初始化审核通过",
   "review_resource": "候选类型",
   "review_all": "全部",
   "review_artifact": "制品候选",
