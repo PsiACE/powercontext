@@ -1451,3 +1451,57 @@ def test_a_depth_refusal_reports_the_depth_budget_it_exhausted(tmp_path: Path) -
     import asyncio
 
     asyncio.run(scenario())
+
+
+def test_both_readers_fail_closed_when_the_recorded_audience_consent_is_absent(
+    tmp_path: Path,
+) -> None:
+    """A missing stored target acceptance must not be reported as agreed.
+
+    The fixture pins a real run through the public runtime and then removes only the
+    stored target acceptance row with standard SQLite, to represent an absent
+    authoritative agreement. This is an explicit storage-absence fixture, not a
+    withdrawal API and not a claim about a public or server-side mutation path.
+    """
+
+    import asyncio
+    import sqlite3
+
+    database = tmp_path / "absent-audience.db"
+
+    async def first() -> tuple[str, str]:
+        async with sharing_runtime(database) as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+            # The agreement is genuinely recorded while the row exists.
+            per_run = await sharing.run_origin_coverage(run.run_id)
+            assert per_run.audiences_covered
+            assert await sharing.covers_run(run.run_id)
+            return target, run.run_id
+
+    target, run_id = asyncio.run(first())
+
+    with sqlite3.connect(database) as connection, connection:
+        removed = connection.execute(
+            "DELETE FROM pc_share_acceptances WHERE scope_id = ? AND side = 'target'", (target,)
+        ).rowcount
+    assert removed == 1
+
+    async def second() -> None:
+        async with open_builtin_runtime(config(database)) as runtime:
+            sharing = runtime.sharing.for_scope(target)
+            per_run = await sharing.run_origin_coverage(run_id)
+            # Both readers report the recorded state, so both fail closed.
+            assert not per_run.audiences_covered
+            assert per_run.accepted_audience_scope_ids == ()
+            assert per_run.declared_audience_scope_ids == (target,)
+            assert not await sharing.covers_run(run_id)
+            # Origins themselves are unaffected by the audience row's absence.
+            assert per_run.origins_covered
+
+    asyncio.run(second())
