@@ -32,6 +32,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -126,6 +127,17 @@ async def _create_scope(client: httpx.AsyncClient, title: str, key: str, **extra
     )
     assert response.status_code == 201, response.text
     return response.json()["scope_id"]
+
+
+def _profile_resource(scope_id: str) -> dict[str, Any]:
+    """Address the Scope's single Profile Artifact for a per-Artifact grant."""
+
+    return {
+        "type": "artifact",
+        "scope_id": scope_id,
+        "identity": {"family": "profile", "artifact_id": "profile"},
+        "selector": None,
+    }
 
 
 async def _enable_reviewed_profile(client: httpx.AsyncClient, scope_id: str) -> None:
@@ -366,15 +378,15 @@ def test_team_project_memory_runs_on_ordinary_scopes(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_shared_conclusion_has_one_owner_and_no_handover(tmp_path: Path) -> None:
-    """The documented ownership limit is the real behavior, and there is no supported workaround.
+def test_project_conclusion_is_maintained_by_owner_and_explicit_maintainers(tmp_path: Path) -> None:
+    """Who may write a shared conclusion: its owner and explicitly bound maintainers.
 
-    This protects the workflow claim a project depends on when planning maintainers. If ownership transfer or
-    reviewer-based write authority is implemented later, this test should change together with the documentation
-    rather than leaving the docs asserting a restriction that no longer holds.
+    Scope roles deliberately carry no content-write authority, so a project binds each maintainer with the
+    per-Artifact ``artifact.maintainer`` role. Revocation stops further writing and review, and the creating
+    Principal keeps ownership throughout.
     """
 
-    database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'ownership.db'}")
+    database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'maintainers.db'}")
 
     async def scenario() -> None:
         await asyncio.to_thread(prepare_server_database, ServerSettings(database=database))
@@ -383,14 +395,13 @@ def test_shared_conclusion_has_one_owner_and_no_handover(tmp_path: Path) -> None
         ) as access:
             harness = _Harness(database, access)
             async with harness.client(ADMIN) as admin:
-                project_id = await _create_scope(admin, "Ownership project", "ownership-project")
+                project_id = await _create_scope(admin, "Maintained project", "maintained-project")
                 for principal in (MAINTAINER, READER):
-                    # Every role a Scope can carry, to show none of them confers Profile write authority.
                     for role in ("scope.contributor", "scope.reviewer", "scope.admin"):
                         await _grant(admin, project_id, principal, role)
                 await _enable_reviewed_profile(admin, project_id)
 
-            # The creating Principal becomes the owner of record.
+            # The creating Principal owns the conclusion.
             async with harness.client(MAINTAINER) as owner:
                 captured = await owner.post(
                     f"/v1/scopes/{project_id}/sources",
@@ -409,45 +420,89 @@ def test_shared_conclusion_has_one_owner_and_no_handover(tmp_path: Path) -> None
                 )
                 assert approved.status_code == 200, approved.text
                 head = await owner.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
-                etag = head.headers["ETag"]
                 assert head.json()["revision"] == 1
 
-                # The owner keeps working: replacement and further reviewed generation both succeed.
-                replaced = await owner.put(
+            # Every Scope role still carries no content write, because none of them implies artifact.write.
+            async with harness.client(READER) as other:
+                readable = await other.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                assert readable.status_code == 200, readable.text
+                refused = await other.put(
                     f"/v1/scopes/{project_id}/{PROFILE_PATH}",
-                    headers={"If-Match": etag},
-                    json={"content": {"content": "# Owner correction\n"}},
-                )
-                assert replaced.status_code == 200, replaced.text
-                assert replaced.json()["revision"] == 2
-
-            # A successor holding every Scope role cannot inherit it.
-            async with harness.client(READER) as successor:
-                latest = await successor.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
-                assert latest.status_code == 200, latest.text
-                assert latest.json()["revision"] == 2
-                refused = await successor.put(
-                    f"/v1/scopes/{project_id}/{PROFILE_PATH}",
-                    headers={"If-Match": latest.headers["ETag"]},
-                    json={"content": {"content": "# Successor rewrite\n"}},
+                    headers={"If-Match": readable.headers["ETag"]},
+                    json={"content": {"content": "# Unauthorised rewrite\n"}},
                 )
                 assert refused.status_code == 403, refused.text
 
-                # Recreating the singleton is not a handover route: it is already taken.
-                recreating = await successor.post(
-                    f"/v1/scopes/{project_id}/artifacts",
-                    json={"family": "profile", "content": {"content": "# Successor recreate\n"}},
+            # An explicit per-Artifact binding makes that Principal a maintainer.
+            async with harness.client(ADMIN) as admin:
+                granted = await admin.post(
+                    "/v1/access/bindings/create",
+                    json={
+                        "subject": {"type": "user", "id": READER.id},
+                        "resource": _profile_resource(project_id),
+                        "role": "artifact.maintainer",
+                        "idempotency_key": "reader-profile-maintainer",
+                    },
                 )
-                assert recreating.status_code == 409, recreating.text
+                assert granted.status_code == 201, granted.text
+                binding = granted.json()
 
-                # Reviewed generation against an existing Profile needs the same write authority.
-                flush = await successor.post("/v1/profile/flush", json={"scope_id": project_id})
-                assert flush.status_code == 403, flush.text
+            async with harness.client(READER) as maintainer:
+                current = await maintainer.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                replaced = await maintainer.put(
+                    f"/v1/scopes/{project_id}/{PROFILE_PATH}",
+                    headers={"If-Match": current.headers["ETag"]},
+                    json={"content": {"content": "# Maintainer correction\n"}},
+                )
+                assert replaced.status_code == 200, replaced.text
+                assert replaced.json()["revision"] == current.json()["revision"] + 1
 
-            # The conclusion the owner wrote is unchanged by those attempts.
+                # Reviewed generation against the existing head needs the same authority, which it now has.
+                later = await maintainer.post(
+                    f"/v1/scopes/{project_id}/sources",
+                    json={"content": "Check transaction status before retrying on the old channel."},
+                )
+                assert later.status_code == 201, later.text
+                reassessed = await maintainer.post("/v1/profile/flush", json={"scope_id": project_id})
+                assert reassessed.status_code == 200, reassessed.text
+
+            # Revocation removes both rights again, and the owner keeps the conclusion.
+            async with harness.client(ADMIN) as admin:
+                revoked = await admin.post(
+                    "/v1/access/bindings/revoke",
+                    json={
+                        "binding_id": binding["binding_id"],
+                        "expected_version": binding["version"],
+                        "idempotency_key": "reader-profile-maintainer-revoke",
+                    },
+                )
+                assert revoked.status_code == 200, revoked.text
+                assert revoked.json()["state"] == "revoked"
+
+            async with harness.client(READER) as former:
+                current = await former.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                assert current.status_code == 200, current.text
+                refused = await former.put(
+                    f"/v1/scopes/{project_id}/{PROFILE_PATH}",
+                    headers={"If-Match": current.headers["ETag"]},
+                    json={"content": {"content": "# After revocation\n"}},
+                )
+                assert refused.status_code == 403, refused.text
+                # A pending proposal may already exist, so flush can report it without a new write. Approval is
+                # what commits a revision, and that is refused without current write authority.
+                pending_id = (
+                    (await former.post("/v1/profile/flush", json={"scope_id": project_id})).json().get("candidate_id")
+                )
+                assert pending_id is not None, "the earlier reassessment must still be pending"
+                approval = await former.post(
+                    "/v1/candidates/approve",
+                    json={"scope_id": project_id, "candidate_id": pending_id, "expected_version": 1},
+                )
+                assert approval.status_code in {403, 409}, approval.text
+
             async with harness.client(MAINTAINER) as owner:
-                unchanged = await owner.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
-                assert unchanged.json()["revision"] == 2
-                assert unchanged.json()["content"]["content"] == "# Owner correction\n"
+                final = await owner.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                assert final.status_code == 200, final.text
+                assert final.json()["content"]["content"] == "# Maintainer correction\n"
 
     asyncio.run(scenario())

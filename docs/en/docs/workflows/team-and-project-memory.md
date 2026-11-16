@@ -9,8 +9,8 @@ A team or a project does not need a new object type. It needs a Scope that the g
 collective record, a way for contributors to keep supplying material, one official conclusion that members can
 read, and a path to correct that conclusion when the facts change. Ordinary Scopes and their existing permissions
 provide each of these, so an application maps its business team and project IDs onto ordinary Scopes and records
-the relationship itself. One limitation is described below rather than hidden: a shared conclusion has a single
-owner, so correcting it is currently restricted to the Principal that created it.
+the relationship itself. A shared conclusion is written by an explicit set of maintainers: the Principal that
+created it and any Principal granted the per-Artifact `artifact.maintainer` role.
 
 This page describes the composition that runs today. Where a step depends on a capability that is not available
 yet, the text says so instead of implying it works.
@@ -154,19 +154,50 @@ If-Match: "revision:1"
 Every write is an immutable revision. `GET .../artifacts/profile/profile/revisions` lists the history, and
 `GET .../revisions/{revision}` returns one exact past conclusion.
 
-Writing an existing Artifact needs `artifact.write`, which comes from being that Artifact's owner. Ownership is
-established when an Artifact is created and belongs to one Principal. Concretely, on an Access-enforced
-deployment:
+Writing an existing Artifact needs `artifact.write`. The Scope roles do not carry it: `scope.admin` and
+`scope.reviewer` grant configuration and review, not content write. Authority comes from one of two places.
 
-- the Principal that created the Profile can keep replacing it;
-- another contributor, even one also holding `scope.reviewer` or `scope.admin`, is refused with `403`;
-- `artifact.owner` cannot be granted through the Access binding API.
+The Principal that created the Profile owns it. `artifact.owner` is one Principal per Artifact, is established at
+creation, and cannot be granted through the Access binding API. The owner can replace the Profile and drive
+reviewed generation against it.
 
-So a project must decide who creates the official Profile and treat that Principal as the maintainer of record.
-That Principal can keep replacing the Profile and can keep driving reviewed generation against it. Nobody else
-can, and there is no ownership handover: `artifact.owner` is one Principal per Artifact and cannot be reassigned
-through the Access API, so a successor cannot inherit the authority. Handing a shared conclusion between
-maintainers is an open decision, and this document does not offer a workaround.
+A project Profile is usually maintained by several people, so bind them explicitly with the per-Artifact
+`artifact.maintainer` role. It carries `artifact.read` and `artifact.write`, allows many bindings, accepts user and
+service subjects, and confers neither `artifact.share` nor ownership:
+
+```http
+POST /v1/access/bindings/create
+
+{"subject":{"type":"user","id":"mara"},
+ "resource":{"type":"artifact","scope_id":"S_PROJECT",
+             "identity":{"family":"profile","artifact_id":"profile"},
+             "selector":null},
+ "role":"artifact.maintainer",
+ "idempotency_key":"mara-orders-profile-maintainer"}
+```
+
+An explicitly bound maintainer can then replace the conclusion and run reviewed generation against it, exactly as
+the owner can:
+
+```http
+PUT /v1/scopes/S_PROJECT/artifacts/profile/profile
+If-Match: "revision:2"
+
+{"content":{"content":"# Orders project\n\n- Check transaction status before retrying on the old channel."}}
+```
+
+The grant is checked on the request, so revoking it stops further replacement, and a pending change can no longer
+be approved because committing a revision needs current write authority. Revoke with the binding's current version:
+
+```http
+POST /v1/access/bindings/revoke
+
+{"binding_id":"...","expected_version":1,"idempotency_key":"mara-orders-profile-maintainer-revoke"}
+```
+
+The binding is per Artifact identity and covers that identity's revisions. It does not transfer ownership: the
+creating Principal keeps the Artifact, and every other Profile in any Scope keeps its own separate authority. A
+project therefore grants maintainers one binding each and revokes it when that person should no longer write.
 
 ## Let members read it
 
@@ -216,8 +247,8 @@ cross-Scope processing and is not available yet.
 
 ## Correct it, and revisit on new facts
 
-Correction is available to the Profile's owner, which today means the Principal that created it. Three situations
-look similar and end differently:
+Correction is available to the Profile's owner and to every Principal holding an `artifact.maintainer` binding on
+it. Three situations look similar and end differently:
 
 | Situation | What the Server does |
 | --- | --- |
@@ -235,10 +266,10 @@ POST /v1/candidates/reject
 Do not try to approve the old proposal after the head moved. Reassessment is a new run against the current
 revision, which is why the notice the Server returns is a conflict rather than a silent overwrite.
 
-Because reviewed generation against an existing Profile requires the same `artifact.write` authority, a Principal
-that does not own the Profile cannot run `POST /v1/profile/flush` against it either. Correction and routine
-reassessment both follow the owner, so plan for one maintainer identity per project conclusion until ownership
-handover exists.
+Because reviewed generation against an existing Profile requires the same `artifact.write` authority, whoever
+corrects the conclusion can also run `POST /v1/profile/flush` against it. Without that authority neither is
+possible, so a Project that wants several maintainers binds `artifact.maintainer` for each of them rather than
+sharing one identity.
 
 ## Personal memory is unaffected
 
@@ -257,8 +288,8 @@ Stated plainly, so nothing here is mistaken for working behavior:
   write, or a reviewed proposal over that journal.
 - **Range queries across Scopes with exact readback and coverage.** `Prepare` covers the current Scope and its
   direct references; a member has to open a foreign origin under their own grant.
-- **Handing a shared conclusion to a different maintainer.** There is no ownership transfer, and no supported
-  workaround. See the ownership note above.
+- **Transferring ownership of a shared conclusion.** Maintenance is shared through `artifact.maintainer`, but the
+  `artifact.owner` relation is not reassignable. See the maintenance note above.
 - **Archiving or deleting a whole team or project Scope.** Scope lifecycle operations are still being defined.
 
 When those arrive they extend this workflow rather than replace it: the Scope that owns the record, the roles,

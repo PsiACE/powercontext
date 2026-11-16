@@ -7,8 +7,8 @@ description: 用普通 Scope 保存共享结论，让成员读取，并在事实
 
 团队或项目不需要新的对象类型。它需要四件事：一个由团队约定为集体记录归属的 Scope；贡献者持续提供材料的方式；
 一个成员可以读取的正式结论；以及事实变化时修正该结论的路径。普通 Scope 及其既有权限已经满足这四项，因此应用把业务团队
-和项目 ID 映射到普通 Scope，并自行记录两者的关系。下文会说明一个限制而不是隐藏它：共享结论只有一个所有者，因此当前只有
-创建它的 Principal 能够修正它。
+和项目 ID 映射到普通 Scope，并自行记录两者的关系。共享结论由一组显式维护者写入：创建它的 Principal，以及任何被授予
+`artifact.maintainer` 角色（Artifact 级别）的 Principal。
 
 本页描述当前可以运行的组合。某一步依赖尚未具备的能力时，正文会直接说明，而不是暗示它已经可用。
 
@@ -140,16 +140,46 @@ If-Match: "revision:1"
 每次写入都是一个不可变 Revision。`GET .../artifacts/profile/profile/revisions` 列出历史，`GET .../revisions/{revision}`
 返回某个确切的历次结论。
 
-写入已存在的 Artifact 需要 `artifact.write`，它来自该 Artifact 的所有者身份。所有权在 Artifact 创建时建立，且只属于一个
-Principal。在启用权限的部署上具体表现为：
+写入已存在的 Artifact 需要 `artifact.write`。Scope 角色不包含它：`scope.admin` 和 `scope.reviewer` 授予的是配置与审核，
+而不是内容写入。该权限来自以下两种途径之一。
 
-- 创建该 Profile 的 Principal 可以持续替换它；
-- 其他贡献者即使同时拥有 `scope.reviewer` 或 `scope.admin`，也会被拒绝并返回 `403`；
-- `artifact.owner` 无法通过 Access 绑定接口授予。
+创建该 Profile 的 Principal 拥有它。`artifact.owner` 每个 Artifact 只属于一个 Principal，在创建时建立，且无法通过 Access
+绑定接口授予。所有者可以替换该 Profile，也可以对它驱动需审核的生成。
 
-因此项目必须决定由谁创建正式 Profile，并把该 Principal 视为在册维护者。该 Principal 可以持续替换该 Profile，也可以持续
-对它驱动需审核的生成；其他任何人都不行，而且不存在所有权交接：`artifact.owner` 每个 Artifact 只属于一个 Principal，无法
-通过 Access 接口重新指派，继任者也无法继承该权限。交接共享结论的所有权是尚未解决的决策，本文不提供变通办法。
+项目 Profile 通常由多人维护，因此请用 Artifact 级别的 `artifact.maintainer` 角色显式绑定他们。它包含 `artifact.read` 与
+`artifact.write`，允许绑定多个主体，接受 user 与 service 主体，并且不包含 `artifact.share`，也不改变所有权：
+
+```http
+POST /v1/access/bindings/create
+
+{"subject":{"type":"user","id":"mara"},
+ "resource":{"type":"artifact","scope_id":"S_PROJECT",
+             "identity":{"family":"profile","artifact_id":"profile"},
+             "selector":null},
+ "role":"artifact.maintainer",
+ "idempotency_key":"mara-orders-profile-maintainer"}
+```
+
+被显式绑定的维护者随后可以像所有者一样替换结论，并对它执行需审核的生成：
+
+```http
+PUT /v1/scopes/S_PROJECT/artifacts/profile/profile
+If-Match: "revision:2"
+
+{"content":{"content":"# Orders project\n\n- Check transaction status before retrying on the old channel."}}
+```
+
+该授权在每次请求上校验，因此撤销后会停止后续替换，且待审变更不再能被批准，因为提交新 Revision 需要当前的写入权限。撤销时使用
+绑定的当前版本：
+
+```http
+POST /v1/access/bindings/revoke
+
+{"binding_id":"...","expected_version":1,"idempotency_key":"mara-orders-profile-maintainer-revoke"}
+```
+
+绑定按 Artifact 身份授予，覆盖该身份的各 Revision。它不转移所有权：创建该 Artifact 的 Principal 继续拥有它，任何其他 Scope
+中的 Profile 都各自保有自己的权限。因此项目为每位维护者授予一条绑定，并在其不应再写入时撤销。
 
 ## 让成员读取结论
 
@@ -194,7 +224,8 @@ Scope 树或引用而获得它。
 
 ## 修正它，并在新事实出现时重新评估
 
-修正操作对 Profile 的所有者可用，而当前这只能是创建它的那个 Principal。三种情形看起来相似，但结果不同：
+修正操作对该 Profile 的所有者、以及每个在其上持有 `artifact.maintainer` 绑定的 Principal 可用。三种情形看起来相似，但结果
+不同：
 
 | 情形 | 服务端行为 |
 | --- | --- |
@@ -211,8 +242,9 @@ POST /v1/candidates/reject
 
 头已移动后不要再尝试批准旧候选。重新评估是针对当前 Revision 的一次新运行，这也是服务端返回冲突而不是静默覆盖的原因。
 
-由于针对已有 Profile 的需审核生成需要同一份 `artifact.write` 权限，不拥有该 Profile 的 Principal 也无法对它执行
-`POST /v1/profile/flush`。修正与日常重评都跟随所有者，因此在所有权交接存在之前，请为每个项目结论规划单一维护者身份。
+由于针对已有 Profile 的需审核生成需要同一份 `artifact.write` 权限，能够修正结论的人同样可以对该 Profile 执行
+`POST /v1/profile/flush`。缺少该权限时两者都无法进行，因此希望多人维护的项目应为每位维护者绑定 `artifact.maintainer`，而不是
+共用一个身份。
 
 ## 个人记忆不受影响
 
@@ -228,7 +260,7 @@ POST /v1/candidates/reject
 - **直接从外部贡献者 Scope 产出项目结论。** 跨 Scope Dream 准入尚不可用，因此正式结论目前来自项目 Scope 自己的
   Journal、人工写入，或针对该 Journal 的已审候选。
 - **跨 Scope 的范围查询与确切回读、覆盖度。** `Prepare` 覆盖当前 Scope 及其直接引用；成员需以自己的授权打开外部来源。
-- **把共享结论交接给另一位维护者。** 没有所有权转移，也没有受支持的变通办法。见上文所有权说明。
+- **转移共享结论的所有权。** 通过 `artifact.maintainer` 共享维护权限，但 `artifact.owner` 关系不可重新指派。见上文维护说明。
 - **归档或删除整个团队或项目 Scope。** Scope 生命周期操作仍在定义中。
 
 这些能力到来时会扩展本流程而不是替换它：拥有记录的 Scope、角色、唯一结论和不可变 Revision 都保持上述形态。
