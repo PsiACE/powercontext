@@ -24,11 +24,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes
+from powercontext.builtin.persistence.errors import InvalidStoredColumnError
 from powercontext.builtin.persistence.tables import (
     SHARE_ACCEPTANCES_TABLE,
     SHARE_RULE_HEADS_TABLE,
@@ -38,6 +40,7 @@ from powercontext.builtin.persistence.tables import (
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
     ShareAcceptanceConflictError,
+    ShareAcceptanceSide,
     ShareRule,
     ShareRuleStatus,
     ShareRuleVersionConflictError,
@@ -45,6 +48,17 @@ from powercontext.builtin.sharing.models import (
     ShareRunNotFoundError,
     ShareRunStateError,
 )
+
+_SIDE = TypeAdapter(ShareAcceptanceSide)
+
+
+def _side(stored: object, /) -> ShareAcceptanceSide:
+    """Decode one stored acceptance side, rejecting anything this domain cannot accept."""
+
+    try:
+        return _SIDE.validate_python(stored, strict=True)
+    except ValidationError:
+        raise InvalidStoredColumnError("side", "'origin' or 'target'") from None
 
 
 def ticks(value: datetime) -> int:
@@ -386,7 +400,7 @@ class ShareAcceptanceRepository:
             scope_id=str(row["scope_id"]),
             rule_id=str(row["rule_id"]),
             version=int(row["version"]),
-            side=str(row["side"]),
+            side=_side(row["side"]),
             actor=str(row["actor"]),
             terms_digest=str(row["terms_digest"]),
             covered_scope_ids=tuple(json.loads(bytes(row["covered_scope_ids"]))),
@@ -444,7 +458,7 @@ class ShareAcceptanceRepository:
                 scope_id=str(row["scope_id"]),
                 rule_id=str(row["rule_id"]),
                 version=int(row["version"]),
-                side=str(row["side"]),
+                side=_side(row["side"]),
                 actor=str(row["actor"]),
                 terms_digest=str(row["terms_digest"]),
                 covered_scope_ids=tuple(json.loads(bytes(row["covered_scope_ids"]))),
