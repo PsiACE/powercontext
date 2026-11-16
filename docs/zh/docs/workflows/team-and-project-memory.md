@@ -219,8 +219,18 @@ Scope 树或引用而获得它。
 因此可以读取项目结论的成员，若没有在存放该证据的 Scope 上另行获得授权，仍会被拒绝查看背后的私有事故报告。这种拒绝是预期
 行为而不是缺陷。
 
-项目用自己的 Source Journal 产出的 Revision，其证据在项目 Scope 内解析。把外部 Source 或 Artifact 用作 Dream 证据，
-并在批准时重新校验每个来源的权限，属于跨 Scope 处理，目前尚不可用。
+项目用自己的 Source Journal 产出的 Revision，其证据在项目 Scope 内解析。
+
+Dream 选择也可以显式准入一个来自其他 Scope 的引用，该引用会按其实际拥有它的 Scope 解析，而不是当前 Scope。运行会记录并回读
+它使用的来源，因此事后可以查看到确切被准入的选择：
+
+```json
+"selection":{"scoped":[{"scope_id":"S_ALICE_WORK",
+                        "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}}]}
+```
+
+仍有两个限制。该证据必须被操作准入用于此用途，而部署无法执行的用途会在任何生成发生之前以 `unsupported_shared_use` 拒绝，
+而不是被静默降级。*从*外部 Scope 产出项目结论仍然不可用，自动发现应当准入哪些外部 Scope 也不可用；选择始终是显式的。
 
 ## 一次查询多个成员 Scope
 

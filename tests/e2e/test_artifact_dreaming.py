@@ -3718,15 +3718,19 @@ def test_scoped_selection_counts_against_the_published_budgets() -> None:
     sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(32))
 
     # A scoped Artifact is an Artifact selection: naming any Scope cannot exceed 20.
-    for selection in (
-        {"scoped": tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts)},
-        {
-            "artifacts": artifacts[:10],
-            "scoped": tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts[10:]),
-        },
-    ):
-        with pytest.raises((ValidationError, DreamError)):
-            CreateDreamRunRequest(operation="refine_experience", idempotency_key="over-artifacts", **selection)
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="refine_experience",
+            scoped=tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts),
+            idempotency_key="over-scoped-artifacts",
+        )
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="refine_experience",
+            artifacts=artifacts[:10],
+            scoped=tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts[10:]),
+            idempotency_key="over-local-and-scoped-artifacts",
+        )
 
     # A scoped Source is a reference: the published total still holds.
     with pytest.raises((ValidationError, DreamError)):
