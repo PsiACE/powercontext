@@ -708,60 +708,57 @@ class ShareRuleService:
 
         This is the single coverage contract for admission, retry and the readers it
         publishes. It answers about the origins a run actually recorded, never by
-        enumerating the current subtree: an accepted exact Scope covers itself, and an
-        accepted subtree root covers any required origin that is its structural
-        descendant. Unrelated tree growth therefore cannot change the decision for a
-        pinned manifest (finding 2), and the readers agree with the admission gate that
-        published the run (finding 3).
+        enumerating the current subtree, and it returns only those recorded origins —
+        never an intermediate parent it happens to walk through.
+
+        Each accepted Scope covers exactly what the rule version declares for it:
+
+        * the rule's structural root, once accepted, also covers its descendants;
+        * any other accepted Scope — an exact selection member or an explicit extra —
+          covers itself only. Choosing an extra Scope adds that Scope to the range; it
+          does not add its children or let an unaccepted Scope ride on its consent.
 
         Coverage here is structural selection only. It grants no authority: reading an
         origin still needs its own current grant at that origin's Scope.
         """
 
         covered = {origin for origin in required_origins if origin in accepted}
-        root_scope_ids = tuple(
-            origin for origin in accepted if origin == rule.selection.root_scope_id or origin in rule.exact_scope_ids
-        )
-        if root_scope_ids:
-            covered.update(await self._descendants_among(root_scope_ids, required_origins, rule))
+        root_scope_id = rule.selection.root_scope_id
+        if root_scope_id is None or root_scope_id not in accepted:
+            return covered
+        covered.update(await self._descendants_among(root_scope_id, required_origins, rule))
         return covered
 
-    async def _descendants_among(
-        self, ancestors: tuple[str, ...], candidates: tuple[str, ...], rule: ShareRule
-    ) -> set[str]:
-        """Report which candidates sit under an accepted structural root.
+    async def _descendants_among(self, root_scope_id: str, candidates: tuple[str, ...], rule: ShareRule) -> set[str]:
+        """Report which of the original candidates are structural descendants of the root.
 
-        Traversal walks parent edges upward from each pinned origin, so its cost is
-        bounded by the pinned origins and the declared depth, not by the size of the
-        tree. A candidate deeper than the declared depth is simply not covered.
+        Each candidate walks its own parent chain, so a candidate at any depth is
+        reported as itself once the walk reaches the accepted root. Walking to a parent
+        never substitutes that parent for the candidate: an intermediate Scope a run did
+        not record cannot become covered material.
         """
 
-        pending = {candidate for candidate in candidates if candidate not in ancestors}
+        pending = {candidate for candidate in candidates if candidate != root_scope_id}
         if not pending:
             return set()
+        # Map each walk position back to the original pinned candidate it belongs to.
+        walks = {candidate: candidate for candidate in pending}
         covered: set[str] = set()
         async with self._database.transaction() as connection:
             for _ in range(_MAX_SCOPE_DEPTH):
-                if not pending:
+                if not walks:
                     break
-                matched: set[str] = set()
-                reached: set[str] = set()
-                for scope_id in tuple(pending):
-                    descriptor = await self._scope_repository.get(connection, scope_id)
+                advanced: dict[str, str] = {}
+                for position, candidate in walks.items():
+                    descriptor = await self._scope_repository.get(connection, position)
                     parent = None if descriptor is None else descriptor.parent_scope_id
                     if parent is None:
                         continue
-                    if parent in ancestors:
-                        matched.add(scope_id)
-                    else:
-                        reached.add(parent)
-                covered.update(matched)
-                pending -= matched
-                # Continue only through the parents of still-unresolved candidates.
-                if not reached or not (reached - set(ancestors)):
-                    break
-                pending = reached
-                candidates = tuple(reached)
+                    if parent == root_scope_id:
+                        covered.add(candidate)
+                    elif parent not in walks.values():
+                        advanced[parent] = candidate
+                walks = advanced
         return covered
 
     async def _require_scope(self, connection: AsyncConnection, scope_id: str) -> None:

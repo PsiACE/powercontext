@@ -1033,3 +1033,90 @@ def test_duplicate_notification_delivery_converges_on_one_durable_run(tmp_path: 
     import asyncio
 
     asyncio.run(scenario())
+
+
+def test_a_deep_descendant_is_covered_as_itself_not_as_an_intermediate(tmp_path: Path) -> None:
+    """A grandchild three levels down must be covered as the origin the run recorded."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "deep.db")) as runtime:
+            root = await scopes_of(runtime).create(ScopeDraft(title="R", summary="s", idempotency_key="r"))
+            child = await scopes_of(runtime).create(
+                ScopeDraft(title="C", summary="s", parent_scope_id=root.scope_id, idempotency_key="c")
+            )
+            grandchild = await scopes_of(runtime).create(
+                ScopeDraft(title="G", summary="s", parent_scope_id=child.scope_id, idempotency_key="g")
+            )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            await runtime.sources.for_scope(grandchild.scope_id).capture(
+                CaptureSource(source_id="deep-fact", content="A grandchild fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=root.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            await agree(sharing, rule.rule_id)
+
+            run = await sharing.resolve(rule.rule_id)
+
+            assert run.origin_scopes() == (grandchild.scope_id,)
+            coverage = await sharing.coverage(rule.rule_id, 1)
+            assert coverage.accepted_origin_scope_ids == (grandchild.scope_id,)
+            assert coverage.origins_covered and coverage.audiences_covered
+            assert await sharing.covers_run(run.run_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_an_exact_extra_scope_covers_only_itself(tmp_path: Path) -> None:
+    """Accepting an exact extra Scope must not admit the unaccepted subtree root.
+
+    The extra Scope is the selected root's own parent, so accepting it is the consent
+    that could be mistaken for covering the root's subtree. It covers only itself.
+    """
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "extra.db")) as runtime:
+            extra = await scopes_of(runtime).create(ScopeDraft(title="E", summary="s", idempotency_key="e"))
+            selected_root = await scopes_of(runtime).create(
+                ScopeDraft(title="S", summary="s", parent_scope_id=extra.scope_id, idempotency_key="s")
+            )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            # Material lives at the selected root, which nobody accepted.
+            await runtime.sources.for_scope(selected_root.scope_id).capture(
+                CaptureSource(source_id="root-fact", content="Unaccepted root fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=selected_root.scope_id),
+                    exact_scope_ids=(extra.scope_id,),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            # Only the ancestor extra Scope is accepted on the origin side.
+            await sharing.accept(rule.rule_id, 1, "origin", actor="origin-admin", covered_scope_ids=(extra.scope_id,))
+            await sharing.accept(rule.rule_id, 1, "target", actor="target-owner")
+
+            with pytest.raises(ShareRuleAcceptanceError):
+                await sharing.resolve(rule.rule_id)
+            assert await sharing.list_runs(rule_id=rule.rule_id) == ()
+
+            # Accepting the declared root is what admits its material.
+            await sharing.accept(
+                rule.rule_id, 1, "origin", actor="root-admin", covered_scope_ids=(selected_root.scope_id,)
+            )
+            run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (selected_root.scope_id,)
+            assert await sharing.covers_run(run.run_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
