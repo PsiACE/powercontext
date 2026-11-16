@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
@@ -115,10 +116,10 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
             context = ArtifactSearchExecutionContext(VIEWER, access, AUDIT)
             query = runtime.cross_scope.for_scope(orders)
 
-            def request(**overrides) -> CrossScopeQueryRequest:
+            def request(*, payload=None, **overrides) -> CrossScopeQueryRequest:
                 return CrossScopeQueryRequest(
                     family="experience",
-                    payload={"query": QUERY},
+                    payload={"query": QUERY} if payload is None else payload,
                     scopes=(interface, helpdesk),
                     **overrides,
                 )
@@ -133,11 +134,13 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
             ]
             assert [(hit.origin_rank, hit.origin.scope_id) for hit in complete.hits] == [(1, interface), (1, helpdesk)]
 
-            # A candidate budget narrower than the caller's own window is never a complete search.
+            # A budget that narrows the caller's declared window is never a complete search.
+            declared = {"query": QUERY, "limit": 10}
             with pytest.raises(CrossScopeQueryBoundsError):
-                await query.search(request(limit=4, max_candidates=6), execution_context=context)
+                await query.search(request(limit=4, max_candidates=6, payload=declared), execution_context=context)
             narrowed = await query.search(
-                request(limit=4, max_candidates=6, coverage="partial"), execution_context=context
+                request(limit=4, max_candidates=6, coverage="partial", payload=declared),
+                execution_context=context,
             )
             assert narrowed.coverage.complete is False
             assert narrowed.coverage.reason == "candidate_budget"
@@ -203,6 +206,44 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
                     ArtifactAddress(
                         scope_id=interface,
                         artifact=ArtifactRef(family="experience", artifact_id=RETRY_TRACE, revision=9),
+                    ),
+                    execution_context=context,
+                )
+
+            # The budget is a ceiling, not a work request: a declared top-1 window stays top-1 even
+            # when the allocation is far larger, and must never become an invalid Family limit.
+            await runtime.records.for_scope(interface).create_artifact(
+                "experience",
+                ArtifactWrite(content=_experience("The retry trace confirms the idempotency key.").model_dump()),
+            )
+            top_one_runs = []
+            for budget in (64, 256):
+                top_one = await query.search(
+                    CrossScopeQueryRequest(
+                        family="experience",
+                        payload={"query": QUERY, "limit": 1},
+                        scopes=(interface,),
+                        limit=10,
+                        max_candidates=budget,
+                    ),
+                    execution_context=context,
+                )
+                assert top_one.coverage.complete is True
+                assert len(top_one.hits) == 1
+                assert top_one.hits[0].origin_rank == 1
+                top_one_runs.append(top_one.hits)
+            # A larger allocation returns the same single declared top hit, not more of them.
+            assert top_one_runs[0] == top_one_runs[1]
+            # The Family still owns its own limit contract: an invalid declared window is reported
+            # as such, and the allocation never rewrites a valid declared window.
+            with pytest.raises(ValidationError):
+                await query.search(
+                    CrossScopeQueryRequest(
+                        family="experience",
+                        payload={"query": QUERY, "limit": 201},
+                        scopes=(interface,),
+                        limit=10,
+                        max_candidates=256,
                     ),
                     execution_context=context,
                 )
