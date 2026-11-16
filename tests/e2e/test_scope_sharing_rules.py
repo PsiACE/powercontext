@@ -34,16 +34,19 @@ from powercontext.builtin.runtime import (
     ApproveCandidateRequest,
     BuiltinConfig,
     CaptureSource,
+    CaptureWorkingNote,
     ProposeExperienceRequest,
     RuntimeConfig,
 )
 from powercontext.builtin.runtime.composition import open_builtin_runtime
 from powercontext.builtin.scope import ScopeDraft, ScopeSelection
 from powercontext.builtin.sharing import (
+    ShareAcceptanceConflictError,
     ShareBudgetExceededError,
     ShareRuleAcceptanceError,
     ShareRuleDraft,
     ShareRuleInvalidatedError,
+    ShareRuleServiceUnavailable,
     ShareRuleTerms,
     ShareRunLimits,
 )
@@ -465,3 +468,264 @@ def test_pinned_run_survives_restart_and_reads_back_exactly(tmp_path: Path) -> N
 
     target, rule_id, run_id = asyncio.run(first())
     asyncio.run(second(target, rule_id, run_id))
+
+
+def test_ineligible_rows_never_hide_eligible_material_behind_a_page(tmp_path: Path) -> None:
+    """Working Notes before eligible rows must not make a run claim a smaller range.
+
+    This is the case where two ineligible rows precede eligible content and the input
+    budget is one: filtering a fixed page in Python pinned nothing while recording the
+    full watermark.
+    """
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "hidden.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            sources = runtime.sources.for_scope(origin)
+            for index in range(2):
+                await sources.capture_working_note(
+                    CaptureWorkingNote(
+                        source_id=f"note-{index}",
+                        content=f"Session note {index}.",
+                        session_id="s",
+                        note_kind="inspection",
+                        metadata={},
+                    )
+                )
+            await sources.capture(CaptureSource(source_id="real", content="Eligible fact.", metadata={}))
+            rule = await sharing.create(exact_rule(origin, limits=ShareRunLimits(max_inputs=1)))
+            await agree(sharing, rule.rule_id)
+
+            run = await sharing.resolve(rule.rule_id)
+
+            assert [item.source_ref.source_id for item in run.inputs] == ["real"]
+            assert run.source_watermarks[0].position == 3
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_run_pins_the_rule_version_that_selected_its_inputs(tmp_path: Path) -> None:
+    """A head published during discovery must not relabel one version's inputs.
+
+    The authorizer runs between discovery and the write, so a concurrent `update`
+    is reachable through a documented extension point.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.sharing import ShareRuleVersionConflictError
+
+        async with sharing_runtime(tmp_path / "race.db") as (runtime, target, origin):
+            sources = runtime.sources.for_scope(origin)
+            for index in range(3):
+                await sources.capture(CaptureSource(source_id=f"q{index}", content=f"Fact {index}.", metadata={}))
+            published: list[bool] = []
+
+            async def publish(scope_id: str) -> None:
+                # One-shot: a second rule version excludes these inputs entirely.
+                if published:
+                    return
+                published.append(True)
+                await runtime.sharing.for_scope(target).update(
+                    rule.rule_id,
+                    1,
+                    ShareRuleDraft(
+                        selection=ScopeSelection(mode="exact", scope_ids=(origin,)),
+                        source_types=("skill-usage",),
+                        terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                        limits=ShareRunLimits(max_inputs=1),
+                    ),
+                )
+                await runtime.sharing.for_scope(target).accept(rule.rule_id, 2, "origin", actor="origin-admin")
+                await runtime.sharing.for_scope(target).accept(rule.rule_id, 2, "target", actor="target-owner")
+
+            sharing = runtime.sharing.for_scope(target)
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            runtime.share_rules._authorize_origin = lambda scope_id, ref: publish(scope_id)
+            try:
+                with pytest.raises(ShareRuleVersionConflictError):
+                    await sharing.resolve(rule.rule_id)
+            finally:
+                runtime.share_rules._authorize_origin = None
+
+            # The refused call recorded nothing, so no mislabelled manifest exists.
+            assert await sharing.list_runs(rule_id=rule.rule_id) == ()
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_agreement_identity_distinguishes_selection_and_input_kinds(tmp_path: Path) -> None:
+    """A digest presented as the standing agreement must separate different ranges."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "digest.db")) as runtime:
+            project = await runtime.scopes.create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
+            child = await runtime.scopes.create(
+                ScopeDraft(title="C", summary="s", parent_scope_id=project.scope_id, idempotency_key="c")
+            )
+            target = await runtime.scopes.create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            terms = ShareRuleTerms(use="project-conclusion", audience="project-members")
+            sharing = runtime.sharing.for_scope(target.scope_id)
+
+            exact = await sharing.create(
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(project.scope_id,)), terms=terms)
+            )
+            subtree = await sharing.create(
+                ShareRuleDraft(selection=ScopeSelection(mode="subtree", root_scope_id=project.scope_id), terms=terms)
+            )
+            assert exact.terms_binding().digest() != subtree.terms_binding().digest()
+
+            content_only = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="exact", scope_ids=(project.scope_id,)),
+                    source_types=("content",),
+                    terms=terms,
+                )
+            )
+            families = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="exact", scope_ids=(project.scope_id,)),
+                    source_types=("content",),
+                    artifact_families=("experience",),
+                    terms=terms,
+                )
+            )
+            assert content_only.terms_binding().digest() != families.terms_binding().digest()
+
+            # A changed run limit changes what the version may select.
+            wider = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="exact", scope_ids=(project.scope_id,)),
+                    source_types=("content",),
+                    terms=terms,
+                    limits=ShareRunLimits(max_inputs=8),
+                )
+            )
+            assert content_only.terms_binding().digest() != wider.terms_binding().digest()
+            # The agreement identity stays independent of discovered run inputs.
+            assert (
+                content_only.terms_binding().digest()
+                == (await sharing.get(content_only.rule_id)).terms_binding().digest()
+            )
+            assert child.scope_id  # the child exists but is outside the exact agreement
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_identical_acceptance_returns_the_stored_record_and_changed_coverage_conflicts(
+    tmp_path: Path,
+) -> None:
+    """An acceptance reports its own durable identity; different coverage is refused."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "accept-readback.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            outsider = await runtime.scopes.create(ScopeDraft(title="Out", summary="s", idempotency_key="x"))
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="exact", scope_ids=(origin,)),
+                    exact_scope_ids=(outsider.scope_id,),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+
+            first = await sharing.accept(rule.rule_id, 1, "origin", actor="origin-admin", covered_scope_ids=(origin,))
+            again = await sharing.accept(rule.rule_id, 1, "origin", actor="origin-admin", covered_scope_ids=(origin,))
+            assert again.acceptance_id == first.acceptance_id
+            assert [item.acceptance_id for item in await sharing.agree(rule.rule_id, 1)] == [first.acceptance_id]
+
+            # Silent widening or silent discarding would both misstate the record.
+            with pytest.raises(ShareAcceptanceConflictError):
+                await sharing.accept(
+                    rule.rule_id,
+                    1,
+                    "origin",
+                    actor="origin-admin",
+                    covered_scope_ids=(origin, outsider.scope_id),
+                )
+
+            # A different actor may accept the remaining Scope; coverage then composes.
+            second = await sharing.accept(
+                rule.rule_id, 1, "origin", actor="second-admin", covered_scope_ids=(outsider.scope_id,)
+            )
+            assert second.acceptance_id != first.acceptance_id
+            recorded = await sharing.coverage(rule.rule_id, 1)
+            assert recorded.accepted_origin_scope_ids == tuple(sorted((origin, outsider.scope_id)))
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_a_run_cannot_be_completed_after_its_rule_is_invalidated(tmp_path: Path) -> None:
+    """Invalidation between retry's authority check and its insert must still stop it."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "retry-window.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+            await sharing.invalidate(rule.rule_id, 1)
+
+            with pytest.raises(ShareRuleInvalidatedError):
+                await sharing.retry(run.run_id)
+            with pytest.raises(ShareRuleInvalidatedError):
+                await sharing.record_outcome(run.run_id, outcome="no_change")
+            assert (await sharing.get_run(run.run_id)).outcome == "pending"
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_managed_database_does_not_advertise_standing_rules_it_cannot_serve(tmp_path: Path) -> None:
+    """A managed chain without the share tables must not expose a failing service.
+
+    An unmanaged profile creates these tables at bootstrap. A managed database takes
+    its schema from the frozen chain, so until that chain carries them the Runtime
+    must report sharing as unavailable instead of raising a raw driver error on the
+    first call.
+    """
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.sqlite import SQLiteMigrationRunner
+    from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
+
+    database = tmp_path / "managed.db"
+    runner = SQLiteMigrationRunner(
+        database,
+        server_bundle(),
+        configuration={
+            "processing_manifest": canonical_processing_manifest(BuiltinConfig()),
+            "embedding_enabled": False,
+        },
+    )
+    plan = runner.plan()
+    runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(
+                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
+                runtime=RuntimeConfig(),
+            )
+        ) as runtime:
+            assert runtime.share_rules is None
+            with pytest.raises(ShareRuleServiceUnavailable):
+                # The capability is absent, so no Scope existence is probed either.
+                await runtime.sharing.for_scope("scope").resolve("rule")
+
+    import asyncio
+
+    asyncio.run(scenario())

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
+    ShareAcceptanceConflictError,
     ShareAcceptanceSide,
     ShareBudgetExceededError,
     ShareError,
@@ -33,6 +34,7 @@ from powercontext.builtin.sharing.models import (
     ShareRuleDraft,
     ShareRuleInvalidatedError,
     ShareRuleNotFoundError,
+    ShareRuleServiceUnavailable,
     ShareRuleStatus,
     ShareRuleTerms,
     ShareRuleVersionConflictError,
@@ -60,6 +62,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "ShareAcceptance",
+    "ShareAcceptanceConflictError",
     "ShareAcceptanceSide",
     "ShareAuthorizer",
     "ShareBudgetExceededError",
@@ -76,6 +79,7 @@ __all__ = [
     "ShareRuleInvalidatedError",
     "ShareRuleNotFoundError",
     "ShareRuleService",
+    "ShareRuleServiceUnavailable",
     "ShareRuleStatus",
     "ShareRuleTerms",
     "ShareRuleVersionConflictError",

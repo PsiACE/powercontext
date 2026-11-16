@@ -943,6 +943,7 @@ async def open_builtin_runtime(  # noqa: C901
                 archive_service=contexts.portability,
             )
         )
+        runtime.share_rules = await _share_rule_service_available(runtime.share_rules, contexts.database)
         runtime.artifact_processing_supervisor = await resources.enter_async_context(
             _open_artifact_processing_supervisor(
                 config,
@@ -2537,6 +2538,23 @@ def _search_modes(capabilities: AtomicMemoryIndexCapabilities) -> tuple[MemorySe
     if capabilities.hybrid:
         modes.append("hybrid")
     return tuple(modes)
+
+
+async def _share_rule_service_available(service: ShareRuleService | None, database: Any) -> ShareRuleService | None:
+    """Advertise standing rules only when their storage is really present.
+
+    A managed database takes its schema from the registered chain. Until that chain
+    carries these tables, an absent table must surface as "unsupported" rather than
+    as a live service whose first call raises a raw driver error.
+    """
+
+    if service is None:
+        return None
+    async with database.transaction() as connection:
+        names = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
+    if not {table.name for table in SHARE_TABLES} <= names:
+        return None
+    return service
 
 
 __all__ = ["BuiltinConfigurationError", "open_builtin_contexts", "open_builtin_runtime", "preflight_builtin_runtime"]

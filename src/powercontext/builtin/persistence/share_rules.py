@@ -36,6 +36,7 @@ from powercontext.builtin.persistence.tables import (
 )
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
+    ShareAcceptanceConflictError,
     ShareRule,
     ShareRuleStatus,
     ShareRuleVersionConflictError,
@@ -302,30 +303,76 @@ class ShareAcceptanceRepository:
     """
 
     async def reserve(self, connection: AsyncConnection, acceptance: ShareAcceptance, /) -> ShareAcceptance:
-        existing = await connection.execute(
-            select(SHARE_ACCEPTANCES_TABLE.c.acceptance_id).where(
-                SHARE_ACCEPTANCES_TABLE.c.scope_id == acceptance.scope_id,
-                SHARE_ACCEPTANCES_TABLE.c.rule_id == acceptance.rule_id,
-                SHARE_ACCEPTANCES_TABLE.c.version == acceptance.version,
-                SHARE_ACCEPTANCES_TABLE.c.actor == acceptance.actor,
-                SHARE_ACCEPTANCES_TABLE.c.side == acceptance.side,
+        """Return the durable acceptance for this actor/side, creating it once.
+
+        An acceptance is immutable. Repeating the identical call returns the stored
+        row and its original identity, so a caller never receives an id no reader can
+        confirm; a different coverage for an already accepted actor/side is refused
+        rather than silently discarded.
+        """
+
+        existing = await self.find(
+            connection, acceptance.scope_id, acceptance.rule_id, acceptance.version, acceptance.actor, acceptance.side
+        )
+        if existing is not None:
+            if existing.covered_scope_ids != acceptance.covered_scope_ids:
+                raise ShareAcceptanceConflictError(
+                    acceptance.rule_id, acceptance.version, acceptance.actor, acceptance.side
+                )
+            return existing
+        await connection.execute(
+            insert(SHARE_ACCEPTANCES_TABLE).values(
+                scope_id=acceptance.scope_id,
+                rule_id=acceptance.rule_id,
+                version=acceptance.version,
+                actor=acceptance.actor,
+                side=acceptance.side,
+                terms_digest=acceptance.terms_digest,
+                covered_scope_ids=json.dumps(list(acceptance.covered_scope_ids)).encode(),
+                acceptance_id=acceptance.acceptance_id,
+                accepted_at=ticks(acceptance.accepted_at),
             )
         )
-        if existing.first() is None:
-            await connection.execute(
-                insert(SHARE_ACCEPTANCES_TABLE).values(
-                    scope_id=acceptance.scope_id,
-                    rule_id=acceptance.rule_id,
-                    version=acceptance.version,
-                    actor=acceptance.actor,
-                    side=acceptance.side,
-                    terms_digest=acceptance.terms_digest,
-                    covered_scope_ids=json.dumps(list(acceptance.covered_scope_ids)).encode(),
-                    acceptance_id=acceptance.acceptance_id,
-                    accepted_at=ticks(acceptance.accepted_at),
+        return acceptance
+
+    async def find(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        rule_id: str,
+        version: int,
+        actor: str,
+        side: str,
+        /,
+    ) -> ShareAcceptance | None:
+        row = (
+            (
+                await connection.execute(
+                    select(SHARE_ACCEPTANCES_TABLE).where(
+                        SHARE_ACCEPTANCES_TABLE.c.scope_id == scope_id,
+                        SHARE_ACCEPTANCES_TABLE.c.rule_id == rule_id,
+                        SHARE_ACCEPTANCES_TABLE.c.version == version,
+                        SHARE_ACCEPTANCES_TABLE.c.actor == actor,
+                        SHARE_ACCEPTANCES_TABLE.c.side == side,
+                    )
                 )
             )
-        return acceptance
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        return ShareAcceptance(
+            scope_id=str(row["scope_id"]),
+            rule_id=str(row["rule_id"]),
+            version=int(row["version"]),
+            side=str(row["side"]),
+            actor=str(row["actor"]),
+            terms_digest=str(row["terms_digest"]),
+            covered_scope_ids=tuple(json.loads(bytes(row["covered_scope_ids"]))),
+            acceptance_id=str(row["acceptance_id"]),
+            accepted_at=from_ticks(int(row["accepted_at"])),
+        )
 
     async def coverage(
         self, connection: AsyncConnection, scope_id: str, rule_id: str, version: int, terms_digest: str, /

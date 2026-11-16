@@ -29,6 +29,7 @@ from powercontext.builtin.sharing.models import (
     ShareAcceptanceSide,
     ShareRule,
     ShareRuleDraft,
+    ShareRuleServiceUnavailable,
     ShareRuleStatus,
     ShareRun,
     ShareRunCoverage,
@@ -41,43 +42,51 @@ if TYPE_CHECKING:
     from powercontext.builtin.sharing.service import ShareRuleService
 
 
-class ShareRuleServiceUnavailable(RuntimeError):
-    """The Runtime was composed without standing-rule storage."""
-
-    def __init__(self) -> None:
-        super().__init__("standing sharing rules are unavailable")
-
-
 class ScopedShareApplication:
     def __init__(self, runtime: BuiltinRuntime, scope_id: str) -> None:
         self._runtime = runtime
-        self.scope_id = validate_scope_id(scope_id)
+        self._requested_scope_id = scope_id
 
     def _service(self) -> ShareRuleService:
+        """Resolve the capability before any Scope existence probe.
+
+        A Runtime without standing-rule storage must report that clearly instead of
+        raising a raw driver error or an irrelevant missing-Scope failure.
+        """
+
         service = self._runtime.share_rules
         if service is None:
             raise ShareRuleServiceUnavailable()
         return service
 
+    @property
+    def scope_id(self) -> str:
+        return validate_scope_id(self._requested_scope_id)
+
     async def create(self, draft: ShareRuleDraft, /) -> ShareRule:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().create(self.scope_id, draft)
+            return await service.create(self.scope_id, draft)
 
     async def update(self, rule_id: str, expected_version: int, draft: ShareRuleDraft, /) -> ShareRule:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().update(self.scope_id, rule_id, expected_version, draft)
+            return await service.update(self.scope_id, rule_id, expected_version, draft)
 
     async def invalidate(self, rule_id: str, expected_version: int, /) -> ShareRule:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().invalidate(self.scope_id, rule_id, expected_version)
+            return await service.invalidate(self.scope_id, rule_id, expected_version)
 
     async def get(self, rule_id: str, /, *, version: int | None = None) -> ShareRule:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().get(self.scope_id, rule_id, version=version)
+            return await service.get(self.scope_id, rule_id, version=version)
 
     async def list(self, /, *, status: ShareRuleStatus | None = None) -> tuple[ShareRule, ...]:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().list(self.scope_id, status=status)
+            return await service.list(self.scope_id, status=status)
 
     async def accept(
         self,
@@ -95,38 +104,46 @@ class ScopedShareApplication:
         actually covers; acceptance defaults to the version's whole declared side.
         """
 
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().accept(
+            return await service.accept(
                 self.scope_id, rule_id, version, side, actor=actor, covered_scope_ids=covered_scope_ids
             )
 
     async def agree(self, rule_id: str, version: int, /) -> tuple[ShareAcceptance, ...]:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().acceptances_for(self.scope_id, rule_id, version)
+            return await service.acceptances_for(self.scope_id, rule_id, version)
 
     async def coverage(self, rule_id: str, version: int, /) -> ShareRunCoverage:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().coverage(self.scope_id, rule_id, version)
+            return await service.coverage(self.scope_id, rule_id, version)
 
     async def covers_run(self, run_id: str, /) -> bool:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().covers_run(self.scope_id, run_id)
+            return await service.covers_run(self.scope_id, run_id)
 
     async def resolve(self, rule_id: str, /, *, notification_key: str | None = None) -> ShareRun:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().resolve(self.scope_id, rule_id, notification_key=notification_key)
+            return await service.resolve(self.scope_id, rule_id, notification_key=notification_key)
 
     async def retry(self, run_id: str, /) -> ShareRun:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().retry(self.scope_id, run_id)
+            return await service.retry(self.scope_id, run_id)
 
     async def get_run(self, run_id: str, /) -> ShareRun:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().get_run(self.scope_id, run_id)
+            return await service.get_run(self.scope_id, run_id)
 
     async def list_runs(self, /, *, rule_id: str | None = None) -> tuple[ShareRun, ...]:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().list_runs(self.scope_id, rule_id=rule_id)
+            return await service.list_runs(self.scope_id, rule_id=rule_id)
 
     async def record_outcome(
         self,
@@ -138,8 +155,9 @@ class ScopedShareApplication:
         dream_run_id: str | None = None,
         candidate_id: str | None = None,
     ) -> ShareRun:
+        service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._service().record_outcome(
+            return await service.record_outcome(
                 self.scope_id,
                 run_id,
                 outcome=outcome,

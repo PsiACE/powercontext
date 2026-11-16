@@ -52,6 +52,7 @@ from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 from powercontext.builtin.scope.application import ScopeApplication
 from powercontext.builtin.scope.errors import ScopeNotFoundError
+from powercontext.builtin.scope.models import ScopeRangeLimits
 from powercontext.builtin.scope.models import ScopeSelection as ShareSelection
 from powercontext.builtin.scope.repository import ScopeRepository
 from powercontext.builtin.sharing.models import (
@@ -76,6 +77,8 @@ from powercontext.builtin.sharing.models import (
 )
 from powercontext.builtin.source_eligibility import is_generation_eligible
 from powercontext.sources import SourceRef
+
+_MAX_SCOPE_DEPTH = 16
 
 ShareAuthorizer = Callable[[str, "ArtifactAddress | SourceRef"], Awaitable[None]]
 """Check one origin under the execution principal's current authority.
@@ -283,14 +286,19 @@ class ShareRuleService:
                 existing = await self.runs.notification(connection, scope_id, rule_id, notification_key)
                 if existing is not None:
                     return existing
-        inputs, origins, watermarks, baseline = await self._discover(scope_id, rule)
+        discovered = rule
+        inputs, origins, watermarks, baseline = await self._discover(scope_id, discovered)
         used = tuple(sorted({item.origin_scope_id for item in inputs}))
-        await self._require_accepted(rule, used)
+        await self._require_accepted(discovered, used)
         async with self._database.transaction() as connection:
-            rule = await self._require_rule(connection, scope_id, rule_id, for_update=True)
-            if rule.status == "invalidated":
+            current = await self._require_rule(connection, scope_id, rule_id, for_update=True)
+            # Pin the version that actually selected these inputs. A head that moved
+            # during discovery must not relabel one version's inputs under another.
+            if current.version != discovered.version:
+                raise ShareRuleVersionConflictError(rule_id, discovered.version, current.version)
+            if current.status == "invalidated":
                 raise ShareRuleInvalidatedError(rule_id)
-            await self._require_accepted(rule, used, connection=connection)
+            await self._require_accepted(current, used, connection=connection)
             if notification_key is not None:
                 existing = await self.runs.notification(connection, scope_id, rule_id, notification_key)
                 if existing is not None:
@@ -300,15 +308,15 @@ class ShareRuleService:
                 ShareRun(
                     scope_id=scope_id,
                     run_id=self._id_factory("share"),
-                    rule_id=rule.rule_id,
-                    rule_version=rule.version,
-                    terms=rule.terms,
+                    rule_id=current.rule_id,
+                    rule_version=current.version,
+                    terms=current.terms,
                     inputs=inputs,
                     baseline=baseline,
                     baseline_digest=None if baseline is None else content_digest(baseline.model_dump_json().encode()),
                     source_watermarks=watermarks,
                     origins=origins,
-                    limits=rule.limits,
+                    limits=current.limits,
                     notification_key=notification_key,
                     created_at=self._now(),
                 ),
@@ -325,14 +333,21 @@ class ShareRuleService:
         await self._require_target(scope_id)
         async with self._database.transaction() as connection:
             original = await self._require_run(connection, scope_id, run_id)
+        await self._authorize_origins(original.inputs)
+        async with self._database.transaction() as connection:
+            # Recheck the recorded version's status and coverage inside the inserting
+            # transaction: a rule invalidated while authority was being checked must
+            # not gain a new live pending run.
+            original = await self._require_run(connection, scope_id, run_id)
             if original.state == "invalidated":
                 raise ShareRuleInvalidatedError(original.rule_id)
             rule = await self.rules.version(connection, scope_id, original.rule_id, original.rule_version)
             if rule is None:
                 raise ShareRuleInvalidatedError(original.rule_id)
+            head = await self._require_rule(connection, scope_id, original.rule_id)
+            if head.status == "invalidated":
+                raise ShareRuleInvalidatedError(original.rule_id)
             await self._require_accepted(rule, original.origin_scopes(), connection=connection)
-        await self._authorize_origins(original.inputs)
-        async with self._database.transaction() as connection:
             await self._require_scope(connection, scope_id)
             return await self.runs.create(
                 connection,
@@ -387,6 +402,11 @@ class ShareRuleService:
             run = await self._require_run(connection, scope_id, run_id)
             if run.state == "invalidated":
                 raise ShareRuleInvalidatedError(run.rule_id)
+            # A pending evaluation whose rule is no longer active must not be completed
+            # as if the rule still governed it.
+            head = await self._require_rule(connection, scope_id, run.rule_id)
+            if head.status == "invalidated" and run.outcome == "pending":
+                raise ShareRuleInvalidatedError(run.rule_id)
             resolved = run.outcome if outcome is None else outcome
             if committed is not None:
                 await self._artifacts.get(connection, scope_id, committed)
@@ -412,14 +432,20 @@ class ShareRuleService:
     async def _discover(
         self, scope_id: str, rule: ShareRule
     ) -> tuple[tuple[ShareInput, ...], tuple[str, ...], tuple[ShareSourceWatermark, ...], ArtifactAddress | None]:
-        """Read the agreed range once and pin every eligible address it covers."""
+        """Read the agreed range once and pin every eligible address it contains.
 
-        resolved = await self._scopes.resolve_selection(rule.selection)
-        origins = tuple(dict.fromkeys((*(scope.scope_id for scope in resolved), *rule.exact_scope_ids)))
-        if len(origins) > rule.limits.max_origins:
-            raise ShareBudgetExceededError("origins", rule.limits.max_origins, len(origins))
+        A pinned run must describe exactly the eligible material inside its recorded
+        watermark. Ineligible journal rows (Working Notes, lineage-only records) are
+        therefore filtered in SQL and paging continues, so they cannot hide eligible
+        rows behind a fixed page; the scan itself is bounded and refuses when it would
+        exceed that bound.
+        """
+
+        resolved = await self._scope_range(rule)
+        origins = tuple(dict.fromkeys((*resolved, *rule.exact_scope_ids)))
+        self._bounded(len(origins), rule.limits.max_origins, "origins")
         draft = rule.draft()
-        selected = frozenset(origin for origin in origins if origin in {scope.scope_id for scope in resolved})
+        selected = frozenset(resolved)
         inputs: dict[str, ShareInput] = {}
         watermarks: list[ShareSourceWatermark] = []
         revisions = 0
@@ -435,35 +461,18 @@ class ShareRuleService:
                     continue
                 position = await self._sources.journal_position(connection, origin)
                 watermarks.append(ShareSourceWatermark(origin_scope_id=origin, position=position))
-                for stored in await self._sources.list(
-                    connection,
-                    origin,
-                    through=position,
-                    limit=rule.limits.max_inputs + 1,
-                ):
-                    if rule.source_types and stored.ref.source_type not in rule.source_types:
-                        continue
-                    if not is_generation_eligible(stored.value):
-                        continue
-                    _merge(
-                        inputs,
-                        ShareInput(
-                            kind="source",
-                            origin_scope_id=origin,
-                            paths=paths,
-                            digest=content_digest(stored.value.model_dump_json().encode()),
-                            materialization=stored.value.materialization,
-                            source_ref=SourceRef(
-                                source_type=stored.ref.source_type,
-                                source_id=stored.ref.source_id,
-                            ),
-                        ),
-                    )
+                for item in await self._eligible_sources(connection, origin, position, rule):
+                    _merge(inputs, item.model_copy(update={"paths": paths}))
                     self._bounded(len(inputs), rule.limits.max_inputs, "inputs")
                 for family in rule.artifact_families:
-                    for ref in await self._heads(connection, origin, family):
+                    remaining = rule.limits.max_artifact_revisions - revisions
+                    heads = await self._heads(connection, origin, family, limit=remaining + 1)
+                    if len(heads) > remaining:
+                        raise ShareBudgetExceededError(
+                            "artifact_revisions", rule.limits.max_artifact_revisions, revisions + len(heads)
+                        )
+                    for ref in heads:
                         revisions += 1
-                        self._bounded(revisions, rule.limits.max_artifact_revisions, "artifact_revisions")
                         artifact = await self._artifacts.get(connection, origin, ref)
                         _merge(
                             inputs,
@@ -481,22 +490,76 @@ class ShareRuleService:
         await self._authorize_origins(pinned)
         return pinned, origins, tuple(watermarks), baseline
 
-    async def _heads(self, connection: AsyncConnection, scope_id: str, family: str) -> tuple[ArtifactRef, ...]:
-        """Read the current revision of each identity in one external Scope."""
+    async def _eligible_sources(
+        self, connection: AsyncConnection, origin: str, through: int, rule: ShareRule
+    ) -> tuple[ShareInput, ...]:
+        """Scan one origin's journal for eligible rows within an explicit work bound.
+
+        The Source-type filter is pushed into SQL so ineligible types never occupy the
+        page. Eligibility that SQL cannot express (Working Notes and server-owned
+        lineage records) is applied per row, and the scan refuses rather than claiming
+        completeness it did not establish.
+        """
+
+        eligible: list[ShareInput] = []
+        scanned = 0
+        # The Source-type filter is pushed into SQL, so ineligible types never occupy
+        # a page. Eligibility that SQL cannot express is applied per scanned row.
+        async for stored in self._sources.iter_list(
+            connection,
+            origin,
+            through=through,
+            source_types=tuple(rule.source_types) or None,
+        ):
+            scanned += 1
+            if scanned > rule.limits.max_scanned_sources:
+                # Refuse instead of returning a range whose completeness is unknown.
+                raise ShareBudgetExceededError("scanned_sources", rule.limits.max_scanned_sources, scanned)
+            if not is_generation_eligible(stored.value):
+                continue
+            eligible.append(
+                ShareInput(
+                    kind="source",
+                    origin_scope_id=origin,
+                    paths=(),
+                    digest=content_digest(stored.value.model_dump_json().encode()),
+                    materialization=stored.value.materialization,
+                    source_ref=SourceRef(source_type=stored.ref.source_type, source_id=stored.ref.source_id),
+                )
+            )
+            self._bounded(len(eligible), rule.limits.max_inputs, "inputs")
+        return tuple(eligible)
+
+    async def _heads(
+        self, connection: AsyncConnection, scope_id: str, family: str, *, limit: int
+    ) -> tuple[ArtifactRef, ...]:
+        """Read at most `limit` current heads so the budget bounds the query itself."""
 
         rows = (
             await connection.execute(
                 select(
-                    ARTIFACT_HEADS_TABLE.c.family, ARTIFACT_HEADS_TABLE.c.artifact_id, ARTIFACT_HEADS_TABLE.c.revision
+                    ARTIFACT_HEADS_TABLE.c.family,
+                    ARTIFACT_HEADS_TABLE.c.artifact_id,
+                    ARTIFACT_HEADS_TABLE.c.revision,
                 )
                 .where(
                     ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
                     ARTIFACT_HEADS_TABLE.c.family == family,
                 )
                 .order_by(ARTIFACT_HEADS_TABLE.c.artifact_id)
+                .limit(limit)
             )
         ).all()
         return tuple(ArtifactRef(family=str(row[0]), artifact_id=str(row[1]), revision=int(row[2])) for row in rows)
+
+    async def _scope_range(self, rule: ShareRule) -> tuple[str, ...]:
+        """Resolve the rule's structural membership with A's bounded resolver."""
+
+        resolved = await self._scopes.resolve_range(
+            rule.selection,
+            limits=ScopeRangeLimits(max_nodes=rule.limits.max_origins, max_depth=_MAX_SCOPE_DEPTH),
+        )
+        return resolved.scope_ids
 
     async def _baseline(self, connection: AsyncConnection, scope_id: str, rule: ShareRule) -> ArtifactAddress | None:
         """Pin the target's current maintained conclusion, not an origin revision."""
@@ -504,7 +567,7 @@ class ShareRuleService:
         if not rule.artifact_families:
             return None
         for family in rule.artifact_families:
-            heads = await self._heads(connection, scope_id, family)
+            heads = await self._heads(connection, scope_id, family, limit=2)
             if len(heads) == 1:
                 return ArtifactAddress(scope_id=scope_id, artifact=heads[0])
         return None

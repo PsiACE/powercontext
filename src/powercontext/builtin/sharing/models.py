@@ -118,6 +118,28 @@ class ShareRuleAcceptanceError(ShareError, RuntimeError):
         super().__init__(self.code)
 
 
+class ShareRuleServiceUnavailable(ShareError, RuntimeError):
+    """The Runtime was composed without standing-rule storage."""
+
+    code = "share_rule_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
+class ShareAcceptanceConflictError(ShareError, RuntimeError):
+    """An already accepted actor/side cannot change its recorded coverage in place."""
+
+    code = "share_acceptance_conflict"
+
+    def __init__(self, rule_id: str, version: int, actor: str, side: str) -> None:
+        self.rule_id = rule_id
+        self.version = version
+        self.actor = actor
+        self.side = side
+        super().__init__(self.code)
+
+
 class ShareRunStateError(ShareError, RuntimeError):
     """A recorded evaluation cannot move to the requested state."""
 
@@ -203,37 +225,75 @@ class ShareRuleTerms(_ShareValue):
 class ShareTermsBinding(_ShareValue):
     """Canonical standing agreement one acceptance binds.
 
-    The digest covers the immutable selector, use, audience Scopes, and retention
-    of exactly one rule version. It deliberately excludes the inputs any run
-    discovers, so agreement survives new records while a run's own manifest
-    digest still identifies precisely what that run pinned.
+    The digest covers everything that determines what one rule version may select —
+    the selection mode and root, the declared Scopes, the Source types, the Artifact
+    families, the run limits, and the use, audience and retention terms. It excludes
+    the inputs any run discovers, so agreement survives new records while a run's own
+    manifest digest still identifies precisely what that run pinned.
     """
 
     target_scope_id: str
-    declared_scope_ids: tuple[str, ...]
+    selection_mode: str
+    root_scope_id: str | None
+    selected_scope_ids: tuple[str, ...]
+    exact_scope_ids: tuple[str, ...]
+    source_types: tuple[str, ...]
+    artifact_families: tuple[str, ...]
     use: str
     audience: str
     audience_scope_ids: tuple[str, ...]
     retention: ShareRetention
+    max_origins: int
+    max_inputs: int
+    max_artifact_revisions: int
+    max_scanned_sources: int
+
+    @property
+    def declared_scope_ids(self) -> tuple[str, ...]:
+        """Name the Scopes this version declares, whatever its selection mode."""
+
+        declared = {*self.selected_scope_ids, *self.exact_scope_ids}
+        if self.root_scope_id is not None:
+            declared.add(self.root_scope_id)
+        return tuple(sorted(declared))
 
     def digest(self) -> str:
         payload = {
             "target_scope_id": self.target_scope_id,
-            "declared_scope_ids": sorted(self.declared_scope_ids),
+            "selection": {
+                "mode": self.selection_mode,
+                "root_scope_id": self.root_scope_id,
+                "selected_scope_ids": sorted(self.selected_scope_ids),
+            },
+            "exact_scope_ids": sorted(self.exact_scope_ids),
+            "source_types": sorted(self.source_types),
+            "artifact_families": sorted(self.artifact_families),
             "use": self.use,
             "audience": self.audience,
             "audience_scope_ids": sorted(self.audience_scope_ids),
             "retention": self.retention,
+            "limits": {
+                "max_origins": self.max_origins,
+                "max_inputs": self.max_inputs,
+                "max_artifact_revisions": self.max_artifact_revisions,
+                "max_scanned_sources": self.max_scanned_sources,
+            },
         }
         return "sha256:" + hashlib.sha256(rfc8785.dumps(payload)).hexdigest()
 
 
 class ShareRunLimits(_ShareValue):
-    """Bound one run's discovery; an over-budget range is refused, never truncated."""
+    """Bound one run's work; an over-budget range is refused, never truncated.
+
+    `max_scanned_sources` caps the journal rows one origin may be scanned for, so
+    ineligible rows cannot hide eligible ones behind a fixed page. Exceeding any
+    bound refuses the whole run rather than pinning a partial conclusion.
+    """
 
     max_origins: int = Field(default=16, ge=1, le=64)
-    max_inputs: int = Field(default=32, ge=1, le=64)
-    max_artifact_revisions: int = Field(default=16, ge=1, le=64)
+    max_inputs: int = Field(default=32, ge=1, le=128)
+    max_artifact_revisions: int = Field(default=16, ge=1, le=128)
+    max_scanned_sources: int = Field(default=512, ge=1, le=4_096)
 
 
 class ShareRuleDraft(_ShareValue):
@@ -328,13 +388,22 @@ class ShareRule(_ShareValue):
     def terms_binding(self) -> ShareTermsBinding:
         return ShareTermsBinding(
             target_scope_id=self.scope_id,
-            declared_scope_ids=self.declared_origins(),
+            selection_mode=self.selection.mode,
+            root_scope_id=self.selection.root_scope_id,
+            selected_scope_ids=self.selection.scope_ids,
+            exact_scope_ids=self.exact_scope_ids,
+            source_types=self.source_types,
+            artifact_families=self.artifact_families,
             use=self.terms.use,
             audience=self.terms.audience,
             # An unstated audience is the target Scope itself, so an agreement always
             # names its readers and a default can never widen disclosure.
             audience_scope_ids=self.terms.audience_scope_ids or (self.scope_id,),
             retention=self.terms.retention,
+            max_origins=self.limits.max_origins,
+            max_inputs=self.limits.max_inputs,
+            max_artifact_revisions=self.limits.max_artifact_revisions,
+            max_scanned_sources=self.limits.max_scanned_sources,
         )
 
     def draft(self) -> ShareRuleDraft:
