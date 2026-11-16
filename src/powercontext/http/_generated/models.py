@@ -5195,6 +5195,7 @@ class DreamEvidenceNode(BaseModel):
             max_length=256,
             min_length=1,
             pattern=".*\\S.*",
+            exclude_if=lambda value: value is None,
         ),
     ] = None
     historical: StrictBool = False
@@ -5213,6 +5214,7 @@ class DreamRootEvidenceGroup(BaseModel):
             max_length=256,
             min_length=1,
             pattern=".*\\S.*",
+            exclude_if=lambda value: value is None,
         ),
     ] = None
     independence: DreamEvidenceIndependence = DreamEvidenceIndependence.UNKNOWN

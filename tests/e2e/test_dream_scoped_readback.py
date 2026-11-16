@@ -43,6 +43,7 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, RuntimeConfig
 from powercontext.builtin.scope import ScopeDraft
+from powercontext.client import PowerContextClient
 from powercontext.server.app import ServerApplication
 from powercontext.server.dream_access import DreamAccess
 from tests.e2e.dream_support import open_dream_runtime, process_pending
@@ -148,13 +149,43 @@ def test_scoped_dream_run_reads_back_through_http_and_sdk(tmp_path: Path) -> Non
                         }
                     ]
                     assert manifest["nodes"], manifest
-                    assert {node.get("origin_scope_id") for node in manifest["nodes"]} == {None}
-                    assert {group.get("scope_id") for group in manifest["root_groups"]} == {None}
+                    # The run names its own Scope, so no node or group carries a foreign origin key.
+                    assert all("origin_scope_id" not in node for node in manifest["nodes"]), manifest["nodes"]
+                    assert all("scope_id" not in group for group in manifest["root_groups"]), manifest["root_groups"]
+                    # The scoped record keeps the unset other address as null: that null is the
+                    # stored shape, not an absence to strip.
+                    assert manifest["scoped"][0]["source"] is not None
+                    assert "artifact" in manifest["scoped"][0]
 
                     listed = await client.get(f"/v1/scopes/{scope_id}/dream")
                     assert listed.status_code == 200, listed.text
                     runs = [item for item in listed.json()["runs"] if item["run_id"] == created.run_id]
                     assert runs and runs[0]["input_manifest"]["scoped"] == manifest["scoped"]
+
+                    # The SDK must observe the same record: a model-validated read, not a raw dict.
+                    async with PowerContextClient(
+                        "http://testserver",
+                        token="author-token",  # noqa: S106 - local test credential
+                        http_client=client,
+                        trust_transport_security=True,
+                    ) as sdk:
+                        sdk_run = await sdk.get_dream_run(scope_id, created.run_id)
+                        sdk_manifest = sdk_run.input_manifest
+                        assert sdk_manifest is not None
+                        # The SDK model keeps the same origin identity the HTTP body carried.
+                        sdk_entry = sdk_manifest.scoped[0]
+                        assert sdk_entry.scope_id == scope_id
+                        sdk_source = sdk_entry.source
+                        assert sdk_source is not None
+                        assert (sdk_source.source_type, sdk_source.source_id, sdk_source.locator) == (
+                            "content",
+                            "retry-trace",
+                            None,
+                        )
+                        sdk_page = await sdk.list_dream_runs(scope_id)
+                        listed_run = next(run for run in sdk_page.runs if run.run_id == created.run_id)
+                        assert listed_run.input_manifest is not None
+                        assert listed_run.input_manifest.scoped == sdk_manifest.scoped
 
                     # A foreign or scoped HTTP create stays unsupported before any model runs.
                     rejected = await client.post(
@@ -247,10 +278,13 @@ def test_ordinary_local_dream_wire_shape_is_unchanged(tmp_path: Path) -> None:
                     fetched = await client.get(f"/v1/scopes/{scope_id}/dream/{created.run_id}")
                     assert fetched.status_code == 200, fetched.text
                     manifest = fetched.json()["input_manifest"]
-                    # An ordinary local run never gains an empty scoped entry.
+                    # An ordinary local run never gains an empty scoped entry, and a local node or
+                    # root group omits its origin key entirely rather than emitting null.
                     assert "scoped" not in manifest
-                    assert {node.get("origin_scope_id") for node in manifest["nodes"]} == {None}
-                    assert {group.get("scope_id") for group in manifest["root_groups"]} == {None}
+                    assert manifest["nodes"], manifest
+                    assert all("origin_scope_id" not in node for node in manifest["nodes"]), manifest["nodes"]
+                    assert manifest["root_groups"], manifest
+                    assert all("scope_id" not in group for group in manifest["root_groups"]), manifest["root_groups"]
 
     asyncio.run(scenario())
 

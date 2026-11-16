@@ -195,7 +195,7 @@ def _generate_models(
     source = _with_code_validation(source, contract_schemas)
     source = _with_source_locator_validation(source, contract_schemas)
     source = _with_exclusive_fields(source, exclusive_schemas)
-    source = _with_omitted_empty_fields(source, contract_schemas)
+    source = _with_omitted_fields(source, contract_schemas)
     source = _with_artifact_search_validation(source, contract_schemas)
     source = _with_family_dispatch(source, contract_schemas)
     return _with_candidate_evidence_limits(source, evidence_models)
@@ -252,25 +252,33 @@ def _with_exclusive_fields(source: str, schemas: dict[str, Schema]) -> str:
     return source
 
 
-def _with_omitted_empty_fields(source: str, schemas: dict[str, Schema | Reference]) -> str:
-    """Omit a declared field from output when its value is empty.
+def _with_omitted_fields(source: str, schemas: dict[str, Schema | Reference]) -> str:
+    """Omit declared output fields when their stored value is absent or empty.
 
-    A stored record can leave a field absent, and its wire shape must keep that absence instead of
-    adding an empty value the record never carried. OpenAPI cannot express output omission, so the
-    schema names the fields with ``x-powercontext-omit-if-empty`` and this applies it to the
-    generated default, keeping the declared validation.
+    A stored record can leave a field out, and its wire shape must keep that absence instead of
+    emitting a key the record never carried. OpenAPI cannot express output omission, so the schema
+    declares the fields with ``x-powercontext-omit-when`` and this applies the stated predicate to
+    the generated ``Field``, leaving every other generated constraint untouched. It is per field and
+    per model on purpose: a global null-stripping serializer would also drop an absent-meaning null
+    that is part of a stored shape.
     """
 
+    predicates = {
+        "empty": "lambda value: not value",
+        "none": "lambda value: value is None",
+    }
     for name, schema in schemas.items():
         if not isinstance(schema, Schema):
             continue
-        omitted = (schema.model_extra or {}).get("x-powercontext-omit-if-empty", [])
-        if not omitted:
+        declared = (schema.model_extra or {}).get("x-powercontext-omit-when", {})
+        if not declared:
             continue
-        if not isinstance(omitted, list) or not all(isinstance(field, str) for field in omitted):
-            raise ContractGenerationError("x-powercontext-omit-if-empty", omitted)
-        for field in omitted:
-            source = _omit_generated_field(source, name, field)
+        if not isinstance(declared, dict) or not all(
+            isinstance(field, str) and predicate in predicates for field, predicate in declared.items()
+        ):
+            raise ContractGenerationError("x-powercontext-omit-when", declared)
+        for field, predicate in declared.items():
+            source = _omit_generated_field(source, name, field, predicates[predicate])
     return source
 
 
@@ -282,8 +290,8 @@ def _source_offsets(source: str) -> tuple[list[str], list[int]]:
     return lines, offsets
 
 
-def _omit_generated_field(source: str, model_name: str, field: str) -> str:
-    """Add output omission to one generated ``Field`` declaration."""
+def _omit_generated_field(source: str, model_name: str, field: str, predicate: str) -> str:
+    """Add the declared omission to one generated ``Field`` declaration."""
 
     model = next(
         (node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == model_name),
@@ -301,22 +309,43 @@ def _omit_generated_field(source: str, model_name: str, field: str) -> str:
     )
     if declared is None:
         raise ContractGenerationError("generated omitted field", field)  # noqa: TRY003
-    # The omission belongs on the field's Field(), which lives in its annotation.
+    if declared.annotation.end_lineno is None or declared.annotation.end_col_offset is None:
+        raise ContractGenerationError("generated omitted field bounds", field)  # noqa: TRY003
     annotation = ast.get_source_segment(source, declared.annotation) or ""
     if "exclude_if=" in annotation:
         raise ContractGenerationError("generated omitted field already excluded", field)  # noqa: TRY003
-    replaced = annotation.replace(
-        "validate_default=True",
-        "validate_default=True, exclude_if=lambda value: not value",
-    )
-    if replaced == annotation:
-        raise ContractGenerationError("generated omitted field validation", field)  # noqa: TRY003
-    if declared.annotation.end_lineno is None or declared.annotation.end_col_offset is None:
-        raise ContractGenerationError("generated omitted field bounds", field)  # noqa: TRY003
+    # Insert into the annotation's Field(...) call; a bare type annotation keeps its default.
+    replacement = _insert_field_keyword(annotation, f"exclude_if={predicate}", field)
+
     _, offsets = _source_offsets(source)
     begin = offsets[declared.annotation.lineno - 1] + declared.annotation.col_offset
     finish = offsets[declared.annotation.end_lineno - 1] + declared.annotation.end_col_offset
-    return source[:begin] + replaced + source[finish:]
+    return source[:begin] + replacement + source[finish:]
+
+
+def _insert_field_keyword(annotation: str, keyword: str, field: str) -> str:
+    """Insert one keyword into the annotation's ``Field(...)`` call, before its closing paren."""
+
+    start = annotation.find("Field(")
+    if start < 0:
+        raise ContractGenerationError("generated omitted field without Field", field)  # noqa: TRY003
+    depth = 0
+    for index in range(start + len("Field"), len(annotation)):
+        character = annotation[index]
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+            if depth == 0:
+                head, tail = annotation[:index], annotation[index:]
+                stripped = head.rstrip()
+                # Trailing commas and whitespace belong to the preceding argument, not the new one.
+                if stripped.endswith(","):
+                    stripped = stripped[:-1].rstrip()
+                if stripped.endswith("("):
+                    return f"{stripped}{keyword}{tail}"
+                return f"{stripped}, {keyword}{tail}"
+    raise ContractGenerationError("generated omitted field unterminated Field", field)  # noqa: TRY003
 
 
 def _with_family_dispatch(source: str, schemas: dict[str, Schema | Reference]) -> str:
