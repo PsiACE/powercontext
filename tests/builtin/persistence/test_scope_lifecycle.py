@@ -170,3 +170,111 @@ def capture(text: str):
         materialization=SourceMaterialization.CAPTURED,
         content=text,
     )
+
+
+def test_archived_scope_refuses_every_candidate_and_tag_write_boundary(tmp_path) -> None:
+    """One gate covers generic, tag and tag-commit writes, not just content.
+
+    The review found the gate was only on generic Candidate creation, so a tag
+    Candidate could be proposed and committed, and a generic Candidate could be
+    revised, inside an archived Scope. Each assertion below is a public write
+    boundary that must refuse after the cutoff.
+    """
+
+    async def scenario() -> None:
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'tag.db'}"), tables=BUILTIN_TABLES
+        ) as profile:
+            from powercontext.artifacts import ArtifactRef
+            from powercontext.builtin.artifacts.experience.models import ExperienceDraft
+            from powercontext.builtin.persistence.catalog_changes import CatalogCandidateRepository
+            from powercontext.builtin.persistence.tags import RelationalTagService
+            from powercontext.builtin.tags import TagTarget
+
+            app = ScopeApplication(profile.database)
+            scope = await app.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="s"))
+            artifacts = ArtifactRepository((Experience,))
+            sources = SourceRepository(app_source_registry())
+            async with profile.database.transaction() as connection:
+                source = await sources.add(connection, scope.scope_id, capture("evidence"))
+            async with profile.database.transaction() as connection:
+                artifact = await artifacts.create(
+                    connection, scope.scope_id, "retry", ExperienceDraft(content=_experience("Before"))
+                )
+
+            tags = RelationalTagService(profile.database, ArtifactRepository((Experience,)))
+            target = TagTarget(family="experience", artifact_id=artifact.artifact_id)
+            async with profile.database.transaction() as connection:
+                before = await tags.read_in_transaction(connection, scope.scope_id, target)
+
+            # Queue a generic Candidate while the Scope is still writable, so the
+            # revision below is genuinely a post-cutoff write on existing state.
+            async with profile.database.transaction() as connection:
+                queued = await CandidateRepository({"experience": ExperienceContent}).create(
+                    connection,
+                    scope.scope_id,
+                    "queued",
+                    "experience",
+                    _experience("Queued"),
+                    sources=(source.ref,),
+                    artifacts=(ArtifactRef(family="experience", artifact_id="retry", revision=1),),
+                    target=None,
+                    reason="queued before archive",
+                )
+
+            archived = await app.archive(scope.scope_id, scope.version)
+            assert archived.lifecycle_state == "archived"
+
+            # Direct tag replacement is an ordinary write in the owning Scope.
+            with pytest.raises(ScopeNotWritableError):
+                async with profile.database.transaction() as connection:
+                    await tags.replace_in_transaction(
+                        connection, scope.scope_id, target, ("after-archive",), expected_etag=before.etag
+                    )
+
+            # A tag Candidate is proposed into the same Scope.
+            with pytest.raises(ScopeNotWritableError):
+                async with profile.database.transaction() as connection:
+                    await CatalogCandidateRepository().create(
+                        connection,
+                        scope.scope_id,
+                        _tag_candidate(scope.scope_id, target, before.etag, source.ref),
+                    )
+
+            # A generic Candidate revision is also a stored version.
+            with pytest.raises(ScopeNotWritableError):
+                async with profile.database.transaction() as connection:
+                    await CandidateRepository({"experience": ExperienceContent}).revise(
+                        connection,
+                        scope.scope_id,
+                        queued.candidate_id,
+                        queued.version,
+                        _experience("Revised"),
+                        sources=(source.ref,),
+                        artifacts=(ArtifactRef(family="experience", artifact_id="retry", revision=1),),
+                        target=None,
+                        reason="revise after archive",
+                    )
+
+    _run(scenario)
+
+
+def _tag_candidate(scope_id: str, target, etag: str, source_ref):
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate, CatalogChangeProposal
+
+    return CatalogChangeCandidate(
+        candidate_id="tag-candidate",
+        version=1,
+        proposal=CatalogChangeProposal(
+            target=target,
+            expected_etag=etag,
+            before_tags=(),
+            after_tags=("after-archive",),
+            basis_ref=ArtifactRef(family=target.family, artifact_id=target.artifact_id, revision=1),
+        ),
+        sources=(source_ref,),
+        artifacts=(),
+        reason="tag change",
+        origin="manual",
+    )

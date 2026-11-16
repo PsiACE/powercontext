@@ -365,6 +365,10 @@ class CandidateRepository:
         scope_id: str,
         candidate: Candidate[Any],
     ) -> None:
+        # Every stored Candidate version — a first proposal or a revision of a
+        # pending one — is a write into the Scope, so one gate covers both. A
+        # revision can otherwise advance a queued Candidate after the cutoff.
+        await require_writable(connection, scope_id)
         await connection.execute(insert(CANDIDATE_VERSIONS_TABLE).values(**self._version_row(scope_id, candidate)))
 
     @staticmethod

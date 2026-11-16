@@ -297,12 +297,28 @@ class _RecordSpec:
     payload: tuple[str, ...]
     scope_field: str | None = "scope_id"
     schema_version: int = 1
-    # Payload fields of earlier schema versions still accepted on restore; fields they lack restore as null.
+    # Payload fields of earlier schema versions still accepted on restore.
     earlier_payloads: dict[int, tuple[str, ...]] = dataclass_field(default_factory=dict)
+    # The historic interpretation of a field an earlier version could not carry.
+    # It must be stated, never guessed: an absent value means what it meant then.
+    earlier_defaults: dict[int, dict[str, Any]] = dataclass_field(default_factory=dict)
 
 
 _SPECS: dict[RecordType, _RecordSpec] = {
-    "scope": _RecordSpec(SCOPES_TABLE, ("scope_id",), ("title", "summary", "parent_scope_id", "version")),
+    # Lifecycle state is part of a Scope's portable meaning: restoring an
+    # archived Scope as writable would be a silent reopen. Bundles written before
+    # this field existed stay valid and restore the historical interpretation
+    # (an absent state was writable then), while a bundle that carries an
+    # archived state can never lose it.
+    "scope": _RecordSpec(
+        SCOPES_TABLE,
+        ("scope_id",),
+        ("title", "summary", "parent_scope_id", "version", "lifecycle_state"),
+        schema_version=2,
+        earlier_payloads={1: ("title", "summary", "parent_scope_id", "version")},
+        # Before lifecycle state existed, every Scope was writable.
+        earlier_defaults={1: {"lifecycle_state": "writable"}},
+    ),
     "scope_context_reference": _RecordSpec(SCOPE_CONTEXT_REFERENCES_TABLE, ("scope_id", "referenced_scope_id"), ()),
     "scope_external_reference": _RecordSpec(
         SCOPE_EXTERNAL_REFERENCES_TABLE,
@@ -1195,6 +1211,10 @@ def _row_values(record: _Record) -> dict[str, Any]:
         values["scope_id_search"] = str(record.identity["scope_id"])
         values["title_search"] = str(record.payload["title"])
         values["summary_search"] = str(record.payload["summary"])
+        # A record from an earlier schema carries no lifecycle state. An absent
+        # state was historically writable, so that is the interpretation it
+        # restores; a record that carries one keeps it exactly.
+        values["lifecycle_state"] = record.payload.get("lifecycle_state") or "writable"
     elif record.record_type == "scope_external_reference":
         values["value_search"] = str(record.payload["value"])
     elif record.record_type == "skill_package":
@@ -1473,7 +1493,9 @@ def _parse_record(value: object) -> _Record:
         record = _Record(record_type=typed, identity=identity, payload=payload, digest=digest)
     else:
         # Staging and target comparisons use the current schema, so the verified record is re-identified in it.
-        payload = {name: payload.get(name) for name in spec.payload}
+        # A field the older version could not carry takes its stated historic meaning.
+        defaults = spec.earlier_defaults.get(version, {})
+        payload = {name: payload.get(name, defaults.get(name)) for name in spec.payload}
         current = {**canonical, "schema_version": spec.schema_version, "payload": payload}
         record = _Record(
             record_type=typed, identity=identity, payload=payload, digest=_digest(current), archived_digest=digest

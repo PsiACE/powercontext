@@ -334,3 +334,73 @@ def test_deletion_does_not_follow_citations_into_a_surviving_scope(tmp_path) -> 
             assert (await deletion.state_of(sibling.scope_id)).lifecycle_state == "writable"
 
     _run(scenario)
+
+
+def test_confirmed_membership_cannot_change_after_the_cutoff(tmp_path) -> None:
+    """New members, moves and bindings are refused once the set is cut off.
+
+    Parent reported these accepted on `11dcf845`: a child could be attached to a
+    Scope in `deleting` state, and a new persistent binding could point at it,
+    which contradicted the confirmed set. Emptying the set is not permission to
+    remove what arrived late, so the boundary must refuse instead.
+    """
+
+    async def scenario() -> None:
+        failing = _FailingHandler()
+        async with _family(tmp_path, handlers=(ScopeResourceHandler(), failing)) as (
+            _opened,
+            scopes,
+            deletion,
+            root,
+            _child,
+            target,
+        ):
+            selection = ScopeSelection(mode="exact", scope_ids=(target.scope_id,))
+            preview = await deletion.preview(selection)
+            receipt = await deletion.confirm(selection, preview.membership_digest)
+            # Cleanup fails, so the member sits in `deleting` while we probe.
+            assert not receipt.complete
+            assert (await deletion.state_of(target.scope_id)).lifecycle_state == "deleting"
+
+            # A new child cannot join a Scope whose deletion is confirmed.
+            with pytest.raises(ScopeNotWritableError):
+                await scopes.create(
+                    ScopeDraft(title="Late", summary="Library", parent_scope_id=target.scope_id, idempotency_key="late")
+                )
+            # A new persistent binding cannot point at it either.
+            from powercontext.builtin.scope.models import ScopeBindingKey
+
+            with pytest.raises(ScopeNotWritableError):
+                await scopes.bind(
+                    ScopeBindingKey(integration="app", kind="project", external_id="late"), target.scope_id
+                )
+            # Nor can it become the deployment default.
+            with pytest.raises(ScopeNotWritableError):
+                await scopes.set_default(target.scope_id)
+            # And an unrelated Scope cannot move into it.
+            with pytest.raises(ScopeNotWritableError):
+                await scopes.update(
+                    root.scope_id,
+                    _move_to(root, parent_scope_id=target.scope_id),
+                )
+
+            # Nothing late was deleted to force completion: the member is still
+            # present, and a retry after the store recovers completes normally.
+            failing.fail = False
+            resumed = await deletion.cleanup(receipt.operation_id)
+            assert resumed.complete
+            with pytest.raises(ScopeNotFoundError):
+                await deletion.state_of(target.scope_id)
+
+    _run(scenario)
+
+
+def _move_to(scope, *, parent_scope_id: str):
+    from powercontext.builtin.scope.models import ScopeMutation
+
+    return ScopeMutation(
+        expected_version=scope.version,
+        title=scope.title,
+        summary=scope.summary,
+        parent_scope_id=parent_scope_id,
+    )

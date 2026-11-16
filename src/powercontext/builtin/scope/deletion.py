@@ -36,6 +36,7 @@ import secrets
 from collections.abc import Sequence
 
 import rfc8785
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.database import AsyncDatabase
@@ -182,12 +183,37 @@ class ScopeDeletionApplication:
                         error_code=type(error).__name__,
                     )
         receipt = await self._receipt(operation_id)
-        if not receipt.unfinished:
+        if receipt.unfinished:
+            return receipt
+        return await self._finalize(receipt)
+
+    async def _finalize(self, receipt: ScopeDeletionReceipt) -> ScopeDeletionReceipt:
+        """Remove the members once every owned resource is gone.
+
+        Finalization is part of the retryable operation, not a side effect of it:
+        a foreign key still pointing at a member means structural state arrived
+        that the confirmed set did not cover, so the operation stays incomplete
+        and visible instead of raising out of ``cleanup``. Nothing outside the
+        confirmed set is ever deleted to force this to succeed.
+        """
+
+        members = tuple(reversed(receipt_scope_ids(receipt)))
+        try:
             async with self._database.transaction() as connection:
-                await self._repository.purge_scope_metadata(connection, tuple(reversed(receipt_scope_ids(receipt))))
-                await self._repository.complete_deletion(connection, operation_id)
-            receipt = await self._receipt(operation_id)
-        return receipt
+                # Inbound references recorded after the cutoff are removed here, so
+                # a surviving Scope never keeps a dangling reference either.
+                await self._repository.clear_references_to(connection, receipt_scope_ids(receipt))
+                await self._repository.purge_scope_metadata(connection, members)
+                await self._repository.complete_deletion(connection, receipt.operation_id)
+        except IntegrityError as error:
+            # Something still references a confirmed member. Record that against
+            # the operation so a manager sees the blocker; the members stay
+            # unavailable and the next repair or retry resumes here.
+            async with self._database.transaction() as connection:
+                await self._repository.record_finalization_failure(
+                    connection, receipt.operation_id, type(error).__name__
+                )
+        return await self._receipt(receipt.operation_id)
 
     async def operation(self, operation_id: str, /) -> ScopeDeletionReceipt | None:
         """Read one operation and its progress for an authorized manager."""

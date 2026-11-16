@@ -649,6 +649,32 @@ class ScopeRepository:
             .values(state="complete")
         )
 
+    async def record_finalization_failure(
+        self, connection: AsyncConnection, operation_id: str, error_code: str, /
+    ) -> None:
+        """Record that removing the member rows is still blocked, then leave it retryable."""
+        from powercontext.builtin.persistence.tables import (
+            SCOPE_DELETION_PROGRESS_TABLE,
+            SCOPE_DELETIONS_TABLE,
+        )
+
+        # The blocking condition belongs to the operation, so it is recorded on
+        # every progress row that is already done; a manager reading the receipt
+        # sees the same stable code they would see from a handler failure.
+        await connection.execute(
+            update(SCOPE_DELETIONS_TABLE)
+            .where(SCOPE_DELETIONS_TABLE.c.operation_id == operation_id)
+            .values(state="cleanup_pending")
+        )
+        await connection.execute(
+            update(SCOPE_DELETION_PROGRESS_TABLE)
+            .where(
+                SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id,
+                SCOPE_DELETION_PROGRESS_TABLE.c.state == "done",
+            )
+            .values(last_error_code=error_code)
+        )
+
     async def deletion(self, connection: AsyncConnection, operation_id: str, /):
         from powercontext.builtin.persistence.tables import (
             SCOPE_DELETION_PROGRESS_TABLE,
