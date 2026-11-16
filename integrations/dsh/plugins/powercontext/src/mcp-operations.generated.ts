@@ -185,6 +185,9 @@ export const MCP_OPERATIONS = {
   "resolve_scope_binding": {
     "readOnly": true
   },
+  "resolve_scope_selection": {
+    "readOnly": true
+  },
   "restore_atomic_memory": {
     "readOnly": false
   },
@@ -193,6 +196,9 @@ export const MCP_OPERATIONS = {
   },
   "scan_external_skills": {
     "readOnly": false
+  },
+  "search_artifacts": {
+    "readOnly": true
   },
   "search_atomic_memory": {
     "readOnly": true
