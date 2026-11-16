@@ -27,7 +27,11 @@ from powercontext.builtin.scope.errors import (
     ScopeIdempotencyConflictError,
     ScopeLifecycleConflictError,
     ScopeNotFoundError,
+<<<<<<< HEAD
     ScopeNotWritableError,
+=======
+    ScopeRangeLimitError,
+>>>>>>> 8ece2d013 (feat(scope): resolve bounded structural Scope ranges)
     ScopeRelationshipError,
     ScopeResourceHandlerUnsupportedError,
     ScopeVersionConflictError,
@@ -45,7 +49,12 @@ from powercontext.builtin.scope.models import (
     ScopeExternalReference,
     ScopeMutation,
     ScopeQueryField,
+<<<<<<< HEAD
     ScopeResourceProgress,
+=======
+    ScopeRange,
+    ScopeRangeLimits,
+>>>>>>> 8ece2d013 (feat(scope): resolve bounded structural Scope ranges)
     ScopeSelection,
 )
 
@@ -89,6 +98,9 @@ __all__ = [
     "ScopeNotFoundError",
     "ScopeNotWritableError",
     "ScopeQueryField",
+    "ScopeRange",
+    "ScopeRangeLimitError",
+    "ScopeRangeLimits",
     "ScopeRelationshipError",
     "ScopeResourceHandlerUnsupportedError",
     "ScopeResourceProgress",
