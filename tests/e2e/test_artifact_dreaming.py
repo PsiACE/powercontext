@@ -4116,24 +4116,6 @@ def test_archive_refuses_origin_payloads_its_reader_could_not_decode(tmp_path: P
         lesson="Retry only with a deduplication contract.",
     )
 
-    def origin(record) -> dict[str, object] | None:
-        return record["payload"] if record["record_type"] == "artifact_lineage_origin" else None
-
-    def bad_digest(record) -> None:
-        payload = origin(record)
-        if payload is not None and record["identity"]["ordinal"] == 0:
-            payload["digest"] = "sha256:" + "z" * 64
-
-    def blank_scope(record) -> None:
-        payload = origin(record)
-        if payload is not None and record["identity"]["ordinal"] == 0:
-            payload["origin_scope_id"] = " "
-
-    def over_long_artifact_id(record) -> None:
-        payload = origin(record)
-        if payload is not None and payload["origin_kind"] == "artifact":
-            payload["origin_id"] = "a" * 200
-
     async def scenario() -> None:
         source = tmp_path / "bundle.pcb"
         await _build_origin_archive(tmp_path, proposal)
@@ -4141,6 +4123,9 @@ def test_archive_refuses_origin_payloads_its_reader_could_not_decode(tmp_path: P
             ("digest", bad_digest),
             ("scope", blank_scope),
             ("artifact_id", over_long_artifact_id),
+            # A non-string kind is a format refusal, never an unhashable-value crash.
+            ("kind_list", kind_as_list),
+            ("kind_object", kind_as_object),
         ):
             bundle = tmp_path / f"{name}.pcb"
             _rewrite_archive(source, bundle, mutate)
@@ -4333,3 +4318,38 @@ async def _build_origin_archive(tmp_path: Path, proposal: ExperienceContent) -> 
         )
         await review.approve(candidate.candidate_id, candidate.version)
         await contexts.portability.export([scope_id], archive, authorize=authorize)
+
+
+def _origin_payload(record) -> dict[str, object] | None:
+    """The origin payload of one archive record, when it is one."""
+    return record["payload"] if record["record_type"] == "artifact_lineage_origin" else None
+
+
+def bad_digest(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["digest"] = "sha256:" + "z" * 64
+
+
+def blank_scope(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["origin_scope_id"] = " "
+
+
+def over_long_artifact_id(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and payload["origin_kind"] == "artifact":
+        payload["origin_id"] = "a" * 200
+
+
+def kind_as_list(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["origin_kind"] = ["source"]
+
+
+def kind_as_object(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["origin_kind"] = {"kind": "source"}
