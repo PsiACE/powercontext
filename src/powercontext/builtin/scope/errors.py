@@ -63,3 +63,22 @@ class ScopeBindingNotFoundError(ScopeError, LookupError):
 
     def __init__(self) -> None:
         super().__init__("no Scope binding is available")
+
+
+class ScopeNotWritableError(ScopeError, RuntimeError):
+    """An ordinary content write was refused by the named Scope's lifecycle state."""
+
+    def __init__(self, scope_id: str, state: str) -> None:
+        self.scope_id = scope_id
+        self.state = state
+        super().__init__("scope is not writable")
+
+
+class ScopeLifecycleConflictError(ScopeError, RuntimeError):
+    """Archive or reopen was requested for a state the Scope no longer holds."""
+
+    def __init__(self, scope_id: str, requested: str, state: str) -> None:
+        self.scope_id = scope_id
+        self.requested = requested
+        self.state = state
+        super().__init__("scope lifecycle transition is not available from the current state")

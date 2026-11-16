@@ -100,6 +100,9 @@ SCOPES_TABLE = Table(
     Column("summary_search", _entry_text_type(), nullable=False),
     Column("parent_scope_id", identity_string(MAX_SCOPE_ID_LENGTH)),
     Column("version", Integer, nullable=False),
+    # Lifecycle is authoritative here, next to the identity it names. Existing
+    # rows read back 'writable'; nothing is retagged on migration.
+    Column("lifecycle_state", identity_string(16), nullable=False, server_default="writable"),
     ForeignKeyConstraint(
         ("parent_scope_id",),
         ("pc_scopes.scope_id",),

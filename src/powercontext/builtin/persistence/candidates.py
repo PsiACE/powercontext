@@ -29,6 +29,7 @@ from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.evidence.models import content_digest
 from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes
 from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError, InvalidStoredPayloadError
+from powercontext.builtin.persistence.scope_lifecycle import require_writable
 from powercontext.builtin.persistence.tables import (
     CANDIDATE_HEADS_TABLE,
     CANDIDATE_VERSIONS_TABLE,
@@ -128,6 +129,10 @@ class CandidateRepository:
                 "version": 1,
                 "status": CandidateStatus.PENDING.value,
             })
+        # A Candidate is a proposal to change the Scope, so persisting one is an
+        # ordinary write there. Refusing it keeps queued Domain work from parking
+        # reviewable state in a Scope that stopped accepting changes.
+        await require_writable(connection, scope_id)
         try:
             await connection.execute(insert(CANDIDATE_VERSIONS_TABLE), versions)
             await connection.execute(insert(CANDIDATE_HEADS_TABLE), heads)

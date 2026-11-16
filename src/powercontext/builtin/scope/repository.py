@@ -19,10 +19,12 @@ from __future__ import annotations
 from collections import defaultdict
 from functools import lru_cache
 from hashlib import sha256
+from typing import cast
 
 from sqlalchemy import bindparam, delete, false, insert, literal, null, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from powercontext.builtin.persistence.scope_lifecycle import ScopeLifecycleState
 from powercontext.builtin.persistence.tables import (
     SCOPE_BINDINGS_TABLE,
     SCOPE_CONTEXT_REFERENCES_TABLE,
@@ -47,7 +49,7 @@ _DEFAULT_SETTING = "default"
 
 def _scope_projection(statement):
     """Read Scope metadata and its relationships in one ordered result."""
-    metadata = ("scope_id", "title", "summary", "parent_scope_id", "version")
+    metadata = ("scope_id", "title", "summary", "parent_scope_id", "version", "lifecycle_state")
     selected = statement.with_only_columns(*(SCOPES_TABLE.c[name] for name in metadata)).cte("selected_scopes")
     scope_ids = select(selected.c.scope_id)
     context = SCOPE_CONTEXT_REFERENCES_TABLE.c
@@ -231,6 +233,7 @@ class ScopeRepository:
                 context_references=tuple(context_references[scope_id]),
                 external_references=tuple(external_references[scope_id]),
                 version=int(row["version"]),
+                lifecycle_state=cast(ScopeLifecycleState, str(row["lifecycle_state"])),
             )
             for scope_id, row in descriptors.items()
         )
@@ -315,6 +318,30 @@ class ScopeRepository:
             mutation.external_references,
         )
         return True
+
+    async def transition_lifecycle(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        expected_state: ScopeLifecycleState,
+        next_state: ScopeLifecycleState,
+        /,
+    ) -> bool:
+        """Move one named Scope between lifecycle states under its current version.
+
+        The failed-predicate row count is the conflict signal, so a concurrent
+        transition on another instance can never be silently overwritten.
+        """
+
+        result = await connection.execute(
+            update(SCOPES_TABLE)
+            .where(
+                SCOPES_TABLE.c.scope_id == scope_id,
+                SCOPES_TABLE.c.lifecycle_state == expected_state,
+            )
+            .values(lifecycle_state=next_state, version=SCOPES_TABLE.c.version + 1)
+        )
+        return result.rowcount == 1
 
     async def default_scope_id(self, connection: AsyncConnection, /) -> str | None:
         value = (

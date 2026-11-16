@@ -149,6 +149,9 @@ class ScopeDescriptor(_ScopeValue):
     context_references: tuple[str, ...] = ()
     external_references: tuple[ScopeExternalReference, ...] = ()
     version: StrictInt = Field(ge=1)
+    # Ordinary Scopes start writable. The field is read from pc_scopes, which is
+    # the same row the write gate locks, so a caller never sees a cached state.
+    lifecycle_state: Literal["writable", "archived", "deleting", "deleted"] = "writable"
 
     @field_validator("scope_id")
     @classmethod

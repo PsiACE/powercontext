@@ -50,6 +50,7 @@ from powercontext.builtin.persistence.revision_meta import (
     meta_from_row,
     rollback_columns,
 )
+from powercontext.builtin.persistence.scope_lifecycle import require_writable
 from powercontext.builtin.persistence.sources import _SourceReadSet
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
@@ -850,6 +851,10 @@ class ArtifactRepository:
         scope_id: str,
         revisions: Sequence[tuple[type[Artifact[Any]], ArtifactRef, object, ArtifactLineage]],
     ) -> tuple[Artifact[Any], ...]:
+        # Every Artifact revision reaches storage here, so one gate covers Create,
+        # revise, merge, publication copy and a reviewed Candidate's commit. Work
+        # queued before an archive fails at this write instead of publishing after it.
+        await require_writable(connection, scope_id)
         bodies, sources, source_locators, artifact_refs, artifacts = [], [], [], [], []
         for artifact_type, ref, content, lineage in revisions:
             if not isinstance(content, BaseModel):

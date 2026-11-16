@@ -68,6 +68,7 @@ from powercontext.builtin.runtime import (
 )
 from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.scope import ScopeDraft
+from powercontext.builtin.scope.errors import ScopeNotWritableError
 from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.builtin.sources import ContentCapture
 from powercontext.builtin.work.models import TaskCheck, TaskOutcome, WorkClaim
@@ -1050,5 +1051,38 @@ def test_candidate_preserves_distinct_positions_from_one_source() -> None:
                 GetExperienceRequest(artifact=approved.result_artifact)
             )
             assert result.lineage.sources == refs
+
+    asyncio.run(scenario())
+
+
+def test_archived_scope_refuses_a_candidate_that_was_queued_before_the_cutoff() -> None:
+    """A pending review is not an accepted write: archive stops its commit.
+
+    This is the acceptance case the RFC states for lifecycle cut-off — evidence
+    captured and a Candidate proposed while the Scope was writable must not
+    publish after the owner archives it.
+    """
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+            scope_id = await _create_scope(runtime, "archived-review")
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="queued-evidence", content="Verified result", metadata={})
+            )
+            candidate = await runtime.experience.for_scope(scope_id).propose(
+                ProposeExperienceRequest(proposal=_proposal(), sources=(source.source_ref,))
+            )
+
+            # The owner stops ordinary writes in the named Scope.
+            scope = await runtime.scopes.get(scope_id)  # type: ignore[union-attr]
+            await runtime.scopes.archive(scope_id, scope.version)  # type: ignore[union-attr]
+
+            with pytest.raises(ScopeNotWritableError):
+                await runtime.review.for_scope(scope_id).approve(
+                    ApproveCandidateRequest(candidate_id=candidate.candidate_id, expected_version=candidate.version)
+                )
+            # Nothing was published: the official head is still absent.
+            published = await runtime.records.for_scope(scope_id).query_artifacts("experience", limit=10, cursor=None)
+            assert published.items == ()
 
     asyncio.run(scenario())

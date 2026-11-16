@@ -28,6 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 
 class _PinnedConnection:
+    # Migration domains and historical fixtures write into a schema frozen at an
+    # earlier revision. They record history offline; they never serve a Scope.
+    is_frozen_maintenance = True
+
     def __init__(self, connection: Connection):
         self.connection = connection
         self.dialect = connection.dialect

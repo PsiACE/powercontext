@@ -1,0 +1,166 @@
+{
+  "format": "powercontext.mysql-state-layouts.v1",
+  "revisions": {
+    "v1_5_0_006": {
+      "statements": [
+        "ALTER TABLE pc_scopes ADD COLUMN lifecycle_state varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT 'writable'"
+      ],
+      "changes": [
+        {
+          "pc_scopes": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "title": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "summary": {
+                "type": [
+                  "varchar",
+                  [
+                    "2000"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "scope_id_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "title_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "summary_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "parent_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "version": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "lifecycle_state": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": "writable",
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "parent_scope_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_scopes",
+                "referred_columns": [
+                  "scope_id"
+                ],
+                "ondelete": "restrict",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_scopes_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {}
+          }
+        }
+      ]
+    }
+  }
+}

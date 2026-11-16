@@ -29,10 +29,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.cursor_codec import Clock, SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.scope_lifecycle import WRITABLE, ScopeLifecycleState
 from powercontext.builtin.scope.errors import (
     ScopeBindingNotFoundError,
     ScopeBindingTargetMissingError,
     ScopeIdempotencyConflictError,
+    ScopeLifecycleConflictError,
     ScopeNotFoundError,
     ScopeRelationshipError,
     ScopeVersionConflictError,
@@ -215,6 +217,49 @@ class ScopeApplication:
             if not await self._repository.replace(connection, scope_id, mutation):
                 refreshed = await self._required(connection, scope_id)
                 raise ScopeVersionConflictError(scope_id, mutation.expected_version, refreshed.version)
+            return await self._required(connection, scope_id)
+
+    async def archive(self, scope_id: str, expected_version: int, /) -> ScopeDescriptor:
+        """Stop ordinary writes in this Scope only; children keep their own state."""
+
+        return await self._transition(
+            scope_id,
+            expected_version,
+            expected=WRITABLE,
+            requested="archived",
+            next_state="archived",
+        )
+
+    async def reopen(self, scope_id: str, expected_version: int, /) -> ScopeDescriptor:
+        """Return one archived Scope to writable while retaining its identity."""
+
+        return await self._transition(
+            scope_id,
+            expected_version,
+            expected="archived",
+            requested="writable",
+            next_state=WRITABLE,
+        )
+
+    async def _transition(
+        self,
+        scope_id: str,
+        expected_version: int,
+        *,
+        expected: ScopeLifecycleState,
+        requested: ScopeLifecycleState,
+        next_state: ScopeLifecycleState,
+    ) -> ScopeDescriptor:
+        async with self._write_lock, self._database.transaction() as connection:
+            # Structural attach/move shares this boundary, so a move cannot slip
+            # between reading the subtree and changing the named Scope's state.
+            await self._repository.lock_hierarchy(connection)
+            current = await self._required(connection, scope_id)
+            if current.version != expected_version:
+                raise ScopeVersionConflictError(scope_id, expected_version, current.version)
+            if not await self._repository.transition_lifecycle(connection, scope_id, expected, next_state):
+                refreshed = await self._required(connection, scope_id)
+                raise ScopeLifecycleConflictError(scope_id, requested, refreshed.lifecycle_state)
             return await self._required(connection, scope_id)
 
     async def default_scope(self) -> ScopeDescriptor | None:
