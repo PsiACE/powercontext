@@ -33,24 +33,30 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     ApproveCandidateRequest,
     BuiltinConfig,
+    BuiltinRuntime,
     CaptureSource,
     CaptureWorkingNote,
     ProposeExperienceRequest,
     RuntimeConfig,
+    WorkingNoteKind,
 )
 from powercontext.builtin.runtime.composition import open_builtin_runtime
-from powercontext.builtin.scope import ScopeDraft, ScopeSelection
+from powercontext.builtin.scope import ScopeApplication, ScopeDraft, ScopeSelection
 from powercontext.builtin.sharing import (
     ShareAcceptanceConflictError,
     ShareBudgetExceededError,
+    ShareRule,
     ShareRuleAcceptanceError,
     ShareRuleDraft,
     ShareRuleInvalidatedError,
     ShareRuleServiceUnavailable,
     ShareRuleTerms,
+    ShareRun,
     ShareRunLimits,
     ShareRunStateError,
 )
+from powercontext.builtin.sharing.application import ScopedShareApplication
+from powercontext.builtin.sharing.service import ShareAuthorizer
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY
 
 
@@ -71,30 +77,58 @@ def config(database: Path) -> BuiltinConfig:
 
 
 @asynccontextmanager
-async def sharing_runtime(database: Path) -> AsyncIterator[tuple[object, str, str]]:
+async def sharing_runtime(
+    database: Path, *, authorize_origin: ShareAuthorizer | None = None
+) -> AsyncIterator[tuple[BuiltinRuntime, str, str]]:
     """Open the real Runtime and create one target Scope and one origin Scope."""
 
-    async with open_builtin_runtime(config(database)) as runtime:
-        target = await runtime.scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="t"))
-        origin = await runtime.scopes.create(ScopeDraft(title="Alice", summary="Work", idempotency_key="o"))
+    async with open_builtin_runtime(config(database), share_rule_authorizer=authorize_origin) as runtime:
+        scopes = runtime.scopes
+        # A composed Runtime always has the Scope application; assert rather than cast
+        # so the rest of the scenarios use the real, known type.
+        assert scopes is not None
+        target = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="t"))
+        origin = await scopes.create(ScopeDraft(title="Alice", summary="Work", idempotency_key="o"))
         yield runtime, target.scope_id, origin.scope_id
 
 
-async def agree(sharing, rule_id: str, version: int = 1) -> None:
+def scopes_of(runtime: BuiltinRuntime) -> ScopeApplication:
+    """Return the composed Scope application a real Runtime always has."""
+
+    scopes = runtime.scopes
+    assert scopes is not None
+    return scopes
+
+
+def source_ids(run: ShareRun) -> list[str]:
+    """List the pinned Source ids, skipping inputs that name an Artifact instead."""
+
+    return [item.source_ref.source_id for item in run.inputs if item.source_ref is not None]
+
+
+async def agree(sharing: ScopedShareApplication, rule_id: str, version: int = 1) -> None:
     """Record both authenticated sides of the agreed terms before any run."""
 
     await sharing.accept(rule_id, version, "origin", actor="origin-admin")
     await sharing.accept(rule_id, version, "target", actor="target-owner")
 
 
-def exact_rule(origin_scope_id: str, **overrides) -> ShareRuleDraft:
-    draft = {
-        "selection": ScopeSelection(mode="exact", scope_ids=(origin_scope_id,)),
-        "source_types": ("content",),
-        "terms": ShareRuleTerms(use="project-conclusion", audience="project-members"),
-    }
-    draft.update(overrides)
-    return ShareRuleDraft(**draft)
+def exact_rule(
+    origin_scope_id: str,
+    *,
+    terms: ShareRuleTerms | None = None,
+    limits: ShareRunLimits | None = None,
+    artifact_families: tuple[str, ...] = (),
+) -> ShareRuleDraft:
+    """Build one exact selection, replacing only the fields a scenario changes."""
+
+    return ShareRuleDraft(
+        selection=ScopeSelection(mode="exact", scope_ids=(origin_scope_id,)),
+        source_types=("content",),
+        artifact_families=artifact_families,
+        terms=ShareRuleTerms(use="project-conclusion", audience="project-members") if terms is None else terms,
+        limits=ShareRunLimits() if limits is None else limits,
+    )
 
 
 def test_run_requires_recorded_acceptance_of_these_exact_terms(tmp_path: Path) -> None:
@@ -153,18 +187,18 @@ def test_standing_rule_discovers_material_added_later(tmp_path: Path) -> None:
 
             run = await sharing.resolve(rule.rule_id)
 
-            assert [item.source_ref.source_id for item in run.inputs] == ["first"]
+            assert source_ids(run) == ["first"]
             assert run.inputs[0].paths == ("exact",)
             assert run.outcome == "pending" and run.retry_of is None
 
             # Material captured after the rule was accepted is eligible for a new run.
             await sources.capture(CaptureSource(source_id="second", content="Second report.", metadata={}))
             latest = await sharing.resolve(rule.rule_id)
-            assert [item.source_ref.source_id for item in latest.inputs] == ["first", "second"]
+            assert source_ids(latest) == ["first", "second"]
             assert latest.digest() != run.digest()
 
             # The earlier evaluation still describes exactly what it pinned.
-            assert [item.source_ref.source_id for item in (await sharing.get_run(run.run_id)).inputs] == ["first"]
+            assert source_ids(await sharing.get_run(run.run_id)) == ["first"]
 
     import asyncio
 
@@ -305,11 +339,11 @@ def test_invalidated_rule_stops_dependent_work_and_needs_a_new_version(tmp_path:
 def test_subtree_and_exact_selection_count_one_address_with_both_paths(tmp_path: Path) -> None:
     async def scenario() -> None:
         async with open_builtin_runtime(config(tmp_path / "paths.db")) as runtime:
-            project = await runtime.scopes.create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
-            child = await runtime.scopes.create(
+            project = await scopes_of(runtime).create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
+            child = await scopes_of(runtime).create(
                 ScopeDraft(title="C", summary="s", parent_scope_id=project.scope_id, idempotency_key="c")
             )
-            target = await runtime.scopes.create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
             await runtime.sources.for_scope(child.scope_id).capture(
                 CaptureSource(source_id="shared", content="One fact.", metadata={})
             )
@@ -354,7 +388,7 @@ def test_external_run_never_advances_the_target_local_journal(tmp_path: Path) ->
             async with runtime.primary_database.transaction() as connection:
                 position = await SourceRepository(BUILTIN_SOURCE_REGISTRY).journal_position(connection, target)
             assert position == local.sequence
-            assert [item.source_ref.source_id for item in (await sharing.list_runs())[0].inputs] == ["external"]
+            assert source_ids((await sharing.list_runs())[0]) == ["external"]
 
     import asyncio
 
@@ -366,9 +400,9 @@ def test_two_contributors_compose_one_agreement_per_own_origin(tmp_path: Path) -
 
     async def scenario() -> None:
         async with open_builtin_runtime(config(tmp_path / "compose.db")) as runtime:
-            project = await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))
-            alice = await runtime.scopes.create(ScopeDraft(title="Alice", summary="s", idempotency_key="a"))
-            bob = await runtime.scopes.create(ScopeDraft(title="Bob", summary="s", idempotency_key="b"))
+            project = await scopes_of(runtime).create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))
+            alice = await scopes_of(runtime).create(ScopeDraft(title="Alice", summary="s", idempotency_key="a"))
+            bob = await scopes_of(runtime).create(ScopeDraft(title="Bob", summary="s", idempotency_key="b"))
             for scope, fact in ((alice, "Alice retry note."), (bob, "Bob counterexample.")):
                 await runtime.sources.for_scope(scope.scope_id).capture(
                     CaptureSource(source_id=f"note-{scope.title}", content=fact, metadata={})
@@ -422,7 +456,7 @@ def test_an_acceptance_cannot_widen_the_agreed_range(tmp_path: Path) -> None:
     async def scenario() -> None:
         async with sharing_runtime(tmp_path / "widen.db") as (runtime, target, origin):
             sharing = runtime.sharing.for_scope(target)
-            outsider = await runtime.scopes.create(ScopeDraft(title="Out", summary="s", idempotency_key="x"))
+            outsider = await scopes_of(runtime).create(ScopeDraft(title="Out", summary="s", idempotency_key="x"))
             rule = await sharing.create(exact_rule(origin))
 
             with pytest.raises(ShareRuleAcceptanceError):
@@ -459,7 +493,7 @@ def test_pinned_run_survives_restart_and_reads_back_exactly(tmp_path: Path) -> N
             sharing = runtime.sharing.for_scope(target)
             reopened = await sharing.get_run(run_id)
             assert reopened.outcome == "needs_evidence"
-            assert [item.source_ref.source_id for item in reopened.inputs] == ["durable"]
+            assert source_ids(reopened) == ["durable"]
             # The rule version is intact, so a new run can be resolved after reopening.
             rule = await sharing.get(rule_id)
             assert rule.version == 1 and rule.status == "active"
@@ -489,7 +523,7 @@ def test_ineligible_rows_never_hide_eligible_material_behind_a_page(tmp_path: Pa
                         source_id=f"note-{index}",
                         content=f"Session note {index}.",
                         session_id="s",
-                        note_kind="inspection",
+                        note_kind=WorkingNoteKind.INSPECTION,
                         metadata={},
                     )
                 )
@@ -499,7 +533,7 @@ def test_ineligible_rows_never_hide_eligible_material_behind_a_page(tmp_path: Pa
 
             run = await sharing.resolve(rule.rule_id)
 
-            assert [item.source_ref.source_id for item in run.inputs] == ["real"]
+            assert source_ids(run) == ["real"]
             assert run.source_watermarks[0].position == 3
 
     import asyncio
@@ -510,46 +544,48 @@ def test_ineligible_rows_never_hide_eligible_material_behind_a_page(tmp_path: Pa
 def test_run_pins_the_rule_version_that_selected_its_inputs(tmp_path: Path) -> None:
     """A head published during discovery must not relabel one version's inputs.
 
-    The authorizer runs between discovery and the write, so a concurrent `update`
-    is reachable through a documented extension point.
+    The origin authorizer runs between discovery and the write, so a real authorizer
+    can publish a new version there through the documented extension point.
     """
 
-    async def scenario() -> None:
-        from powercontext.builtin.sharing import ShareRuleVersionConflictError
+    from powercontext.builtin.sharing import ShareRuleVersionConflictError
 
-        async with sharing_runtime(tmp_path / "race.db") as (runtime, target, origin):
+    async def scenario() -> None:
+        database = tmp_path / "race.db"
+        published: list[bool] = []
+        state: dict[str, tuple[BuiltinRuntime, str, str, ShareRule]] = {}
+
+        async def publish(scope_id: str, ref: object) -> None:
+            # One-shot: a second version excludes these inputs entirely.
+            if published:
+                return
+            published.append(True)
+            runtime, target, origin, rule = state["value"]
+            sharing = runtime.sharing.for_scope(target)
+            await sharing.update(
+                rule.rule_id,
+                1,
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="exact", scope_ids=(origin,)),
+                    source_types=("skill-usage",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                    limits=ShareRunLimits(max_inputs=1),
+                ),
+            )
+            await sharing.accept(rule.rule_id, 2, "origin", actor="origin-admin")
+            await sharing.accept(rule.rule_id, 2, "target", actor="target-owner")
+
+        async with sharing_runtime(database, authorize_origin=publish) as (runtime, target, origin):
             sources = runtime.sources.for_scope(origin)
             for index in range(3):
                 await sources.capture(CaptureSource(source_id=f"q{index}", content=f"Fact {index}.", metadata={}))
-            published: list[bool] = []
-
-            async def publish(scope_id: str) -> None:
-                # One-shot: a second rule version excludes these inputs entirely.
-                if published:
-                    return
-                published.append(True)
-                await runtime.sharing.for_scope(target).update(
-                    rule.rule_id,
-                    1,
-                    ShareRuleDraft(
-                        selection=ScopeSelection(mode="exact", scope_ids=(origin,)),
-                        source_types=("skill-usage",),
-                        terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
-                        limits=ShareRunLimits(max_inputs=1),
-                    ),
-                )
-                await runtime.sharing.for_scope(target).accept(rule.rule_id, 2, "origin", actor="origin-admin")
-                await runtime.sharing.for_scope(target).accept(rule.rule_id, 2, "target", actor="target-owner")
-
             sharing = runtime.sharing.for_scope(target)
             rule = await sharing.create(exact_rule(origin))
             await agree(sharing, rule.rule_id)
-            runtime.share_rules._authorize_origin = lambda scope_id, ref: publish(scope_id)
-            try:
-                with pytest.raises(ShareRuleVersionConflictError):
-                    await sharing.resolve(rule.rule_id)
-            finally:
-                runtime.share_rules._authorize_origin = None
+            state["value"] = (runtime, target, origin, rule)
+
+            with pytest.raises(ShareRuleVersionConflictError):
+                await sharing.resolve(rule.rule_id)
 
             # The refused call recorded nothing, so no mislabelled manifest exists.
             assert await sharing.list_runs(rule_id=rule.rule_id) == ()
@@ -564,11 +600,11 @@ def test_agreement_identity_distinguishes_selection_and_input_kinds(tmp_path: Pa
 
     async def scenario() -> None:
         async with open_builtin_runtime(config(tmp_path / "digest.db")) as runtime:
-            project = await runtime.scopes.create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
-            child = await runtime.scopes.create(
+            project = await scopes_of(runtime).create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
+            child = await scopes_of(runtime).create(
                 ScopeDraft(title="C", summary="s", parent_scope_id=project.scope_id, idempotency_key="c")
             )
-            target = await runtime.scopes.create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
             terms = ShareRuleTerms(use="project-conclusion", audience="project-members")
             sharing = runtime.sharing.for_scope(target.scope_id)
 
@@ -627,7 +663,7 @@ def test_identical_acceptance_returns_the_stored_record_and_changed_coverage_con
     async def scenario() -> None:
         async with sharing_runtime(tmp_path / "accept-readback.db") as (runtime, target, origin):
             sharing = runtime.sharing.for_scope(target)
-            outsider = await runtime.scopes.create(ScopeDraft(title="Out", summary="s", idempotency_key="x"))
+            outsider = await scopes_of(runtime).create(ScopeDraft(title="Out", summary="s", idempotency_key="x"))
             rule = await sharing.create(
                 ShareRuleDraft(
                     selection=ScopeSelection(mode="exact", scope_ids=(origin,)),
@@ -777,6 +813,7 @@ def test_a_concluded_run_is_one_way_and_keeps_its_committed_revision(tmp_path: P
             recorded = await sharing.record_outcome(
                 second.run_id, committed=committed, dream_run_id="dr_1", candidate_id="cand_1"
             )
+            assert recorded.committed is not None
             assert recorded.outcome == "committed" and recorded.committed.artifact == committed
             kept = await sharing.record_outcome(second.run_id)
             assert kept.outcome == "committed"
@@ -816,7 +853,7 @@ def test_retry_does_not_adopt_a_newer_accepted_version(tmp_path: Path) -> None:
             # The original v1 manifest stays readable at its own version.
             original = await sharing.get_run(run.run_id)
             assert original.rule_version == 1
-            assert [item.source_ref.source_id for item in original.inputs] == ["fact"]
+            assert source_ids(original) == ["fact"]
 
     import asyncio
 
