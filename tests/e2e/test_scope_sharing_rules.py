@@ -1170,14 +1170,14 @@ def test_per_run_coverage_names_only_the_records_that_cover_this_run(tmp_path: P
             assert alice.acceptance_id not in per_run.acceptance_ids_for(bob.scope_id)
 
             # Each authoritative record reports its own contribution, row unchanged.
-            bob_contribution = await sharing.acceptance_contribution(rule.rule_id, 1, bob_record.acceptance_id)
+            bob_contribution = await sharing.acceptance_contribution(run.run_id, bob_record.acceptance_id)
             assert bob_contribution.covered_scope_ids == (bob.scope_id,)
             assert bob_contribution.contributed_origin_scope_ids == (bob.scope_id,)
             assert bob_contribution.acceptance_id == bob_record.acceptance_id
-            # Alice's record contributes her declared root (and its descendants), never Bob.
-            alice_contribution = await sharing.acceptance_contribution(rule.rule_id, 1, alice.acceptance_id)
-            assert alice_contribution.contributed_origin_scope_ids == (alice_root.scope_id,)
-            assert bob.scope_id not in alice_contribution.contributed_origin_scope_ids
+            # Alice's record contributes nothing to this run: the run recorded Bob's
+            # Scope only, and her accepted root covers no origin this run used.
+            alice_contribution = await sharing.acceptance_contribution(run.run_id, alice.acceptance_id)
+            assert alice_contribution.contributed_origin_scope_ids == ()
 
             # An unrelated accepted root does not make Bob's origin covered by Alice.
             alice_material = await runtime.sources.for_scope(alice_root.scope_id).capture(
@@ -1189,6 +1189,10 @@ def test_per_run_coverage_names_only_the_records_that_cover_this_run(tmp_path: P
             coverage = await sharing.run_origin_coverage(grew.run_id)
             assert coverage.acceptance_ids_for(alice_root.scope_id) == (alice.acceptance_id,)
             assert coverage.acceptance_ids_for(bob.scope_id) == (bob_record.acceptance_id,)
+            # Once the run uses her Scope, her record contributes it.
+            assert (
+                await sharing.acceptance_contribution(grew.run_id, alice.acceptance_id)
+            ).contributed_origin_scope_ids == (alice_root.scope_id,)
 
     import asyncio
 
@@ -1277,6 +1281,172 @@ def test_ancestor_and_descendant_origins_are_each_judged_on_their_own_chain(tmp_
             per_run = await sharing.run_origin_coverage(run.run_id)
             assert per_run.uncovered_origin_scope_ids == ()
             assert per_run.acceptance_ids_for(outer.scope_id) == per_run.acceptance_ids_for(inner.scope_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_both_per_run_readers_agree_about_a_declared_root_row(tmp_path: Path) -> None:
+    """A root row must contribute the recorded descendant in both readers."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "agree.db")) as runtime:
+            root = await scopes_of(runtime).create(ScopeDraft(title="R", summary="s", idempotency_key="r"))
+            child = await scopes_of(runtime).create(
+                ScopeDraft(title="C", summary="s", parent_scope_id=root.scope_id, idempotency_key="c")
+            )
+            grandchild = await scopes_of(runtime).create(
+                ScopeDraft(title="G", summary="s", parent_scope_id=child.scope_id, idempotency_key="g")
+            )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            await runtime.sources.for_scope(grandchild.scope_id).capture(
+                CaptureSource(source_id="deep", content="Deep fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=root.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            root_row = await sharing.accept(
+                rule.rule_id, 1, "origin", actor="root-admin", covered_scope_ids=(root.scope_id,)
+            )
+            await sharing.accept(rule.rule_id, 1, "target", actor="target-owner")
+
+            run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (grandchild.scope_id,)
+
+            per_run = await sharing.run_origin_coverage(run.run_id)
+            contribution = await sharing.acceptance_contribution(run.run_id, root_row.acceptance_id)
+
+            # One contribution definition: both readers report the same origins.
+            assert contribution.contributed_origin_scope_ids == (grandchild.scope_id,)
+            assert per_run.acceptance_ids_for(grandchild.scope_id) == (root_row.acceptance_id,)
+            # The authoritative row itself is unchanged.
+            assert contribution.covered_scope_ids == (root.scope_id,)
+            assert contribution.terms_digest == root_row.terms_digest
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_version_reader_ignores_other_versions_runs(tmp_path: Path) -> None:
+    """A version's reader must not move when a later version records work."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "versions.db")) as runtime:
+            bob = await scopes_of(runtime).create(ScopeDraft(title="Bob", summary="s", idempotency_key="b"))
+            carol = await scopes_of(runtime).create(ScopeDraft(title="Carol", summary="s", idempotency_key="c"))
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            await runtime.sources.for_scope(bob.scope_id).capture(
+                CaptureSource(source_id="bob", content="Bob fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(exact_rule(bob.scope_id))
+            await agree(sharing, rule.rule_id)
+            run1 = await sharing.resolve(rule.rule_id)
+            before = await sharing.coverage(rule.rule_id, 1)
+            assert before.origins_covered and set(before.run_origin_scope_ids) == {bob.scope_id}
+
+            # A later version selects Carol and does its own work.
+            updated = await sharing.update(rule.rule_id, 1, exact_rule(carol.scope_id))
+            await agree(sharing, rule.rule_id, updated.version)
+            await runtime.sources.for_scope(carol.scope_id).capture(
+                CaptureSource(source_id="carol", content="Carol fact.", metadata={})
+            )
+            run2 = await sharing.resolve(rule.rule_id)
+            assert run2.origin_scopes() == (carol.scope_id,)
+
+            after = await sharing.coverage(rule.rule_id, 1)
+            assert after.origins_covered
+            assert set(after.run_origin_scope_ids) == {bob.scope_id}
+            assert carol.scope_id not in after.run_origin_scope_ids
+            assert await sharing.covers_run(run1.run_id)
+
+            v2 = await sharing.coverage(rule.rule_id, updated.version)
+            assert set(v2.run_origin_scope_ids) == {carol.scope_id}
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_readers_report_the_required_audience_and_refuse_without_target_consent(tmp_path: Path) -> None:
+    """An unstated audience is the target Scope, and both readers must say so."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "audience.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="exact", scope_ids=(origin,)),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            # Only the origin side accepts: no target consent exists yet.
+            await sharing.accept(rule.rule_id, 1, "origin", actor="origin-admin")
+
+            with pytest.raises(ShareRuleAcceptanceError):
+                await sharing.resolve(rule.rule_id)
+            aggregate = await sharing.coverage(rule.rule_id, 1)
+            assert aggregate.declared_audience_scope_ids == (target,)
+            assert not aggregate.audiences_covered
+
+            # Target consent is what satisfies the required audience.
+            await sharing.accept(rule.rule_id, 1, "target", actor="target-owner")
+            run = await sharing.resolve(rule.rule_id)
+            per_run = await sharing.run_origin_coverage(run.run_id)
+            assert per_run.declared_audience_scope_ids == (target,)
+            assert per_run.audiences_covered
+            assert per_run.accepted_audience_scope_ids == (target,)
+            assert await sharing.covers_run(run.run_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_a_depth_refusal_reports_the_depth_budget_it_exhausted(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "depth.db")) as runtime:
+            parent = await scopes_of(runtime).create(ScopeDraft(title="L0", summary="s", idempotency_key="l0"))
+            deepest = parent
+            for level in range(1, 18):
+                deepest = await scopes_of(runtime).create(
+                    ScopeDraft(
+                        title=f"L{level}",
+                        summary="s",
+                        parent_scope_id=deepest.scope_id,
+                        idempotency_key=f"l{level}",
+                    )
+                )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=parent.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                    limits=ShareRunLimits(max_origins=64),
+                )
+            )
+            await agree(sharing, rule.rule_id)
+
+            with pytest.raises(ShareBudgetExceededError) as raised:
+                await sharing.resolve(rule.rule_id)
+
+            # The depth budget was breached, not the origin budget.
+            assert raised.value.limit == "depth"
+            assert raised.value.maximum == 16
+            assert raised.value.observed == 17
 
     import asyncio
 

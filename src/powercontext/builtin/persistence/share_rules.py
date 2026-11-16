@@ -239,7 +239,13 @@ class ShareRunRepository:
         return None if stored is None else _run(stored)
 
     async def list(
-        self, connection: AsyncConnection, scope_id: str, /, *, rule_id: str | None = None
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        /,
+        *,
+        rule_id: str | None = None,
+        rule_version: int | None = None,
     ) -> tuple[ShareRun, ...]:
         statement = (
             select(SHARE_RUNS_TABLE.c.payload)
@@ -248,6 +254,10 @@ class ShareRunRepository:
         )
         if rule_id is not None:
             statement = statement.where(SHARE_RUNS_TABLE.c.rule_id == rule_id)
+        if rule_version is not None:
+            # Qualification happens in SQL: a per-version reader never loads other
+            # versions' payloads to discard them afterwards.
+            statement = statement.where(SHARE_RUNS_TABLE.c.rule_version == rule_version)
         return tuple(_run(stored) for stored in await connection.scalars(statement))
 
     async def create(self, connection: AsyncConnection, run: ShareRun, /) -> ShareRun:
