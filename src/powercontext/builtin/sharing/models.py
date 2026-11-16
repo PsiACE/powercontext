@@ -523,13 +523,17 @@ class ShareRunOriginCoverage(_ShareValue):
 
 
 class ShareAcceptanceContribution(_ShareValue):
-    """The origins one authoritative acceptance row actually contributes.
+    """What one authoritative acceptance record contributes to one pinned run.
 
-    A record states the Scopes it covers; this reports the effective origins those
-    Scopes contribute for the rule version, including a declared root's descendants
-    and never more than the record itself accepted.
+    The question only has a definite answer for a specific run: a declared root
+    contributes the origins that run actually recorded beneath it, so the same row is
+    reported against that run's candidates. `run_id` qualifies the answer, and the
+    stored row's own `covered_scope_ids`, identity and digest are unchanged.
     """
 
+    run_id: str
+    rule_id: str
+    rule_version: int = Field(ge=1)
     acceptance_id: str
     actor: str
     side: ShareAcceptanceSide

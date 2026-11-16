@@ -127,12 +127,16 @@ class ScopedShareApplication:
         async with self._runtime._scoped_operation(self.scope_id):
             return await service.run_origin_coverage(self.scope_id, run_id)
 
-    async def acceptance_contribution(
-        self, rule_id: str, version: int, acceptance_id: str, /
-    ) -> ShareAcceptanceContribution:
+    async def acceptance_contribution(self, run_id: str, acceptance_id: str, /) -> ShareAcceptanceContribution:
+        """Report one record's contribution to one pinned run.
+
+        The run qualifies the question: a declared root contributes the origins that run
+        recorded beneath it.
+        """
+
         service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
-            return await service.acceptance_contribution(self.scope_id, rule_id, version, acceptance_id)
+            return await service.acceptance_contribution(self.scope_id, run_id, acceptance_id)
 
     async def covers_run(self, run_id: str, /) -> bool:
         service = self._service()
