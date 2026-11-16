@@ -235,6 +235,15 @@ class AtomicMemoryIndex(Protocol):
 
     async def delete(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None: ...
 
+    async def purge_scope(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        """Remove every projection row this Scope owns; idempotent.
+
+        This is the owner-level answer to Scope deletion, so the Scope service
+        never has to enumerate this owner's tables itself. Only rows keyed to
+        ``scope_id`` are removed.
+        """
+        ...
+
     async def save_evidence(
         self,
         connection: AsyncConnection,
@@ -956,6 +965,12 @@ class RelationalAtomicMemoryIndex:
         await connection.execute(
             delete(self.table).where(self.table.c.scope_id == scope_id, self.table.c.artifact_id == artifact_id)
         )
+
+    async def purge_scope(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        """Delete this Scope's current-projection rows, including their FTS shadows."""
+        for table in self.tables:
+            if "scope_id" in table.c:
+                await connection.execute(delete(table).where(table.c.scope_id == scope_id))
 
     async def refresh_tags(
         self, connection: AsyncConnection, scope_id: str, artifact_id: str, tag_keys: tuple[str, ...], /

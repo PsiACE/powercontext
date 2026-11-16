@@ -20,6 +20,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate
+from powercontext.builtin.persistence.scope_lifecycle import require_writable
 from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE, CANDIDATE_VERSIONS_TABLE
 from powercontext.builtin.review.errors import CandidateConflictError, CandidateNotFoundError, CandidateTerminalError
 from powercontext.builtin.tags import ArtifactTagSet
@@ -121,7 +122,10 @@ class CatalogCandidateRepository:
         return candidate
 
     async def _version(self, connection: AsyncConnection, scope_id: str, candidate: CatalogChangeCandidate) -> None:
-
+        # A tag Candidate is proposed into a Scope like any other Candidate, so it
+        # shares the one lifecycle gate instead of a transport-specific copy. This
+        # covers both first creation and a new version saved on revision.
+        await require_writable(connection, scope_id)
         await connection.execute(
             insert(CANDIDATE_VERSIONS_TABLE).values(
                 scope_id=scope_id,

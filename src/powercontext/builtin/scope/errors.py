@@ -65,6 +65,53 @@ class ScopeBindingNotFoundError(ScopeError, LookupError):
         super().__init__("no Scope binding is available")
 
 
+class ScopeNotWritableError(ScopeError, RuntimeError):
+    """An ordinary content write was refused by the named Scope's lifecycle state."""
+
+    def __init__(self, scope_id: str, state: str) -> None:
+        self.scope_id = scope_id
+        self.state = state
+        super().__init__("scope is not writable")
+
+
+class ScopeLifecycleConflictError(ScopeError, RuntimeError):
+    """Archive or reopen was requested for a state the Scope no longer holds."""
+
+    def __init__(self, scope_id: str, requested: str, state: str) -> None:
+        self.scope_id = scope_id
+        self.requested = requested
+        self.state = state
+        super().__init__("scope lifecycle transition is not available from the current state")
+
+
+class ScopeDeletionConflictError(ScopeError, RuntimeError):
+    """A deletion request was refused because the confirmed set or children changed."""
+
+    def __init__(self, scope_id: str, reason: str) -> None:
+        self.scope_id = scope_id
+        self.reason = reason
+        super().__init__("Scope deletion was refused")
+
+
+class ScopeDeletionBindingRepairError(ScopeError, RuntimeError):
+    """A deployment default or persistent binding must be repaired before its Scope is removed."""
+
+    def __init__(self, scope_id: str, binding: tuple[str, str, str] | None, *, is_default: bool) -> None:
+        self.scope_id = scope_id
+        self.binding = binding
+        self.is_default = is_default
+        super().__init__("Scope is still referenced by a deployment default or persistent binding")
+
+
+class ScopeResourceHandlerUnsupportedError(ScopeError, RuntimeError):
+    """A required cleanup mode cannot be performed, so the deletion is refused before acceptance."""
+
+    def __init__(self, handler: str, reason: str) -> None:
+        self.handler = handler
+        self.reason = reason
+        super().__init__("Scope resource cleanup is unsupported")
+
+
 class ScopeRangeLimitError(ScopeError, RuntimeError):
     """A structural range cannot be resolved honestly within its declared budget.
 

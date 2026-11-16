@@ -5867,7 +5867,10 @@ def _binding_administrative_check(
 
 
 def _scope_descriptor_response(value: DomainScopeDescriptor) -> ScopeDescriptor:
-    return ScopeDescriptor.model_validate(value.model_dump(mode="json"))
+    # The runtime lifecycle state is authoritative in the domain descriptor. The
+    # published Scope response is owned by the OpenAPI contract, so it keeps its
+    # current shape here until that contract exposes the field.
+    return ScopeDescriptor.model_validate(value.model_dump(mode="json", exclude={"lifecycle_state"}))
 
 
 def _domain_binding_key(value: ScopeBindingKey) -> DomainScopeBindingKey:

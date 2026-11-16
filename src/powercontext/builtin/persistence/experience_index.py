@@ -112,6 +112,14 @@ class ExperienceIndex(Protocol):
 
     async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None: ...
 
+    async def purge_scope(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        """Remove every projected row this Scope owns; idempotent.
+
+        The owner answers deletion for its own tables so the Scope service never
+        enumerates them. Only rows keyed to ``scope_id`` are removed.
+        """
+        ...
+
     async def search(
         self,
         connection: AsyncConnection,
@@ -172,6 +180,9 @@ class NoExperienceIndex:
         admission: AdmissionFloor | None = None,
     ) -> tuple[Mapping[Any, Any], ...]:
         return ()
+
+    async def purge_scope(self, _connection: AsyncConnection, _scope_id: str, /) -> None:
+        """No projections exist when approved-head search is disabled."""
 
     async def remove(self, _connection: AsyncConnection, _scope_id: str, _artifact_id: str, /) -> None:
         pass

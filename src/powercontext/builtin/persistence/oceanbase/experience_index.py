@@ -97,6 +97,13 @@ class OceanBaseExperienceFTSIndex:
     ) -> None:
         await replace_experience_projection(connection, scope_id, experience)
 
+    async def purge_scope(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        """Nothing to remove here: OceanBase searches heads natively.
+
+        This owner keeps no table of its own, so the owned-resource handler that
+        removes the Scope's heads already covers it.
+        """
+
     async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None:
         await remove_experience_projection(connection, scope_id, artifact_id)
 

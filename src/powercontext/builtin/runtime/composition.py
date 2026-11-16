@@ -937,6 +937,7 @@ async def open_builtin_runtime(  # noqa: C901
                     contexts.repositories.artifacts,
                     authorize_origin=share_rule_authorizer,
                 ),
+                scope_deletion_application=contexts.scope_deletions,
                 readiness=RuntimeReadinessChecks(
                     readiness_probes,
                     disabled_dependencies=(name for name, probe in inference_readiness if probe is None),

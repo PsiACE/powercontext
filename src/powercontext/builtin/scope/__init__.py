@@ -21,16 +21,24 @@ from typing import TYPE_CHECKING, Any
 from powercontext.builtin.scope.errors import (
     ScopeBindingNotFoundError,
     ScopeBindingTargetMissingError,
+    ScopeDeletionBindingRepairError,
+    ScopeDeletionConflictError,
     ScopeError,
     ScopeIdempotencyConflictError,
+    ScopeLifecycleConflictError,
     ScopeNotFoundError,
+    ScopeNotWritableError,
     ScopeRangeLimitError,
     ScopeRelationshipError,
+    ScopeResourceHandlerUnsupportedError,
     ScopeVersionConflictError,
 )
 from powercontext.builtin.scope.models import (
     ScopeBinding,
     ScopeBindingKey,
+    ScopeDeletionMember,
+    ScopeDeletionPreview,
+    ScopeDeletionReceipt,
     ScopeDescriptor,
     ScopeDescriptorPage,
     ScopeDiscovery,
@@ -40,6 +48,7 @@ from powercontext.builtin.scope.models import (
     ScopeQueryField,
     ScopeRange,
     ScopeRangeLimits,
+    ScopeResourceProgress,
     ScopeSelection,
 )
 
@@ -48,6 +57,12 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str) -> Any:
+    if name == "ScopeDeletionApplication":
+        # Imported lazily: `scope.deletion` reaches `persistence.scope_lifecycle`
+        # which imports `scope.errors`, so an eager import here would cycle.
+        from powercontext.builtin.scope import deletion
+
+        return deletion.ScopeDeletionApplication
     if name in {"ScopeApplication", "generate_scope_id"}:
         from powercontext.builtin.scope import application
 
@@ -61,6 +76,12 @@ __all__ = [
     "ScopeBindingKey",
     "ScopeBindingNotFoundError",
     "ScopeBindingTargetMissingError",
+    "ScopeDeletionApplication",
+    "ScopeDeletionBindingRepairError",
+    "ScopeDeletionConflictError",
+    "ScopeDeletionMember",
+    "ScopeDeletionPreview",
+    "ScopeDeletionReceipt",
     "ScopeDescriptor",
     "ScopeDescriptorPage",
     "ScopeDiscovery",
@@ -68,13 +89,17 @@ __all__ = [
     "ScopeError",
     "ScopeExternalReference",
     "ScopeIdempotencyConflictError",
+    "ScopeLifecycleConflictError",
     "ScopeMutation",
     "ScopeNotFoundError",
+    "ScopeNotWritableError",
     "ScopeQueryField",
     "ScopeRange",
     "ScopeRangeLimitError",
     "ScopeRangeLimits",
     "ScopeRelationshipError",
+    "ScopeResourceHandlerUnsupportedError",
+    "ScopeResourceProgress",
     "ScopeSelection",
     "ScopeVersionConflictError",
     "generate_scope_id",

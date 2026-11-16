@@ -49,6 +49,7 @@ from powercontext.builtin.persistence.errors import (
     StoredPayloadConflictError,
 )
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
+from powercontext.builtin.persistence.scope_lifecycle import require_writable
 from powercontext.builtin.persistence.source_definitions import SourceDefinitionManifestRepository
 from powercontext.builtin.persistence.tables import (
     SOURCE_JOURNAL_HEADS_TABLE,
@@ -214,6 +215,9 @@ class SourceRepository:
         prepared = tuple((source, *self._encode(source, saved_at=saved_at)) for source in sources)
 
         position = await _lock_journal_head(connection, scope_id)
+        # An archived or deleting Scope stops accepting ordinary Source capture;
+        # the check shares this transaction with the rows it would insert.
+        await require_writable(connection, scope_id)
         existing = await self._existing_many(connection, scope_id, tuple(ref for _, ref, _ in prepared))
         results: list[tuple[StoredSource, bool]] = []
         new_rows = []

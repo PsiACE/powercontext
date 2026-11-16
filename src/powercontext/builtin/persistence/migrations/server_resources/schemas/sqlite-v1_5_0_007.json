@@ -1,0 +1,6 @@
+{
+  "statements": [
+    "CREATE TABLE pc_scope_deletions (operation_id VARCHAR(64) NOT NULL, root_scope_id VARCHAR(256) NOT NULL, membership_digest VARCHAR(64) NOT NULL, confirmed_scopes BLOB NOT NULL, state VARCHAR(16) NOT NULL, requested_at DATETIME NOT NULL, PRIMARY KEY (operation_id), CONSTRAINT ck_pc_scope_deletions_state CHECK (state IN ('cleanup_pending', 'complete')))",
+    "CREATE TABLE pc_scope_deletion_progress (operation_id VARCHAR(64) NOT NULL, scope_id VARCHAR(256) NOT NULL, handler VARCHAR(64) NOT NULL, state VARCHAR(16) NOT NULL, attempts INTEGER DEFAULT '0' NOT NULL, last_error_code VARCHAR(64), PRIMARY KEY (operation_id, scope_id, handler), FOREIGN KEY(operation_id) REFERENCES pc_scope_deletions (operation_id) ON DELETE CASCADE, CONSTRAINT ck_pc_scope_deletion_progress_state CHECK (state IN ('pending', 'done', 'failed')), CONSTRAINT ck_pc_scope_deletion_progress_attempts_nonnegative CHECK (attempts >= 0))"
+  ]
+}
