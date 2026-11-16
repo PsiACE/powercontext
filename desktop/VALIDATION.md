@@ -3558,10 +3558,27 @@ This host lacks the WebKitGTK, `dbus-1` and OpenSSL development libraries, so th
 probe could not be built from the full product manifest. It was compiled instead in an
 isolated protocol-only Cargo crate importing the unchanged product `connections`,
 `credentials`, `error`, Ops bridge, session-observation and `transport` modules through
-symlinks, plus the unchanged `server_probe.rs`. Every registry dependency version and
-checksum in that crate's lock file matches the product `desktop/src-tauri/Cargo.lock`; the
-only additional package is the disposable crate itself. The crate omits the Tauri/WebView
-shell and uses no `ci-fixtures`. This is not a full Desktop application build.
+symlinks, plus the unchanged `server_probe.rs`. The crate resolves 285 registry packages, a strict
+subset of the 565 in the product `desktop/src-tauri/Cargo.lock`, and every one of them has an
+identical name, version, source and checksum. The package sets therefore differ rather than being
+identical: the crate omits the Tauri/WebView crates it does not compile, and adds only the
+disposable crate itself. It uses no `ci-fixtures`. This is not a full Desktop application build.
+
+Two local-only build workarounds were needed for that crate. Neither is packaged, distributed
+or required on a host with the documented development libraries, and neither changes product
+behaviour:
+
+- `libdbus-sys` probes `dbus-1` through `pkg-config`, which this host did not provide although
+  the `libdbus-1.so.3` runtime soname was already installed and no headers are needed for the
+  FFI-only build. A temporary `pkg-config` file in disposable local storage pointed the crate at
+  that existing soname through `PKG_CONFIG_PATH`.
+- The `vendored` OpenSSL feature was rejected deliberately, because it introduces an
+  `openssl-src` package absent from the product Cargo lock and its configure step needs Perl
+  modules this host does not ship. The build instead set `OPENSSL_DIR` to an unrelated
+  OpenSSL 3.5.5 installation already present on the machine.
+
+On a host with `libwebkit2gtk-4.1-dev`, `libdbus-1-dev` and `libssl-dev`, the plain documented
+`cargo build --locked` command runs unchanged and both workarounds are unnecessary.
 
 The wheel and four-mode report are retained under ignored
 `desktop/.artifacts/server-wheel/` and `desktop/.artifacts/real-server.json`. The report
@@ -3571,14 +3588,60 @@ identities. This qualifies the observed local SQLite protocol; it does not estab
 installed WebView behaviour, native credential persistence, other operating systems,
 external providers, OceanBase, native database upgrades or release acceptance.
 
-Reproduce against the recorded artifact:
+Reproduce against the recorded artifact. The recorded wheel is not a published release asset, so
+first verify the retained or separately obtained archive against the record before running:
 
 ```sh
-uv build --wheel --out-dir desktop/.artifacts/server-wheel
-cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml --example server_probe
+sha256sum desktop/.artifacts/server-wheel/powercontext-1.5.2.dev184+g76711ccf3-py3-none-any.whl
+# must print 3d6a1b3ee48e7d0f9cf8f2d70836550ef2096d88ac2e83c1fccc4d96db624d36, else stop
+
 uv run --no-sync python desktop/tests/real_server.py \
-  --product-qualification sqlite-maintainer-76711ccf-v1
+  --product-qualification sqlite-maintainer-76711ccf-v1 \
+  --wheel desktop/.artifacts/server-wheel/powercontext-1.5.2.dev184+g76711ccf3-py3-none-any.whl
 cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml \
   --test session bundled_product_qualification_covers_every_desktop_operation
 make contract-test
 ```
+
+Do not rebuild in the checkout that carries this record and treat the output as the recorded
+artifact. That checkout is not at the recorded Server commit, so the derived development version and
+archive digest differ, and product mode correctly rejects it with `product_qualification_mismatch`.
+
+To rebuild from clean source, use a separate disposable worktree at the recorded Server commit,
+never at the current head, and compare the resulting digest with the record:
+
+```sh
+git -c core.autocrlf=false worktree add /tmp/pc-76711ccf 76711ccf3263551991ab4c217896b83e5301e0bc
+uv build /tmp/pc-76711ccf --wheel --out-dir /tmp/pc-76711ccf-wheel
+sha256sum /tmp/pc-76711ccf-wheel/*.whl
+```
+
+A rebuilt archive qualifies product behaviour only when its actual SHA-256 equals
+`3d6a1b3ee48e7d0f9cf8f2d70836550ef2096d88ac2e83c1fccc4d96db624d36`. A rebuild from that clean
+recorded commit was observed to reproduce the recorded digest exactly, so product mode should accept
+it. If the actual digest differs, treat the archive as distinct evidence: confirm every packaged
+runtime file against that Git archive, then run `fixture_qualification.py --server-commit
+76711ccf3263551991ab4c217896b83e5301e0bc` with `desktop/tests/real_server.py`, or
+`--rebuilt-qualification sqlite-maintainer-76711ccf-v1`, as the contract allows. Never copy the
+recorded `artifactSha256` onto a different archive.
+
+The native probe step depends on the host. With the full development libraries, build it from the
+product manifest, which places the binary where the unchanged harness expects it:
+
+```sh
+cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml --example server_probe
+```
+
+Without them, build the isolated protocol-only crate and place its binary at the path
+`desktop/tests/real_server.py` reads. The harness resolves the executable as a fixed path and is
+not modified for this, so the fallback build is copied there; nothing else about the run changes:
+
+```sh
+cp <protocol-crate>/target/debug/examples/server_probe \
+  desktop/src-tauri/target/debug/examples/server_probe
+```
+
+The copy is a disposable artifact under ignored paths and is not committed. The recorded probe
+SHA-256 `b36c9970ab26192b1cc79ac91489b58613acc355910dd1142a67b55f793c44ea` identifies the single
+binary used for this run; a debug rebuild is not expected to reproduce it byte for byte, because
+the binary embeds local build paths.
