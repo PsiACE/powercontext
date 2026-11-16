@@ -92,6 +92,7 @@ from powercontext.builtin.persistence.tables import (
     ARTIFACT_HANDLES_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
+    ARTIFACT_LINEAGE_ORIGINS_TABLE,
     ARTIFACT_LINEAGE_SOURCES_TABLE,
     ARTIFACT_PUBLICATIONS_TABLE,
     ARTIFACT_SOURCE_LOCATORS_TABLE,
@@ -183,6 +184,7 @@ RecordType = Literal[
     "artifact_lineage_source",
     "artifact_source_locator",
     "artifact_lineage_artifact",
+    "artifact_lineage_origin",
     "artifact_publication",
     "artifact_head",
     "memory_entry_version",
@@ -370,6 +372,19 @@ _SPECS: dict[RecordType, _RecordSpec] = {
         ("scope_id", "family", "artifact_id", "revision", "ordinal"),
         ("upstream_family", "upstream_artifact_id", "upstream_revision", "is_merge_input"),
         schema_version=2,
+    ),
+    "artifact_lineage_origin": _RecordSpec(
+        ARTIFACT_LINEAGE_ORIGINS_TABLE,
+        ("scope_id", "family", "artifact_id", "revision", "ordinal"),
+        (
+            "origin_scope_id",
+            "origin_kind",
+            "origin_family",
+            "origin_id",
+            "origin_revision",
+            "locator",
+            "digest",
+        ),
     ),
     "artifact_publication": _RecordSpec(
         ARTIFACT_PUBLICATIONS_TABLE,
@@ -1001,6 +1016,11 @@ class PortableBundleService:
         return count, records_by_type, digest.value()
 
 
+async def _relation_exists(connection: AsyncConnection, name: str) -> bool:
+    tables = await connection.run_sync(lambda sync: set(sqlalchemy_inspect(sync).get_table_names()))
+    return name in tables
+
+
 async def _check_target_batch(
     connection: AsyncConnection, kind: RecordType, lookups: list[_TargetLookup]
 ) -> tuple[int, int]:
@@ -1041,6 +1061,9 @@ async def _export_rows(
     connection: AsyncConnection, kind: RecordType, scopes: tuple[str, ...]
 ) -> AsyncIterator[Mapping[str, Any]]:
     spec = _SPECS[kind]
+    if kind == "artifact_lineage_origin" and not await _relation_exists(connection, spec.table.name):
+        # A database whose revision chain predates recorded origins has none to archive.
+        return
     if spec.scope_field is not None:
         predicate = spec.table.c[spec.scope_field].in_(scopes)
         if kind in {"memory_entry_version", "memory_entry_head"}:
@@ -1620,6 +1643,20 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("artifact handle is invalid") from error
     elif kind == "artifact_lineage_source":
         strings("source_type", "source_id")
+    elif kind == "artifact_lineage_origin":
+        strings("origin_scope_id", "origin_kind", "origin_family", "origin_id", "digest")
+        # A Source origin has no revision; an Artifact origin must name a positive one.
+        if payload["origin_revision"] is not None:
+            integers("origin_revision", positive=True)
+        if payload["origin_kind"] not in {"source", "artifact"}:
+            raise BundleFormatError("Artifact lineage origin kind is not supported")
+        if (payload["origin_revision"] is None) != (payload["origin_kind"] == "source"):
+            raise BundleFormatError("Artifact lineage origin revision does not match its kind")
+        if payload["locator"] is not None:
+            try:
+                TypeAdapter(SourceLocator).validate_python(_decoded_bytes_json(payload["locator"], "Source locator"))
+            except (ValueError, TypeError) as error:
+                raise BundleFormatError("Artifact lineage origin locator is invalid") from error
     elif kind == "artifact_source_locator":
         bytes_values("locator")
         try:
