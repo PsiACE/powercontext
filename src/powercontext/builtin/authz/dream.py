@@ -25,6 +25,7 @@ from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.authz.errors import AccessControlError, AccessDeniedError
 from powercontext.builtin.authz.models import AccessAction, PrincipalRef, ResourceRef
 from powercontext.builtin.authz.service import AccessAuditContext, AccessControlService
+from powercontext.builtin.authz.shared_use import SharedUseAuthorization
 from powercontext.builtin.dream.models import DreamError
 
 if TYPE_CHECKING:
@@ -63,6 +64,7 @@ class DreamAuthorization:
 
     def __init__(self, access: AccessControlService) -> None:
         self.access = access
+        self.shared_use = SharedUseAuthorization(access)
 
     def _request_id(self) -> str | None:
         return None
