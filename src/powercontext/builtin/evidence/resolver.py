@@ -64,6 +64,9 @@ EvidenceChild = tuple[EvidenceReference, str | None]
 EvidenceAuthorizer = Callable[[EvidenceReference], Awaitable[None]]
 AuthorizationContext = Callable[[], AbstractAsyncContextManager[None]]
 ScopedEvidenceAuthorizer = Callable[[str, EvidenceReference], Awaitable[None]]
+# Agreed use is a separate decision from read authority at the origin. Without it,
+# another Scope's material is not evidence for this run.
+ScopedUseAuthorizer = Callable[[str, EvidenceReference], Awaitable[None]]
 ScopedEvidenceBatchAuthorizer = Callable[[str, tuple[EvidenceReference, ...], AsyncConnection], Awaitable[None]]
 RootIdentityResolver = Callable[[SourceRef, Source], str | None]
 
@@ -89,6 +92,7 @@ class EvidenceResolver:
         artifacts: ArtifactRepository,
         authorize: EvidenceAuthorizer | None = None,
         authorize_origin: ScopedEvidenceAuthorizer | None = None,
+        authorize_use: ScopedUseAuthorizer | None = None,
         root_identity: RootIdentityResolver | None = None,
         source_projector: Callable[[Source], str] | None = None,
         limits: EvidenceLimits | None = None,
@@ -101,6 +105,9 @@ class EvidenceResolver:
         # Evidence owned by another Scope is authorized there; without a hook it is
         # refused rather than read under the run Scope's authority.
         self.authorize_origin = authorize_origin
+        # Read authority at the origin never implies permission to use the material
+        # here, so use is a separate hook and its absence refuses the selection.
+        self.authorize_use = authorize_use
         self.root_identity = root_identity
         self.source_projector = source_projector
         self.limits = EvidenceLimits() if limits is None else limits
@@ -324,6 +331,9 @@ class EvidenceResolver:
         """Resolve each explicit selection inside the Scope that owns it."""
 
         for selection in scoped:
+            origin_scope_id = None if selection.scope_id == self.scope_id else selection.scope_id
+            if origin_scope_id is not None:
+                await self._require_agreed_use(origin_scope_id, selection.reference)
             await self._visit(
                 connection,
                 selection.reference,
@@ -333,8 +343,19 @@ class EvidenceResolver:
                 lock_memory=lock_memory,
                 # Naming the run Scope is the same selection as a local one, so it keeps
                 # the local identity instead of becoming a second copy of itself.
-                origin_scope_id=None if selection.scope_id == self.scope_id else selection.scope_id,
+                origin_scope_id=origin_scope_id,
             )
+
+    async def _require_agreed_use(self, origin_scope_id: str, ref: EvidenceReference) -> None:
+        """Refuse another Scope's material unless an owning service admits this use.
+
+        A read grant at the origin, a structural reference or a matching identity is
+        not an agreement to use the material here, so no hook means no use.
+        """
+
+        if self.authorize_use is None:
+            raise EvidenceResolutionError("unsupported_shared_use")
+        await self.authorize_use(origin_scope_id, ref)
 
     async def _visit(
         self,

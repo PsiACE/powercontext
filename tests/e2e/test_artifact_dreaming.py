@@ -3465,8 +3465,72 @@ def test_source_positions_share_one_root_without_losing_their_locations(database
     asyncio.run(scenario())
 
 
-def test_scoped_evidence_keeps_each_origin_scope(database: DatabaseConfig) -> None:
-    """The same local Source ID in two Scopes stays two inputs with two origins."""
+def test_foreign_evidence_is_refused_before_any_model_call(database: DatabaseConfig) -> None:
+    """Read authority at an origin plus write authority at the target still is not use."""
+
+    async def scenario() -> None:
+        generator = Generator()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=generator,
+        ) as runtime:
+            target = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="t"))
+            ).scope_id
+            partner = (
+                await runtime.scopes.create(ScopeDraft(title="Alice", summary="Origin", idempotency_key="o"))
+            ).scope_id
+            foreign = await runtime.sources.for_scope(partner).capture(
+                CaptureSource(
+                    source_id="retry-trace", content="FOREIGN_SENTINEL old channel charged twice.", metadata={}
+                )
+            )
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+            )
+
+            with pytest.raises(DreamError) as refused:
+                await runtime.dream.for_scope(target).create(
+                    CreateDreamRunRequest(
+                        operation="refine_experience",
+                        artifacts=(),
+                        scoped=(
+                            ScopedEvidence(scope_id=target, source=local.source_ref),
+                            ScopedEvidence(scope_id=partner, source=foreign.source_ref),
+                        ),
+                        idempotency_key="foreign-body",
+                    )
+                )
+            assert refused.value.code == "unsupported_shared_use"
+
+            # No accepted run, no queued work, and the origin body never reached a model.
+            assert (await runtime.dream.for_scope(target).list(ListDreamRunsRequest())).runs == ()
+            await process_pending(runtime)
+            assert generator.inputs == []
+            assert all(
+                "FOREIGN_SENTINEL" not in item.text
+                for item in (generator.inputs[0].evidence.evidence if generator.inputs else ())
+            )
+
+            # Citing only the local node cannot launder the external body either.
+            with pytest.raises(DreamError):
+                await runtime.dream.for_scope(target).create(
+                    CreateDreamRunRequest(
+                        operation="refine_experience",
+                        artifacts=(),
+                        scoped=(ScopedEvidence(scope_id=partner, source=foreign.source_ref),),
+                        idempotency_key="foreign-only",
+                    )
+                )
+            await process_pending(runtime)
+            assert generator.inputs == []
+
+    asyncio.run(scenario())
+
+
+def test_naming_the_run_scope_keeps_local_evidence_semantics(database: DatabaseConfig) -> None:
+    """A run-Scope selection is the same input as a local one, not a second origin."""
 
     from powercontext.artifacts import ArtifactRef
     from powercontext.builtin.records import ArtifactWrite
@@ -3478,55 +3542,12 @@ def test_scoped_evidence_keeps_each_origin_scope(database: DatabaseConfig) -> No
             dream_generator=NoChangeGenerator(),
         ) as runtime:
             target = (
-                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="target"))
-            ).scope_id
-            partner = (
-                await runtime.scopes.create(ScopeDraft(title="Alice", summary="Origin", idempotency_key="origin"))
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="t"))
             ).scope_id
             local = await runtime.sources.for_scope(target).capture(
                 CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
             )
-            external = await runtime.sources.for_scope(partner).capture(
-                CaptureSource(source_id="retry-trace", content="The old channel can charge twice.", metadata={})
-            )
-            # Same local identity, different owning Scope.
-            assert local.source_ref.source_id == external.source_ref.source_id
-
-            run = await runtime.dream.for_scope(target).create(
-                CreateDreamRunRequest(
-                    operation="refine_experience",
-                    artifacts=(),
-                    scoped=(
-                        ScopedEvidence(scope_id=target, source=local.source_ref),
-                        ScopedEvidence(scope_id=partner, source=external.source_ref),
-                    ),
-                    idempotency_key="two-origins",
-                )
-            )
-            await process_pending(runtime)
-            completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=run.run_id))
-            assert completed.outcome == "no_change", completed.error
-            manifest = completed.input_manifest
-            assert manifest is not None
-
-            nodes = tuple(node for node in manifest.nodes if node.kind == "source")
-            assert len(nodes) == 2
-            # Equal local IDs stay two inputs with two identities and two digests. The
-            # run Scope stays unqualified because the run already names it.
-            assert len({node.evidence_id for node in nodes}) == 2
-            assert {node.origin_scope_id for node in nodes} == {None, partner}
-            assert len({node.digest for node in nodes}) == 2
-            assert [node.source.source_id for node in nodes] == ["retry-trace", "retry-trace"]
-            # Equal local IDs never coalesce into one root group.
-            assert len(manifest.root_groups) == 2
-            assert {group.scope_id for group in manifest.root_groups} == {None, partner}
-            assert {(selection.scope_id, selection.source.source_id) for selection in manifest.scoped} == {
-                (target, "retry-trace"),
-                (partner, "retry-trace"),
-            }
-
-            # A local run is unchanged: no origin is recorded and it still resolves.
-            local_artifact = await runtime.records.for_scope(target).create_artifact(
+            artifact = await runtime.records.for_scope(target).create_artifact(
                 "experience",
                 ArtifactWrite(
                     content={
@@ -3537,23 +3558,81 @@ def test_scoped_evidence_keeps_each_origin_scope(database: DatabaseConfig) -> No
                     }
                 ),
             )
-            local_ref = ArtifactRef(
-                family="experience", artifact_id=local_artifact.artifact_id, revision=local_artifact.revision
+            local_ref = ArtifactRef(family="experience", artifact_id=artifact.artifact_id, revision=artifact.revision)
+
+            run = await runtime.dream.for_scope(target).create(
+                CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(),
+                    sources=(local.source_ref,),
+                    scoped=(ScopedEvidence(scope_id=target, source=local.source_ref),),
+                    idempotency_key="named-local",
+                )
             )
-            local_run = await runtime.dream.for_scope(target).create(
+            await process_pending(runtime)
+            completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=run.run_id))
+            assert completed.outcome == "no_change", completed.error
+            assert completed.input_manifest is not None
+            # One node and one root group: the run already names its own Scope.
+            assert len(completed.input_manifest.nodes) == 1
+            assert {node.origin_scope_id for node in completed.input_manifest.nodes} == {None}
+            assert {group.scope_id for group in completed.input_manifest.root_groups} == {None}
+
+            # An unqualified local run keeps the exact behavior and readback it had.
+            plain = await runtime.dream.for_scope(target).create(
                 CreateDreamRunRequest(
                     operation="refine_experience",
                     artifacts=(local_ref,),
                     sources=(local.source_ref,),
-                    idempotency_key="local-only",
+                    idempotency_key="plain-local",
                 )
             )
             await process_pending(runtime)
-            local_completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=local_run.run_id))
-            assert local_completed.outcome == "no_change", local_completed.error
-            assert local_completed.input_manifest is not None
-            assert local_completed.input_manifest.scoped == ()
-            assert {node.origin_scope_id for node in local_completed.input_manifest.nodes} == {None}
-            assert {group.scope_id for group in local_completed.input_manifest.root_groups} == {None}
+            plain_completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=plain.run_id))
+            assert plain_completed.outcome == "no_change", plain_completed.error
+            assert plain_completed.input_manifest is not None
+            assert plain_completed.input_manifest.scoped == ()
+            assert {node.origin_scope_id for node in plain_completed.input_manifest.nodes} == {None}
+            assert {group.scope_id for group in plain_completed.input_manifest.root_groups} == {None}
 
     asyncio.run(scenario())
+
+
+def test_scoped_selection_counts_against_the_published_reference_budget(database: DatabaseConfig) -> None:
+    """Every admitted field counts, so a scoped entry cannot bypass the caps."""
+
+    from powercontext.artifacts import ArtifactRef
+
+    scope = "scp_budget"
+    ref = ArtifactRef(family="experience", artifact_id="experience-1", revision=1)
+    local_sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(32))
+    scoped = tuple(ScopedEvidence(scope_id=scope, source=item) for item in local_sources)
+
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as combined:
+        CreateDreamRunRequest(
+            operation="refine_experience",
+            scoped=scoped,
+            sources=local_sources,
+            idempotency_key="over-total",
+        )
+    assert any(error["type"] == "evidence_limit_exceeded" for error in combined.value.errors())
+
+    with pytest.raises(ValidationError):
+        CreateDreamRunRequest(
+            operation="refine_experience",
+            artifacts=tuple(ref.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(21)),
+            scoped=(ScopedEvidence(scope_id=scope, artifact=ref),),
+            idempotency_key="over-artifacts",
+        )
+
+    # The published local budget is still exactly 20 Artifacts plus 12 Sources.
+    accepted = CreateDreamRunRequest(
+        operation="refine_experience",
+        artifacts=tuple(ref.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(20)),
+        sources=local_sources[:12],
+        idempotency_key="at-the-limit",
+    )
+    assert len(accepted.artifacts) == 20
+    assert len(accepted.sources) == 12

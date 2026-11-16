@@ -70,7 +70,13 @@ from powercontext.builtin.evidence.models import (
     reference_key,
     unique_references,
 )
-from powercontext.builtin.evidence.resolver import EvidenceAuthorizer, EvidenceReference, EvidenceResolver, evidence_id
+from powercontext.builtin.evidence.resolver import (
+    EvidenceAuthorizer,
+    EvidenceReference,
+    EvidenceResolver,
+    ScopedUseAuthorizer,
+    evidence_id,
+)
 from powercontext.builtin.evidence.selection import select_evidence
 from powercontext.builtin.inference.errors import (
     InferenceTimeoutError,
@@ -119,6 +125,7 @@ class DreamService:
         authorization_context: Callable[[], AbstractAsyncContextManager[None]] = nullcontext,
         attest_candidate: CandidateAttester | None = None,
         authorize_candidate: CandidateAttester | None = None,
+        authorize_use: ScopedUseAuthorizer | None = None,
         operations: tuple[DreamOperation, ...] = (),
         processing: ScopeInvocation | None = None,
         catalog_changes: CatalogFactory | None = None,
@@ -135,6 +142,9 @@ class DreamService:
         self.authorization_context = authorization_context
         self.attest_candidate = attest_candidate
         self.authorize_candidate = authorize_candidate
+        # Agreed cross-Scope use comes from the Access boundary that owns it. When no
+        # such authority is wired, another Scope's material is not usable as evidence.
+        self.authorize_use = authorize_use
         self.operations = operations
         self.processing = processing
         self.intents = ArtifactProcessingIntentRepository()
@@ -169,10 +179,14 @@ class DreamService:
 
         resolver = self.evidence(scope_id, authorize)
         resolver.authorize_origin = authorize_origin
+        resolver.authorize_use = self.authorize_use
         resolver.limits = self.budget
         return resolver
 
     async def create(self, scope_id: str, principal_id: str, request: CreateDreamRunRequest) -> DreamRun:
+        # Refuse unusable external evidence before any queue write, body read, or model
+        # call: a billed attempt that ends in a late refusal is not an admission check.
+        _require_recordable_origins(scope_id, request)
         await self._authorize(scope_id, principal_id, "read")
         async with self._transaction() as connection:
             existing = await self.repository.find_request(connection, scope_id, principal_id, request)
@@ -782,6 +796,22 @@ class DreamService:
         except DreamError as error:
             if error.code != "attempt_conflict":
                 raise
+
+
+def _require_recordable_origins(scope_id: str, request: CreateDreamRunRequest) -> None:
+    """Refuse another Scope's material until an agreed use can be committed with it.
+
+    Read authority at the origin, a structural reference, an equal identity or a
+    matching digest does not agree to this use, and Candidate evidence plus Artifact
+    lineage still hold only Scope-local references. Admitting such a run would either
+    project another Scope's body to a model without agreement (billed before any late
+    refusal) or commit a conclusion whose provenance omits a body that shaped it, so
+    the mode is refused here instead of after generation. The resolver keeps its own
+    per-origin use check for the slice that wires agreed use and origin recording.
+    """
+
+    if any(selection.scope_id != scope_id for selection in request.scoped):
+        raise DreamError("unsupported_shared_use")
 
 
 def _candidate_id(record: DreamRecord) -> str:

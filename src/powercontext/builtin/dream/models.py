@@ -117,17 +117,18 @@ class CreateDreamRunRequest(BaseModel):
     @field_validator("artifacts")
     @classmethod
     def validate_artifact_selection(cls, value, info):
-        if info.data.get("operation") == "revise_tags" or info.data.get("scoped"):
+        if info.data.get("operation") == "revise_tags":
             return value
-        if not value:
-            raise PydanticCustomError(
-                "evidence_selection_required",
-                "artifacts must select at least 1 Artifact (1 to 20 Artifacts, at most 32 references with Sources)",
-            )
         if len(value) > 20:
             raise PydanticCustomError(
                 "evidence_limit_exceeded",
                 "artifacts must select at most 20 Artifacts (1 to 20 Artifacts, at most 32 references with Sources)",
+            )
+        # A scoped-only selection is complete without local Artifacts.
+        if not value and not info.data.get("scoped"):
+            raise PydanticCustomError(
+                "evidence_selection_required",
+                "artifacts must select at least 1 Artifact (1 to 20 Artifacts, at most 32 references with Sources)",
             )
         return value
 
@@ -140,7 +141,10 @@ class CreateDreamRunRequest(BaseModel):
                 "evidence_selection_required",
                 "sources or artifacts must select at least 1 reference (at most 32 references in total)",
             )
-        if len(artifacts) + len(value) > 32:
+        # Declared last, so this counts every admitted field including scoped entries
+        # and no field order can bypass the published total.
+        declared = len(artifacts) + len(value) + len(info.data.get("scoped", ()))
+        if declared > 32:
             message = "artifacts and sources must select at most 32 references in total"
             if info.data.get("operation") != "revise_tags":
                 message += " (1 to 20 Artifacts, at most 32 references with Sources)"
@@ -163,9 +167,6 @@ class CreateDreamRunRequest(BaseModel):
         for selection in value:
             if selection.artifact is not None and selection.artifact.family not in admitted:
                 raise DreamError("invalid_artifact_family")
-        declared = len(value) + len(info.data.get("artifacts", ())) + len(info.data.get("sources", ()))
-        if declared > 32:
-            raise DreamError("evidence_limit_exceeded")
         return value
 
     @model_validator(mode="after")
