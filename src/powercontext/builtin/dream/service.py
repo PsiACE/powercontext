@@ -163,7 +163,12 @@ class DreamService:
         async def authorize(ref: EvidenceReference) -> None:
             await self._authorize(scope_id, principal_id, "read", ref)
 
+        async def authorize_origin(origin_scope_id: str, ref: EvidenceReference) -> None:
+            # Read authority is checked at the Scope that owns the evidence.
+            await self._authorize(origin_scope_id, principal_id, "read", ref)
+
         resolver = self.evidence(scope_id, authorize)
+        resolver.authorize_origin = authorize_origin
         resolver.limits = self.budget
         return resolver
 
@@ -213,6 +218,7 @@ class DreamService:
                 connection,
                 sources=request.sources,
                 artifacts=artifacts,
+                scoped=request.scoped,
                 target=target,
                 project=False,
                 lock_memory=True,
@@ -474,6 +480,7 @@ class DreamService:
                 bound,
                 sources=request.sources,
                 artifacts=artifacts,
+                scoped=request.scoped,
                 target=target,
                 include_memory_text=request.operation != "derive_skill",
                 pinned=record.run.input_manifest,

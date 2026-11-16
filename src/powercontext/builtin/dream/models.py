@@ -34,6 +34,7 @@ from powercontext.builtin.catalog_changes.models import TagChangeProposal, TagDr
 from powercontext.builtin.evidence.models import (
     EvidenceLimits,
     EvidenceManifest,
+    ScopedEvidence,
     content_digest,
     reference_key,
     unique_references,
@@ -58,6 +59,24 @@ DreamIntent = Literal["create", "corroborate", "refine", "correct", "derive"]
 DREAM_PROMPT_VERSION = "powercontext.dream.v1.4"
 
 
+# The Families each operation admits as Artifact evidence. A scoped selection is
+# admitted only where the same Family is already admitted locally.
+_EVIDENCE_FAMILIES = {
+    "refine_experience": ("experience", "atomic-memory"),
+    "derive_skill": ("experience",),
+    "revise_skill": ("experience", "atomic-memory", "skill"),
+    "revise_profile": ("experience", "atomic-memory", "profile"),
+    "revise_memory": ("experience", "atomic-memory"),
+    "revise_topic_memory": ("experience", "atomic-memory", "topic-memory"),
+    "refresh_handoff": ("experience", "atomic-memory", "handoff"),
+    "revise_prompt": ("experience", "atomic-memory", "prompt"),
+}
+
+
+def _scoped_key(value: ScopedEvidence) -> str:
+    return value.scope_id + "\x00" + reference_key(value.reference)
+
+
 class DreamError(PowerContextError, ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
@@ -68,6 +87,10 @@ class CreateDreamRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     operation: DreamOperation
+    # Explicitly admitted evidence with its owning Scope. Declared before the local
+    # references because it decides whether a scoped-only selection is complete.
+    # A local run leaves this empty and keeps the exact digest it was accepted with.
+    scoped: tuple[ScopedEvidence, ...] = Field(default=(), validate_default=True, exclude_if=lambda value: not value)
     artifacts: tuple[ArtifactRef, ...] = Field(default=(), validate_default=True)
     sources: tuple[SourceRef, ...] = Field(default=(), validate_default=True)
     target: ArtifactRef | None = None
@@ -86,10 +109,15 @@ class CreateDreamRunRequest(BaseModel):
     def normalize_references(cls, value):
         return tuple(sorted(unique_references(value), key=reference_key))
 
+    @field_validator("scoped")
+    @classmethod
+    def normalize_scoped(cls, value):
+        return tuple(sorted(unique_references(value), key=_scoped_key))
+
     @field_validator("artifacts")
     @classmethod
     def validate_artifact_selection(cls, value, info):
-        if info.data.get("operation") == "revise_tags":
+        if info.data.get("operation") == "revise_tags" or info.data.get("scoped"):
             return value
         if not value:
             raise PydanticCustomError(
@@ -119,6 +147,27 @@ class CreateDreamRunRequest(BaseModel):
             raise PydanticCustomError("evidence_limit_exceeded", message)
         return value
 
+    @field_validator("scoped")
+    @classmethod
+    def validate_scoped_selection(cls, value: tuple[ScopedEvidence, ...], info) -> tuple[ScopedEvidence, ...]:
+        """Admit an external Artifact only in a Family the operation already accepts."""
+
+        if not value:
+            return value
+        operation = info.data.get("operation")
+        if operation == "revise_tags":
+            raise DreamError("invalid_dream_operation")
+        if operation not in _EVIDENCE_FAMILIES:
+            return value
+        admitted = _EVIDENCE_FAMILIES[operation]
+        for selection in value:
+            if selection.artifact is not None and selection.artifact.family not in admitted:
+                raise DreamError("invalid_artifact_family")
+        declared = len(value) + len(info.data.get("artifacts", ())) + len(info.data.get("sources", ()))
+        if declared > 32:
+            raise DreamError("evidence_limit_exceeded")
+        return value
+
     @model_validator(mode="after")
     def validate_selection(self):  # noqa: C901 - bounded validation for each registered operation
         if self.operation == "revise_tags":
@@ -127,20 +176,11 @@ class CreateDreamRunRequest(BaseModel):
             return self
         if self.tag_target is not None:
             raise DreamError("invalid_target")
-        allowed_families = {
-            "refine_experience": {"experience"},
-            "derive_skill": {"experience"},
-            "revise_skill": {"experience", "skill"},
-            "revise_profile": {"experience", "profile"},
-            "revise_memory": {"experience", "atomic-memory"},
-            "revise_topic_memory": {"experience", "topic-memory"},
-            "refresh_handoff": {"experience", "handoff"},
-            "revise_prompt": {"experience", "prompt"},
-        }[self.operation]
-        if self.operation != "derive_skill":
-            allowed_families.add("atomic-memory")
+        allowed_families = set(_EVIDENCE_FAMILIES[self.operation])
         if any(ref.family not in allowed_families for ref in self.artifacts):
             raise DreamError("invalid_artifact_family")
+        # The maintained target is this run Scope's own Artifact; external evidence
+        # supports a revision but never becomes the target identity.
         if self.target is not None and self.target not in self.artifacts:
             raise DreamError("invalid_target")
         if self.operation == "refine_experience" and self.target is not None and self.target.family != "experience":
@@ -187,6 +227,8 @@ class CreateDreamRunRequest(BaseModel):
         return self
 
     def digest(self) -> str:
+        # ``scoped`` is already excluded when empty, so a local request keeps the
+        # exact serialization it was pinned and accepted with.
         return content_digest(self.model_dump_json(exclude={"idempotency_key"}).encode())
 
 

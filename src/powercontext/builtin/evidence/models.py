@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 from typing import Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.errors import PowerContextError
@@ -46,6 +46,42 @@ class EvidenceLimits(BaseModel):
     max_depth: int = Field(default=8, ge=1, le=8)
 
 
+class ScopedEvidence(BaseModel):
+    """One explicitly admitted reference, resolved in the Scope that owns it.
+
+    The reference stays unqualified, exactly as a local selection is, because the
+    owning Scope is the separate field. A local reference and the same reference
+    selected here from another Scope are different inputs.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scope_id: str
+    artifact: ArtifactRef | None = None
+    source: SourceRef | None = None
+    role: Literal["support", "counterexample"] = "support"
+
+    @field_validator("scope_id")
+    @classmethod
+    def validate_scope_id(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("scope_id must be a non-empty trimmed string")  # noqa: TRY003
+        return value
+
+    @model_validator(mode="after")
+    def require_one_reference(self):
+        if (self.artifact is None) == (self.source is None):
+            raise ValueError("scoped evidence must select exactly one Artifact or Source")  # noqa: TRY003
+        return self
+
+    @property
+    def reference(self) -> ArtifactRef | SourceRef:
+        reference = self.source if self.artifact is None else self.artifact
+        if reference is None:
+            raise ValueError("scoped evidence has no reference")  # noqa: TRY003
+        return reference
+
+
 class EvidenceNode(BaseModel):
     """An immutable content digest and its exact provenance, never its body."""
 
@@ -67,6 +103,9 @@ class EvidenceNode(BaseModel):
     digest: str
     source: SourceRef | None = None
     artifact: ArtifactRef | None = None
+    # Set only when the owning Scope differs from the run Scope. It is omitted for a
+    # local node so an existing run keeps the exact manifest and wire shape it had.
+    origin_scope_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     role: Literal["root", "derived", "target", "lineage_only", "unresolved"]
     historical: bool = False
@@ -84,6 +123,8 @@ class RootEvidenceGroup(BaseModel):
 
     group_id: str
     sources: tuple[SourceRef, ...]
+    # Unset for a group of run-Scope Sources; another Scope names its own roots.
+    scope_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     independence: Literal["attested", "unknown"] = "unknown"
 
 
@@ -93,6 +134,7 @@ class EvidenceManifest(BaseModel):
     transform_version: str = EVIDENCE_TRANSFORM_VERSION
     artifacts: tuple[ArtifactRef, ...] = ()
     sources: tuple[SourceRef, ...] = ()
+    scoped: tuple[ScopedEvidence, ...] = Field(default=(), exclude_if=lambda value: not value)
     nodes: tuple[EvidenceNode, ...] = ()
     edges: tuple[EvidenceEdge, ...] = ()
     root_groups: tuple[RootEvidenceGroup, ...] = ()
