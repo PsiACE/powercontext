@@ -3598,41 +3598,158 @@ def test_naming_the_run_scope_keeps_local_evidence_semantics(database: DatabaseC
     asyncio.run(scenario())
 
 
-def test_scoped_selection_counts_against_the_published_reference_budget(database: DatabaseConfig) -> None:
-    """Every admitted field counts, so a scoped entry cannot bypass the caps."""
+def test_known_stored_selection_shape_stays_readable_and_keeps_local_work_runnable(
+    database: DatabaseConfig,
+) -> None:
+    """A run stored by the intermediate head is readable and never starves later work."""
+
+    import json
+
+    from sqlalchemy import select, update
+
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.evidence.models import ScopedEvidence
+    from powercontext.builtin.persistence.tables import DREAM_RUNS_TABLE
+    from powercontext.builtin.records import ArtifactWrite
+
+    async def scenario() -> None:
+        generator = NoChangeGenerator()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=generator,
+        ) as runtime:
+            target = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="t"))
+            ).scope_id
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+            )
+            accepted = await runtime.dream.for_scope(target).create(
+                CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(),
+                    scoped=(ScopedEvidence(scope_id=target, source=local.source_ref),),
+                    idempotency_key="local-selection",
+                )
+            )
+
+            # Rewrite the stored payload into the shape the intermediate head wrote, where
+            # ScopedEvidence carried a "role" that never affected admission or projection.
+            async with runtime._provider.database.transaction() as connection:
+                payload = (
+                    await connection.execute(
+                        select(DREAM_RUNS_TABLE.c.payload).where(
+                            DREAM_RUNS_TABLE.c.scope_id == target,
+                            DREAM_RUNS_TABLE.c.run_id == accepted.run_id,
+                        )
+                    )
+                ).scalar_one()
+                stored = json.loads(payload)
+                stored["request"]["scoped"] = [
+                    {**selection, "role": "support"} for selection in stored["request"]["scoped"]
+                ]
+                await connection.execute(
+                    update(DREAM_RUNS_TABLE)
+                    .where(
+                        DREAM_RUNS_TABLE.c.scope_id == target,
+                        DREAM_RUNS_TABLE.c.run_id == accepted.run_id,
+                    )
+                    .values(payload=json.dumps(stored).encode())
+                )
+
+            # The stored run reads back with its exact origin and reference, and later local
+            # work still reaches a model instead of being starved by the stored shape.
+            restored = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=accepted.run_id))
+            assert restored.status == "queued"
+            artifact = await runtime.records.for_scope(target).create_artifact(
+                "experience",
+                ArtifactWrite(
+                    content={
+                        "situation": "A write timed out.",
+                        "action": "Replay with the same idempotency key.",
+                        "outcome": "No duplicate record was created.",
+                        "lesson": "Retry only with a deduplication contract.",
+                    }
+                ),
+            )
+            queued = await runtime.dream.for_scope(target).create(
+                CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(
+                        ArtifactRef(family="experience", artifact_id=artifact.artifact_id, revision=artifact.revision),
+                    ),
+                    sources=(local.source_ref,),
+                    idempotency_key="after-stored-shape",
+                )
+            )
+            # Bounded drain: the stored run is dispatched first, so later local work must
+            # remain reachable after it instead of being starved.
+            for _ in range(4):
+                await process_pending(runtime)
+                completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=queued.run_id))
+                if completed.terminal:
+                    break
+            assert completed.status == "succeeded", completed.error
+            assert completed.outcome == "no_change", completed.error
+            assert generator.inputs
+
+            listed = await runtime.dream.for_scope(target).list(ListDreamRunsRequest())
+            assert {run.run_id for run in listed.runs} == {accepted.run_id, queued.run_id}
+            legacy = next(run for run in listed.runs if run.run_id == accepted.run_id)
+            assert legacy.input_manifest is not None
+            assert {(selection.scope_id, selection.source.source_id) for selection in legacy.input_manifest.scoped} == {
+                (target, "retry-trace")
+            }
+
+    asyncio.run(scenario())
+
+
+def test_scoped_selection_counts_against_the_published_budgets() -> None:
+    """Every Artifact selection counts toward 20 and every reference toward 32, in any Scope."""
+
+    from pydantic import ValidationError
 
     from powercontext.artifacts import ArtifactRef
 
     scope = "scp_budget"
     ref = ArtifactRef(family="experience", artifact_id="experience-1", revision=1)
-    local_sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(32))
-    scoped = tuple(ScopedEvidence(scope_id=scope, source=item) for item in local_sources)
+    artifacts = tuple(ref.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(21))
+    sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(32))
 
-    from pydantic import ValidationError
+    # A scoped Artifact is an Artifact selection: naming any Scope cannot exceed 20.
+    for selection in (
+        {"scoped": tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts)},
+        {
+            "artifacts": artifacts[:10],
+            "scoped": tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts[10:]),
+        },
+    ):
+        with pytest.raises((ValidationError, DreamError)):
+            CreateDreamRunRequest(operation="refine_experience", idempotency_key="over-artifacts", **selection)
 
-    with pytest.raises(ValidationError) as combined:
+    # A scoped Source is a reference: the published total still holds.
+    with pytest.raises((ValidationError, DreamError)):
         CreateDreamRunRequest(
             operation="refine_experience",
-            scoped=scoped,
-            sources=local_sources,
+            scoped=tuple(ScopedEvidence(scope_id=scope, source=item) for item in sources),
+            sources=sources,
             idempotency_key="over-total",
         )
-    assert any(error["type"] == "evidence_limit_exceeded" for error in combined.value.errors())
 
-    with pytest.raises(ValidationError):
-        CreateDreamRunRequest(
-            operation="refine_experience",
-            artifacts=tuple(ref.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(21)),
-            scoped=(ScopedEvidence(scope_id=scope, artifact=ref),),
-            idempotency_key="over-artifacts",
-        )
-
-    # The published local budget is still exactly 20 Artifacts plus 12 Sources.
+    # The published local budget is still exactly 20 Artifacts plus 12 Sources, and a
+    # scoped-only selection at the same Artifact count is equally usable.
     accepted = CreateDreamRunRequest(
         operation="refine_experience",
-        artifacts=tuple(ref.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(20)),
-        sources=local_sources[:12],
+        artifacts=artifacts[:20],
+        sources=sources[:12],
         idempotency_key="at-the-limit",
     )
-    assert len(accepted.artifacts) == 20
-    assert len(accepted.sources) == 12
+    assert (len(accepted.artifacts), len(accepted.sources)) == (20, 12)
+    qualified = CreateDreamRunRequest(
+        operation="refine_experience",
+        scoped=tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts[:20]),
+        sources=sources[:12],
+        idempotency_key="qualified-at-the-limit",
+    )
+    assert len(qualified.scoped) == 20
