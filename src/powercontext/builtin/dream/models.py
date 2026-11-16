@@ -119,13 +119,18 @@ class CreateDreamRunRequest(BaseModel):
     def validate_artifact_selection(cls, value, info):
         if info.data.get("operation") == "revise_tags":
             return value
-        if len(value) > 20:
+        scoped = info.data.get("scoped", ())
+        # Every Artifact selection counts, whichever Scope owns it: naming the run Scope
+        # is documented as the same selection as a local one, and a future external entry
+        # is the same kind of input. ``scoped`` is declared first so it is visible here.
+        selected = len(value) + sum(1 for item in scoped if item.artifact is not None)
+        if selected > 20:
             raise PydanticCustomError(
                 "evidence_limit_exceeded",
                 "artifacts must select at most 20 Artifacts (1 to 20 Artifacts, at most 32 references with Sources)",
             )
         # A scoped-only selection is complete without local Artifacts.
-        if not value and not info.data.get("scoped"):
+        if not value and not scoped:
             raise PydanticCustomError(
                 "evidence_selection_required",
                 "artifacts must select at least 1 Artifact (1 to 20 Artifacts, at most 32 references with Sources)",
@@ -141,9 +146,8 @@ class CreateDreamRunRequest(BaseModel):
                 "evidence_selection_required",
                 "sources or artifacts must select at least 1 reference (at most 32 references in total)",
             )
-        # Declared last, so this counts every admitted field including scoped entries
-        # and no field order can bypass the published total.
-        declared = len(artifacts) + len(value) + len(info.data.get("scoped", ()))
+        # Published total, independent of field order; see validate_selection.
+        declared = len(artifacts) + len(value)
         if declared > 32:
             message = "artifacts and sources must select at most 32 references in total"
             if info.data.get("operation") != "revise_tags":
@@ -168,6 +172,21 @@ class CreateDreamRunRequest(BaseModel):
             if selection.artifact is not None and selection.artifact.family not in admitted:
                 raise DreamError("invalid_artifact_family")
         return value
+
+    @model_validator(mode="after")
+    def validate_published_budgets(self):
+        """Enforce both published limits over every admitted selection.
+
+        Runs after every field is validated, so no field order decides the count. An
+        Artifact is a local entry or a scoped one in any Scope, since naming the run
+        Scope is documented as the same selection as a local one and a future external
+        entry is the same kind of input.
+        """
+
+        selections = len(self.artifacts) + len(self.sources) + len(self.scoped)
+        if selections > 32:
+            raise DreamError("evidence_limit_exceeded")
+        return self
 
     @model_validator(mode="after")
     def validate_selection(self):  # noqa: C901 - bounded validation for each registered operation
