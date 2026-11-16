@@ -51,9 +51,8 @@ from powercontext.builtin.persistence.share_rules import (
 from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 from powercontext.builtin.scope.application import ScopeApplication
-from powercontext.builtin.scope.errors import ScopeNotFoundError
+from powercontext.builtin.scope.errors import ScopeNotFoundError, ScopeRangeLimitError
 from powercontext.builtin.scope.models import ScopeRangeLimits
-from powercontext.builtin.scope.models import ScopeSelection as ShareSelection
 from powercontext.builtin.scope.repository import ScopeRepository
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
@@ -567,9 +566,17 @@ class ShareRuleService:
         return tuple(ArtifactRef(family=str(row[0]), artifact_id=str(row[1]), revision=int(row[2])) for row in rows)
 
     async def _scope_range(self, rule: ShareRule) -> tuple[str, ...]:
-        """Resolve the rule's structural membership with A's bounded resolver."""
+        """Resolve the rule's structural membership with A's bounded resolver.
 
-        resolved = await self._scopes.resolve_range(rule.selection, limits=self._range_limits(rule))
+        The resolver's own budget refusal is translated here so a caller of this
+        module handles one documented refusal type, whatever refused the range.
+        """
+
+        try:
+            resolved = await self._scopes.resolve_range(rule.selection, limits=self._range_limits(rule))
+        except ScopeRangeLimitError as error:
+            limit = "origins" if error.kind == "nodes" else "depth"
+            raise ShareBudgetExceededError(limit, rule.limits.max_origins, rule.limits.max_origins + 1) from None
         return resolved.scope_ids
 
     @staticmethod
@@ -631,7 +638,7 @@ class ShareRuleService:
             origins, audiences = await self.acceptances.coverage(
                 connection, rule.scope_id, rule.rule_id, rule.version, digest
             )
-        covered = await self._covered_origins(rule, origins)
+        covered = await self._covered_origins(rule, origins, required_origins)
         for origin in required_origins:
             if origin not in covered:
                 raise ShareRuleAcceptanceError(rule.rule_id, rule.version, f"origin:{origin}")
@@ -655,14 +662,18 @@ class ShareRuleService:
                 connection, scope_id, rule_id, rule_version, rule.terms_binding().digest()
             )
             runs = await self.runs.list(connection, scope_id, rule_id=rule_id)
+        used = tuple(sorted({origin for run in runs for origin in run.origin_scopes()}))
+        # Report the covered origins the admission gate would also accept, so a reader
+        # never denies a run this rule version admitted.
+        covered = await self._covered_origins(rule, origins, used)
         return ShareRunCoverage(
             rule_id=rule_id,
             rule_version=rule_version,
             terms_digest=rule.terms_binding().digest(),
-            accepted_origin_scope_ids=origins,
+            accepted_origin_scope_ids=tuple(sorted(covered)),
             accepted_audience_scope_ids=audiences,
             declared_audience_scope_ids=rule.terms.audience_scope_ids,
-            run_origin_scope_ids=tuple(sorted({origin for run in runs for origin in run.origin_scopes()})),
+            run_origin_scope_ids=used,
         )
 
     async def covers_run(self, scope_id: str, run_id: str, /) -> bool:
@@ -676,7 +687,11 @@ class ShareRuleService:
             origins, audiences = await self.acceptances.coverage(
                 connection, scope_id, run.rule_id, run.rule_version, rule.terms_binding().digest()
             )
-        return all(origin in origins for origin in run.origin_scopes()) and all(
+        used = run.origin_scopes()
+        # The same coverage contract as admission: structural selection of the recorded
+        # origins, never a re-enumeration of the tree.
+        covered = await self._covered_origins(rule, origins, used)
+        return all(origin in covered for origin in used) and all(
             audience in audiences for audience in rule.terms.audience_scope_ids
         )
 
@@ -686,25 +701,67 @@ class ShareRuleService:
 
         return tuple(origin for origin in rule.declared_origins() if origin != rule.scope_id)
 
-    async def _covered_origins(self, rule: ShareRule, accepted: tuple[str, ...]) -> set[str]:
-        """Expand accepted ranges into the exact origins they authorise.
+    async def _covered_origins(
+        self, rule: ShareRule, accepted: tuple[str, ...], required_origins: tuple[str, ...]
+    ) -> set[str]:
+        """Decide which of the required origins an accepted declaration covers.
 
-        Accepting a declared range covers the materials that range qualifies now and
-        later, so descendants of an accepted subtree root count as covered while an
-        exact Scope stays exact.
+        This is the single coverage contract for admission, retry and the readers it
+        publishes. It answers about the origins a run actually recorded, never by
+        enumerating the current subtree: an accepted exact Scope covers itself, and an
+        accepted subtree root covers any required origin that is its structural
+        descendant. Unrelated tree growth therefore cannot change the decision for a
+        pinned manifest (finding 2), and the readers agree with the admission gate that
+        published the run (finding 3).
+
+        Coverage here is structural selection only. It grants no authority: reading an
+        origin still needs its own current grant at that origin's Scope.
         """
 
-        covered = set(accepted)
-        root_scope_id = rule.selection.root_scope_id
-        if root_scope_id is not None and root_scope_id in accepted:
-            # An accepted subtree root covers the descendants that root qualifies. This
-            # uses the same bounded resolver and declared limits as discovery, so an
-            # agreement check never loads an unrelated Scope collection.
-            subtree = await self._scopes.resolve_range(
-                ShareSelection(mode="subtree", root_scope_id=root_scope_id),
-                limits=self._range_limits(rule),
-            )
-            covered.update(subtree.scope_ids)
+        covered = {origin for origin in required_origins if origin in accepted}
+        root_scope_ids = tuple(
+            origin for origin in accepted if origin == rule.selection.root_scope_id or origin in rule.exact_scope_ids
+        )
+        if root_scope_ids:
+            covered.update(await self._descendants_among(root_scope_ids, required_origins, rule))
+        return covered
+
+    async def _descendants_among(
+        self, ancestors: tuple[str, ...], candidates: tuple[str, ...], rule: ShareRule
+    ) -> set[str]:
+        """Report which candidates sit under an accepted structural root.
+
+        Traversal walks parent edges upward from each pinned origin, so its cost is
+        bounded by the pinned origins and the declared depth, not by the size of the
+        tree. A candidate deeper than the declared depth is simply not covered.
+        """
+
+        pending = {candidate for candidate in candidates if candidate not in ancestors}
+        if not pending:
+            return set()
+        covered: set[str] = set()
+        async with self._database.transaction() as connection:
+            for _ in range(_MAX_SCOPE_DEPTH):
+                if not pending:
+                    break
+                matched: set[str] = set()
+                reached: set[str] = set()
+                for scope_id in tuple(pending):
+                    descriptor = await self._scope_repository.get(connection, scope_id)
+                    parent = None if descriptor is None else descriptor.parent_scope_id
+                    if parent is None:
+                        continue
+                    if parent in ancestors:
+                        matched.add(scope_id)
+                    else:
+                        reached.add(parent)
+                covered.update(matched)
+                pending -= matched
+                # Continue only through the parents of still-unresolved candidates.
+                if not reached or not (reached - set(ancestors)):
+                    break
+                pending = reached
+                candidates = tuple(reached)
         return covered
 
     async def _require_scope(self, connection: AsyncConnection, scope_id: str) -> None:

@@ -251,20 +251,38 @@ class ShareRunRepository:
         return tuple(_run(stored) for stored in await connection.scalars(statement))
 
     async def create(self, connection: AsyncConnection, run: ShareRun, /) -> ShareRun:
-        await connection.execute(
-            insert(SHARE_RUNS_TABLE).values(
-                scope_id=run.scope_id,
-                run_id=run.run_id,
-                rule_id=run.rule_id,
-                rule_version=run.rule_version,
-                state=run.state,
-                outcome=run.outcome,
-                notification_key=run.notification_key,
-                manifest_digest=run.digest(),
-                created_at=ticks(run.created_at),
-                payload=_run_payload(run),
+        """Insert one pinned evaluation, normalizing a duplicate notification key.
+
+        A caller that loses the `(scope_id, rule_id, notification_key)` race returns the
+        evaluation already recorded for that key, so duplicate delivery converges on one
+        durable run instead of raising a raw constraint error. An unrelated integrity
+        failure is re-raised unchanged.
+        """
+
+        try:
+            await connection.execute(
+                insert(SHARE_RUNS_TABLE).values(
+                    scope_id=run.scope_id,
+                    run_id=run.run_id,
+                    rule_id=run.rule_id,
+                    rule_version=run.rule_version,
+                    state=run.state,
+                    outcome=run.outcome,
+                    notification_key=run.notification_key,
+                    manifest_digest=run.digest(),
+                    created_at=ticks(run.created_at),
+                    payload=_run_payload(run),
+                )
             )
-        )
+        except IntegrityError:
+            stored = (
+                None
+                if run.notification_key is None
+                else await self.notification(connection, run.scope_id, run.rule_id, run.notification_key)
+            )
+            if stored is None:
+                raise
+            return stored
         return run
 
     async def replace(

@@ -693,8 +693,10 @@ def test_identical_acceptance_returns_the_stored_record_and_changed_coverage_con
                 rule.rule_id, 1, "origin", actor="second-admin", covered_scope_ids=(outsider.scope_id,)
             )
             assert second.acceptance_id != first.acceptance_id
-            recorded = await sharing.coverage(rule.rule_id, 1)
-            assert recorded.accepted_origin_scope_ids == tuple(sorted((origin, outsider.scope_id)))
+            # The accepted rows compose across actors. Only Scopes this version
+            # declares are recorded, and coverage never widens past them.
+            accepted = {scope_id for row in await sharing.agree(rule.rule_id, 1) for scope_id in row.covered_scope_ids}
+            assert accepted == {origin, outsider.scope_id}
 
     import asyncio
 
@@ -876,6 +878,157 @@ def test_concurrent_identical_acceptance_returns_the_single_stored_record(tmp_pa
             stored = await sharing.agree(rule.rule_id, 1)
             assert len(stored) == 1
             assert stored[0].acceptance_id == results[0].acceptance_id
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_tree_growth_outside_a_pinned_manifest_does_not_refuse_its_retry(tmp_path: Path) -> None:
+    """A retry reads its own manifest; unrelated structural growth is a resolve concern."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "growth.db")) as runtime:
+            project = await scopes_of(runtime).create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
+            first = await scopes_of(runtime).create(
+                ScopeDraft(title="C1", summary="s", parent_scope_id=project.scope_id, idempotency_key="c1")
+            )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            await runtime.sources.for_scope(first.scope_id).capture(
+                CaptureSource(source_id="fact", content="Pinned fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=project.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(
+                        use="project-conclusion",
+                        audience="project-members",
+                        audience_scope_ids=(target.scope_id,),
+                    ),
+                    limits=ShareRunLimits(max_origins=2),
+                )
+            )
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (first.scope_id,)
+            assert await sharing.covers_run(run.run_id)
+            assert (await sharing.coverage(rule.rule_id, 1)).origins_covered
+
+            retried = await sharing.retry(run.run_id)
+            assert retried.retry_of == run.run_id and retried.digest() == run.digest()
+
+            # Growth beyond the origin budget is a new-selection concern only.
+            for index in range(2):
+                extra = await scopes_of(runtime).create(
+                    ScopeDraft(
+                        title=f"X{index}",
+                        summary="s",
+                        parent_scope_id=project.scope_id,
+                        idempotency_key=f"x{index}",
+                    )
+                )
+                await runtime.sources.for_scope(extra.scope_id).capture(
+                    CaptureSource(source_id=f"x{index}", content="Unrelated.", metadata={})
+                )
+
+            # The recorded manifest is still retryable and still covered.
+            assert (await sharing.retry(run.run_id)).digest() == run.digest()
+            assert await sharing.covers_run(run.run_id)
+            # A brand-new selection is refused for exceeding the agreed origin budget.
+            with pytest.raises(ShareBudgetExceededError):
+                await sharing.resolve(rule.rule_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_subtree_admission_and_its_reader_agree(tmp_path: Path) -> None:
+    """The readers D publishes must confirm the run D itself admitted."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "reader.db")) as runtime:
+            project = await scopes_of(runtime).create(ScopeDraft(title="P", summary="s", idempotency_key="p"))
+            child = await scopes_of(runtime).create(
+                ScopeDraft(title="C", summary="s", parent_scope_id=project.scope_id, idempotency_key="c")
+            )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            await runtime.sources.for_scope(child.scope_id).capture(
+                CaptureSource(source_id="child-fact", content="Child fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=project.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            # The plain documented agreement: the root and the target, no explicit
+            # descendant coverage.
+            await agree(sharing, rule.rule_id)
+
+            run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (child.scope_id,)
+
+            coverage = await sharing.coverage(rule.rule_id, 1)
+            assert coverage.origins_covered
+            assert coverage.audiences_covered
+            assert child.scope_id in coverage.accepted_origin_scope_ids
+            assert await sharing.covers_run(run.run_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_notification_delivery_converges_on_one_durable_run(tmp_path: Path) -> None:
+    """Duplicate delivery of one notification must not escape as a driver error.
+
+    Two deliveries are held between the idempotency read and the insert through the
+    public origin authorizer, so both reach the unique key instead of the driver
+    serializing them. The losing caller must still return the recorded run.
+    """
+
+    async def scenario() -> None:
+        holders: list[asyncio.Event] = []
+        both_held = asyncio.Event()
+        released = asyncio.Event()
+
+        async def hold(scope_id: str, ref: object) -> None:
+            gate = asyncio.Event()
+            holders.append(gate)
+            if len(holders) == 2:
+                # Both callers have passed the idempotency read.
+                for holder in holders:
+                    holder.set()
+                both_held.set()
+            await gate.wait()
+            await released.wait()
+
+        async with sharing_runtime(tmp_path / "notify.db", authorize_origin=hold) as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+
+            pending = [
+                asyncio.create_task(sharing.resolve(rule.rule_id, notification_key="publish:one")) for _ in range(2)
+            ]
+            async with asyncio.timeout(20):
+                await both_held.wait()
+            released.set()
+            results = await asyncio.gather(*pending)
+
+            assert len({run.run_id for run in results}) == 1
+            recorded = await sharing.list_runs(rule_id=rule.rule_id)
+            assert len(recorded) == 1
+            assert recorded[0].run_id == results[0].run_id
+            assert recorded[0].digest() == results[0].digest()
 
     import asyncio
 
