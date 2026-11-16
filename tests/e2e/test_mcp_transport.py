@@ -278,6 +278,7 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
         "revise_candidate",
         "search_artifacts",
         "search_atomic_memory",
+        "search_cross_scope_artifacts",
         "search_memory",
         "search_topic_memory",
         "set_scope_binding",

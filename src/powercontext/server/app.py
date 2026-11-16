@@ -541,6 +541,8 @@ from powercontext.http import (
     CreateSubjectSourceRequest,
     CreateSubjectSourceResponse,
     CreateWorkContractRequest,
+    CrossScopeArtifactQueryRequest,
+    CrossScopeArtifactQueryResponse,
     DownloadRemoteSkillPackageRequest,
     DreamRun,
     DreamRunPage,
@@ -912,6 +914,7 @@ from powercontext.http._generated.operations import (
     REVOKE_REMOTE_SKILL_TARGET,
     SCAN_EXTERNAL_SKILLS,
     SEARCH_ARTIFACTS,
+    SEARCH_CROSS_SCOPE_ARTIFACTS,
     SEARCH_MEMORY,
     SEARCH_TOPIC_MEMORY,
     SET_DEFAULT_SCOPE,
@@ -1662,6 +1665,7 @@ def create_app(
     _add_route(app, RETRY_TOPIC_MEMORY_PROCESSING, retry_topic_memory_processing)
     _add_route(app, SEARCH_TOPIC_MEMORY, search_topic_memory)
     _add_route(app, SEARCH_ARTIFACTS, search_artifacts)
+    _add_route(app, SEARCH_CROSS_SCOPE_ARTIFACTS, search_cross_scope_artifacts)
     _add_route(app, GET_TOPIC_MEMORY, get_topic_memory)
     _add_route(app, REGISTER_SOURCE_DEFINITION, register_source_definition)
     _add_route(app, GET_CONNECTOR_CHECKPOINT, get_connector_checkpoint)
@@ -3185,6 +3189,66 @@ async def list_artifacts(
         items=[_artifact_collection_item_response(item) for item in result.items],
         next_cursor=result.next_cursor,
     )
+
+
+async def search_cross_scope_artifacts(
+    scope_id: _ScopePathId,
+    request: CrossScopeArtifactQueryRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
+) -> CrossScopeArtifactQueryResponse:
+    """Aggregate one Family's own search over the caller's explicit origin list.
+
+    Per-origin authorization, coverage classification and the candidate budget belong to the
+    runtime query service. This boundary derives the invocation context from the authenticated
+    request only: a payload can never assert its principal, access decision, or trusted-local
+    standing, and no origin is authorized from Scope membership or a reference.
+    """
+
+    from powercontext.builtin.runtime.cross_scope_query import CrossScopeQueryRequest
+
+    cross_scope = getattr(application, "cross_scope", None)
+    if cross_scope is None:
+        raise ArtifactSearchUnsupported(request.family, field="family")
+    access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
+    execution_context = ArtifactSearchExecutionContext(
+        principal=_require_principal() if access is not None else None,
+        access=access,
+        audit=_access_audit_context(SEARCH_CROSS_SCOPE_ARTIFACTS.operation_id),
+        trusted_local=access is None and http_request.app.state.access_mode == "disabled",
+    )
+    # The wire contract carries origins as a list; the domain request models them as an ordered
+    # tuple so the declared order is preserved and immutable. Translate only that shape here.
+    result = await cross_scope.for_scope(scope_id).search(
+        CrossScopeQueryRequest(
+            family=request.family,
+            payload=request.payload,
+            scopes=tuple(scope.root for scope in request.scopes),
+            limit=request.limit,
+            max_scopes=request.max_scopes,
+            max_candidates=request.max_candidates,
+            coverage=request.coverage.value,
+            restrict_to=None
+            if request.restrict_to is None
+            else ArtifactRef(
+                family=request.restrict_to.family,
+                artifact_id=request.restrict_to.artifact_id,
+                revision=request.restrict_to.revision,
+            ),
+        ),
+        execution_context=execution_context,
+    )
+    return CrossScopeArtifactQueryResponse.model_validate({
+        "hits": [
+            {
+                "origin": hit.origin.model_dump(mode="json"),
+                "origin_rank": hit.origin_rank,
+                **({} if hit.retrieval_score is None else {"retrieval_score": hit.retrieval_score}),
+            }
+            for hit in result.hits
+        ],
+        "coverage": result.coverage.model_dump(mode="json"),
+    })
 
 
 async def get_topic_memory_processing_status(
@@ -6781,6 +6845,31 @@ def _set_error_headers(response: Response, error: Exception) -> None:
         response.headers["WWW-Authenticate"] = "Bearer"
 
 
+def _map_cross_scope_query_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
+    """Map the cross-Scope query's admission refusals to their stable public codes."""
+
+    from powercontext.builtin.runtime.cross_scope_query import (
+        CrossScopeQueryBoundsError,
+        CrossScopeQueryUnsupported,
+    )
+
+    if isinstance(error, CrossScopeQueryBoundsError):
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "cross_scope_query_bounds",
+            "The requested range or budget cannot be enforced for a complete query.",
+            {"field": error.field, "detail": error.detail},
+        )
+    if isinstance(error, CrossScopeQueryUnsupported):
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "cross_scope_query_not_supported",
+            "The requested restriction cannot be applied to the searchable projection.",
+            {"field": error.field, "detail": error.detail},
+        )
+    return None
+
+
 def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
     if isinstance(error, PluginCallError):
         return error.status, error.code, error.message, error.details
@@ -6802,6 +6891,9 @@ def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
             "The Artifact search capability is unavailable.",
             None if error.field is None else {"field": error.field},
         )
+    cross_scope_error = _map_cross_scope_query_error(error)
+    if cross_scope_error is not None:
+        return cross_scope_error
     if isinstance(error, CodeError):
         return error.status, error.code, "The code query could not be completed.", None
     access_error = _map_access_error(error)
