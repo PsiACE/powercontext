@@ -23,7 +23,7 @@ from typing import Any, TypeAlias, cast
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import Artifact, ArtifactLineage, ArtifactRef
+from powercontext.artifacts import Artifact, ArtifactLineage, ArtifactRef, RecordedOrigin
 from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemory,
     AtomicMemoryContent,
@@ -179,6 +179,38 @@ class ReviewService:
             reason=reason,
             candidate_id=candidate_id,
             on_commit=on_commit,
+        )
+        return _experience_candidate(candidate)
+
+    async def propose_experience_from_origins(
+        self,
+        proposal: ExperienceContent,
+        /,
+        *,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        origins: tuple[RecordedOrigin, ...],
+        target: ArtifactRef | None,
+        reason: str | None,
+        candidate_id: str | None = None,
+    ) -> Candidate[ExperienceContent]:
+        """Record the full admitted origin set beside the citations of one proposal.
+
+        ``sources``/``artifacts`` are what the proposal cites; ``origins`` is what was
+        admitted, so an origin the author did not cite still binds the pending commit.
+        """
+
+        if not origins:
+            raise InvalidCandidateError("origins", "at least one admitted origin is required")
+        candidate = await self._propose(
+            Experience.family,
+            proposal,
+            sources=sources,
+            artifacts=artifacts,
+            target=target,
+            reason=reason,
+            candidate_id=candidate_id,
+            origins=origins,
         )
         return _experience_candidate(candidate)
 
@@ -346,9 +378,11 @@ class ReviewService:
         reason: str | None,
         candidate_id: str | None = None,
         on_commit: CandidateCommitHook | None = None,
+        origins: tuple[RecordedOrigin, ...] = (),
     ) -> ReviewedCandidate:
         canonical_sources = _unique_sources(sources)
         canonical_artifacts = _unique_artifacts(artifacts)
+        canonical_origins = _validate_origins(self._scope_id, origins)
         _validate_reason(reason)
         async with self._connection() as connection:
             candidate = await self._propose_with_connection(
@@ -361,6 +395,7 @@ class ReviewService:
                 reason=reason,
                 candidate_id=candidate_id,
                 on_commit=on_commit,
+                origins=canonical_origins,
             )
         return _reviewed_candidate(candidate)
 
@@ -377,6 +412,7 @@ class ReviewService:
         reason: str | None,
         candidate_id: str | None = None,
         on_commit: CandidateCommitHook | None = None,
+        origins: tuple[RecordedOrigin, ...] = (),
     ) -> ReviewedCandidate:
         candidate = await self._prepare_proposal(
             connection,
@@ -387,6 +423,7 @@ class ReviewService:
             target=target,
             reason=reason,
             candidate_id=candidate_id,
+            origins=origins,
         )
         candidate = (await self._candidates.create_many(connection, self._scope_id, (candidate,)))[0]
         if on_commit is not None:
@@ -404,6 +441,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        origins: tuple[RecordedOrigin, ...] = (),
     ) -> Candidate[Any]:
         _validate_reason(reason)
         artifacts = _unique_artifacts(artifacts)
@@ -427,6 +465,7 @@ class ReviewService:
             artifacts=artifacts,
             target=target,
             reason=reason,
+            origins=origins,
         )
 
     async def candidate_page(self, request, *, metadata_only=False, connection=None):
@@ -1382,12 +1421,36 @@ def _candidate_draft(candidate: ReviewedCandidate) -> ReviewedDraft:
         "content": candidate.proposal,
         "sources": candidate.sources,
         "artifacts": candidate.artifacts,
+        # A committed revision keeps every admitted origin, not only the cited subset.
+        "origins": candidate.origins,
     }
     if candidate.family == Experience.family and isinstance(candidate.proposal, ExperienceContent):
         return ExperienceDraft.model_validate(values)
     if candidate.family == Skill.family and isinstance(candidate.proposal, SkillContent):
         return SkillDraft.model_validate(values)
     raise InvalidCandidateError("family", candidate.family)
+
+
+def _validate_origins(scope_id: str, origins: tuple[RecordedOrigin, ...]) -> tuple[RecordedOrigin, ...]:
+    """Bind the full admitted origin set before any Candidate write.
+
+    Refuses an origin that is really a local reference, and one that repeats an
+    already admitted origin, so a pending commit cannot hold a narrower or ambiguous
+    origin binding. Equal digests are not merged: only an attestation could claim a
+    shared original, and none is recorded here.
+    """
+
+    if not origins:
+        return ()
+    seen: set[tuple[str, str]] = set()
+    for origin in origins:
+        if origin.scope_id == scope_id:
+            raise InvalidCandidateError("origins", "a local reference is not an admitted origin")
+        key = (origin.scope_id, origin.reference.model_dump_json())
+        if key in seen:
+            raise InvalidCandidateError("origins", "an admitted origin is recorded twice")
+        seen.add(key)
+    return origins
 
 
 def _unique_sources(values: tuple[SourceRef, ...]) -> tuple[SourceRef, ...]:

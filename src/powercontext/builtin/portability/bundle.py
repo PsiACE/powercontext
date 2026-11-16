@@ -2446,7 +2446,7 @@ def _validate_skill_package_dependency(
         content = _decoded_bytes_json(record.payload["content"], "Skill content")
     elif record.record_type == "candidate_version" and record.payload["family"] == "skill":
         try:
-            proposal, _audit = decode_candidate_proposal_envelope(
+            proposal, _audit, _origins = decode_candidate_proposal_envelope(
                 cast(bytes, _database_value(record.payload["proposal"]))
             )
         except InvalidStoredPayloadError as error:

@@ -25,7 +25,7 @@ from sqlalchemy import case, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactRef, RecordedOrigin
 from powercontext.builtin.evidence.models import content_digest
 from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes
 from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError, InvalidStoredPayloadError
@@ -56,6 +56,10 @@ class _SourceRefs(RootModel[tuple[SourceRef, ...]]):
 
 
 class _ArtifactRefs(RootModel[tuple[ArtifactRef, ...]]):
+    pass
+
+
+class _OriginRefs(RootModel[tuple[RecordedOrigin, ...]]):
     pass
 
 
@@ -433,7 +437,9 @@ class CandidateRepository:
             raise InvalidCandidateError("family", family)
         target_family = row["target_family"]
         result_family = row["result_family"]
-        proposal_payload, audit = decode_candidate_proposal_envelope(stored_bytes(row["proposal"], column="proposal"))
+        proposal_payload, audit, origins = decode_candidate_proposal_envelope(
+            stored_bytes(row["proposal"], column="proposal")
+        )
         proposal = load_model(proposal_type, proposal_payload, kind="candidate-proposal", name=family)
         return Candidate(
             candidate_id=str(row["candidate_id"]),
@@ -441,6 +447,7 @@ class CandidateRepository:
             family=family,
             status=CandidateStatus(str(row["status"])),
             proposal=proposal,
+            origins=origins,
             sources=load_model(
                 _SourceRefs,
                 stored_bytes(row["source_refs"], column="source_refs"),
@@ -495,30 +502,45 @@ def proposal_digest(proposal: BaseModel) -> str:
 
 
 def _encode_proposal(candidate: Candidate[Any]) -> bytes:
-    if candidate.audit is None:
+    # The envelope carries the admitted origin set beside the family proposal, so a
+    # Candidate binds them without a schema column and an existing local row keeps the
+    # exact bytes it was written with.
+    version = 2 if candidate.origins else 1
+    if candidate.audit is None and not candidate.origins:
         return dump_model(candidate.proposal, kind="candidate-proposal", name=candidate.family)
     return json.dumps(
         {
-            "candidate_payload_version": 1,
+            "candidate_payload_version": version,
             "proposal": candidate.proposal.model_dump(mode="json"),
-            "audit": candidate.audit.model_dump(mode="json"),
+            **({"audit": candidate.audit.model_dump(mode="json")} if candidate.audit is not None else {}),
+            **(
+                {"origins": [origin.model_dump(mode="json") for origin in candidate.origins]}
+                if candidate.origins
+                else {}
+            ),
         },
         ensure_ascii=False,
     ).encode()
 
 
-def decode_candidate_proposal_envelope(payload: bytes, /) -> tuple[bytes, CandidateAudit | None]:
+def decode_candidate_proposal_envelope(
+    payload: bytes, /
+) -> tuple[bytes, CandidateAudit | None, tuple[RecordedOrigin, ...]]:
     """Unwrap persisted proposal provenance without changing the family-owned payload."""
 
     try:
         decoded = json.loads(payload)
-        if isinstance(decoded, dict) and decoded.get("candidate_payload_version") == 1:
-            return json.dumps(decoded["proposal"], ensure_ascii=False).encode(), CandidateAudit.model_validate(
-                decoded["audit"]
+        if isinstance(decoded, dict) and decoded.get("candidate_payload_version") in {1, 2}:
+            audit = decoded.get("audit")
+            origins = decoded.get("origins", ())
+            return (
+                json.dumps(decoded["proposal"], ensure_ascii=False).encode(),
+                None if audit is None else CandidateAudit.model_validate(audit),
+                tuple(RecordedOrigin.model_validate(origin) for origin in origins),
             )
     except (KeyError, ValueError, TypeError) as error:
         raise InvalidStoredPayloadError("candidate-proposal", "envelope", "invalid proposal envelope") from error
-    return payload, None
+    return payload, None, ()
 
 
 async def attach_candidate_audit(

@@ -20,6 +20,8 @@ from powercontext.artifacts.models import (
     ArtifactDraft,
     ArtifactLineage,
     ArtifactRef,
+    RecordedOrigin,
+    SourceAddress,
     StableHandle,
 )
 from powercontext.artifacts.protocols import ArtifactCatalog, ArtifactStore
@@ -52,5 +54,7 @@ __all__ = [
     "ArtifactSearcher",
     "ArtifactStore",
     "ChannelScore",
+    "RecordedOrigin",
+    "SourceAddress",
     "StableHandle",
 ]
