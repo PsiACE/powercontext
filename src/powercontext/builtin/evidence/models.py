@@ -61,6 +61,26 @@ class ScopedEvidence(BaseModel):
     artifact: ArtifactRef | None = None
     source: SourceRef | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_known_legacy_shape(cls, value):
+        """Read the one intermediate persisted shape this field set once wrote.
+
+        An unmerged intermediate revision stored a ``role`` on every selection. That
+        value never changed admission or projection, so it is dropped here instead of
+        being restored as public input: a stored run stays readable, and no caller can
+        set a role again. Any other unknown field, and any other role value, still
+        fails, so a payload with an unknown meaning is never silently reinterpreted.
+        """
+
+        if isinstance(value, dict) and "role" in value:
+            normalized = dict(value)
+            role = normalized.pop("role")
+            if role not in {"support", "counterexample"}:
+                raise ValueError("stored ScopedEvidence role is not recognized")  # noqa: TRY003
+            return normalized
+        return value
+
     @field_validator("scope_id")
     @classmethod
     def validate_scope_id(cls, value: str) -> str:
