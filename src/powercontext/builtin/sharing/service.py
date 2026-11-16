@@ -56,6 +56,7 @@ from powercontext.builtin.scope.models import ScopeRangeLimits
 from powercontext.builtin.scope.repository import ScopeRepository
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
+    ShareAcceptanceContribution,
     ShareAcceptanceSide,
     ShareBudgetExceededError,
     ShareInput,
@@ -69,6 +70,7 @@ from powercontext.builtin.sharing.models import (
     ShareRun,
     ShareRunCoverage,
     ShareRunNotFoundError,
+    ShareRunOriginCoverage,
     ShareRunOutcome,
     ShareRunStateError,
     ShareSourceWatermark,
@@ -715,6 +717,75 @@ class ShareRuleService:
             run_origin_scope_ids=used,
         )
 
+    async def run_origin_coverage(self, scope_id: str, run_id: str, /) -> ShareRunOriginCoverage:
+        """Report which acceptance records cover one pinned run's actual origins.
+
+        This is per run on purpose: a consumer needs the consent applying to this
+        manifest, not the union of every historical run's origins. Each recorded origin
+        is paired with the acceptance rows whose own contributed origins include it, so
+        an unrelated accepted Scope cannot appear to authorize an origin it never
+        covered.
+        """
+
+        async with self._database.transaction() as connection:
+            run = await self._require_run(connection, scope_id, run_id)
+            rule = await self.rules.version(connection, scope_id, run.rule_id, run.rule_version)
+            if rule is None:
+                raise ShareRuleNotFoundError(scope_id, run.rule_id, run.rule_version)
+            digest = rule.terms_binding().digest()
+            records = await self.acceptances.for_terms(connection, scope_id, run.rule_id, run.rule_version, digest)
+            _, audiences = await self.acceptances.coverage(connection, scope_id, run.rule_id, run.rule_version, digest)
+        used = run.origin_scopes()
+        by_origin: dict[str, list[str]] = {origin: [] for origin in used}
+        for record in records:
+            if record.side != "origin":
+                continue
+            contributed = await self._contributed_origins(rule, record.covered_scope_ids, used)
+            for origin in sorted(contributed):
+                by_origin[origin].append(record.acceptance_id)
+        covered = tuple(origin for origin in used if by_origin[origin])
+        uncovered = tuple(origin for origin in used if not by_origin[origin])
+        return ShareRunOriginCoverage(
+            run_id=run_id,
+            rule_id=run.rule_id,
+            rule_version=run.rule_version,
+            terms_digest=digest,
+            run_origin_scope_ids=used,
+            covered_origin_scope_ids=covered,
+            uncovered_origin_scope_ids=uncovered,
+            acceptance_ids_by_origin=tuple((origin, tuple(sorted(set(by_origin[origin])))) for origin in used),
+            declared_audience_scope_ids=rule.terms.audience_scope_ids,
+            accepted_audience_scope_ids=audiences,
+        )
+
+    async def acceptance_contribution(
+        self, scope_id: str, rule_id: str, rule_version: int, acceptance_id: str, /
+    ) -> ShareAcceptanceContribution:
+        """Report the origins one authoritative acceptance record contributes.
+
+        The stored row is unchanged: its `covered_scope_ids`, identity and digest stay
+        authoritative, and this reports only what those Scopes effectively contribute
+        for the rule version.
+        """
+
+        async with self._database.transaction() as connection:
+            rule = await self.rules.version(connection, scope_id, rule_id, rule_version)
+            if rule is None:
+                raise ShareRuleNotFoundError(scope_id, rule_id, rule_version)
+            record = await self.acceptances.get(connection, scope_id, acceptance_id)
+            if record is None or record.rule_id != rule_id or record.version != rule_version:
+                raise ShareRuleNotFoundError(scope_id, rule_id, rule_version)
+            declared = tuple(origin for origin in rule.declared_origins() if origin != rule.scope_id)
+            contributed = await self._contributed_origins(rule, record.covered_scope_ids, declared)
+        return ShareAcceptanceContribution(
+            acceptance_id=record.acceptance_id,
+            actor=record.actor,
+            side=record.side,
+            terms_digest=record.terms_digest,
+            covered_scope_ids=record.covered_scope_ids,
+            contributed_origin_scope_ids=tuple(sorted(contributed)),
+        )
+
     async def covers_run(self, scope_id: str, run_id: str, /) -> bool:
         """Confirm one recorded run's actual origins are inside the accepted agreement."""
 
@@ -767,6 +838,19 @@ class ShareRuleService:
             return covered
         covered.update(await self._descendants_among(root_scope_id, required_origins, rule))
         return covered
+
+    async def _contributed_origins(
+        self, rule: ShareRule, covered_scope_ids: tuple[str, ...], candidates: tuple[str, ...]
+    ) -> set[str]:
+        """Return the origins one acceptance row's own Scopes contribute.
+
+        A record contributes exactly what its own Scopes cover: a declared structural
+        root among them also covers their descendants, and every other Scope covers
+        itself. Rows are evaluated independently so a consumer can tell which actor's
+        consent applies to which origin.
+        """
+
+        return await self._covered_origins(rule, tuple(covered_scope_ids), candidates)
 
     async def _descendants_among(self, root_scope_id: str, candidates: tuple[str, ...], rule: ShareRule) -> set[str]:
         """Report which of the original candidates are structural descendants of the root.

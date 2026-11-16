@@ -1120,3 +1120,76 @@ def test_an_exact_extra_scope_covers_only_itself(tmp_path: Path) -> None:
     import asyncio
 
     asyncio.run(scenario())
+
+
+def test_per_run_coverage_names_only_the_records_that_cover_this_run(tmp_path: Path) -> None:
+    """A consumer must see whose consent applies to this run, not an unrelated scope's.
+
+    The rule selects a subtree root plus an exact extra Scope outside it. Only the
+    extra Scope holds material, so only its acceptance covers this run; the accepted
+    subtree root is irrelevant to it and must not appear as a contributor.
+    """
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "per-run.db")) as runtime:
+            alice_root = await scopes_of(runtime).create(
+                ScopeDraft(title="AliceRoot", summary="s", idempotency_key="ar")
+            )
+            bob = await scopes_of(runtime).create(ScopeDraft(title="Bob", summary="s", idempotency_key="b"))
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            await runtime.sources.for_scope(bob.scope_id).capture(
+                CaptureSource(source_id="bob-fact", content="Bob's own fact.", metadata={})
+            )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=alice_root.scope_id),
+                    exact_scope_ids=(bob.scope_id,),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            alice = await sharing.accept(
+                rule.rule_id, 1, "origin", actor="alice-admin", covered_scope_ids=(alice_root.scope_id,)
+            )
+            bob_record = await sharing.accept(
+                rule.rule_id, 1, "origin", actor="bob-admin", covered_scope_ids=(bob.scope_id,)
+            )
+            await sharing.accept(rule.rule_id, 1, "target", actor="target-owner")
+
+            run = await sharing.resolve(rule.rule_id)
+            assert run.origin_scopes() == (bob.scope_id,)
+
+            per_run = await sharing.run_origin_coverage(run.run_id)
+            assert per_run.run_origin_scope_ids == (bob.scope_id,)
+            assert per_run.covered_origin_scope_ids == (bob.scope_id,)
+            assert per_run.uncovered_origin_scope_ids == ()
+            # Only Bob's record contributes this origin; Alice's subtree root does not.
+            assert per_run.acceptance_ids_for(bob.scope_id) == (bob_record.acceptance_id,)
+            assert per_run.origins_covered and per_run.audiences_covered
+            assert alice.acceptance_id not in per_run.acceptance_ids_for(bob.scope_id)
+
+            # Each authoritative record reports its own contribution, row unchanged.
+            bob_contribution = await sharing.acceptance_contribution(rule.rule_id, 1, bob_record.acceptance_id)
+            assert bob_contribution.covered_scope_ids == (bob.scope_id,)
+            assert bob_contribution.contributed_origin_scope_ids == (bob.scope_id,)
+            assert bob_contribution.acceptance_id == bob_record.acceptance_id
+            # Alice's record contributes her declared root (and its descendants), never Bob.
+            alice_contribution = await sharing.acceptance_contribution(rule.rule_id, 1, alice.acceptance_id)
+            assert alice_contribution.contributed_origin_scope_ids == (alice_root.scope_id,)
+            assert bob.scope_id not in alice_contribution.contributed_origin_scope_ids
+
+            # An unrelated accepted root does not make Bob's origin covered by Alice.
+            alice_material = await runtime.sources.for_scope(alice_root.scope_id).capture(
+                CaptureSource(source_id="alice-fact", content="Alice's own fact.", metadata={})
+            )
+            assert alice_material.sequence == 1
+            grew = await sharing.resolve(rule.rule_id)
+            assert set(grew.origin_scopes()) == {alice_root.scope_id, bob.scope_id}
+            coverage = await sharing.run_origin_coverage(grew.run_id)
+            assert coverage.acceptance_ids_for(alice_root.scope_id) == (alice.acceptance_id,)
+            assert coverage.acceptance_ids_for(bob.scope_id) == (bob_record.acceptance_id,)
+
+    import asyncio
+
+    asyncio.run(scenario())

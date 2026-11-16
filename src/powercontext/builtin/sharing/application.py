@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
+    ShareAcceptanceContribution,
     ShareAcceptanceSide,
     ShareRule,
     ShareRuleDraft,
@@ -33,6 +34,7 @@ from powercontext.builtin.sharing.models import (
     ShareRuleStatus,
     ShareRun,
     ShareRunCoverage,
+    ShareRunOriginCoverage,
     ShareRunOutcome,
 )
 from powercontext.builtin.sources import validate_scope_id
@@ -119,6 +121,18 @@ class ScopedShareApplication:
         service = self._service()
         async with self._runtime._scoped_operation(self.scope_id):
             return await service.coverage(self.scope_id, rule_id, version)
+
+    async def run_origin_coverage(self, run_id: str, /) -> ShareRunOriginCoverage:
+        service = self._service()
+        async with self._runtime._scoped_operation(self.scope_id):
+            return await service.run_origin_coverage(self.scope_id, run_id)
+
+    async def acceptance_contribution(
+        self, rule_id: str, version: int, acceptance_id: str, /
+    ) -> ShareAcceptanceContribution:
+        service = self._service()
+        async with self._runtime._scoped_operation(self.scope_id):
+            return await service.acceptance_contribution(self.scope_id, rule_id, version, acceptance_id)
 
     async def covers_run(self, run_id: str, /) -> bool:
         service = self._service()

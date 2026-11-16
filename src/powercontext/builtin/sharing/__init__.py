@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from powercontext.builtin.sharing.models import (
     ShareAcceptance,
     ShareAcceptanceConflictError,
+    ShareAcceptanceContribution,
     ShareAcceptanceSide,
     ShareBudgetExceededError,
     ShareError,
@@ -41,6 +42,7 @@ from powercontext.builtin.sharing.models import (
     ShareRun,
     ShareRunLimits,
     ShareRunNotFoundError,
+    ShareRunOriginCoverage,
     ShareRunOutcome,
     ShareRunState,
     ShareRunStateError,
@@ -63,6 +65,7 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "ShareAcceptance",
     "ShareAcceptanceConflictError",
+    "ShareAcceptanceContribution",
     "ShareAcceptanceSide",
     "ShareAuthorizer",
     "ShareBudgetExceededError",
@@ -86,6 +89,7 @@ __all__ = [
     "ShareRun",
     "ShareRunLimits",
     "ShareRunNotFoundError",
+    "ShareRunOriginCoverage",
     "ShareRunOutcome",
     "ShareRunState",
     "ShareRunStateError",

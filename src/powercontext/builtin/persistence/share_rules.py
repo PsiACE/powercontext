@@ -457,6 +457,43 @@ class ShareAcceptanceRepository:
             (origins if side == "origin" else audiences).update(str(value) for value in covered)
         return tuple(sorted(origins)), tuple(sorted(audiences))
 
+    async def for_terms(
+        self, connection: AsyncConnection, scope_id: str, rule_id: str, version: int, terms_digest: str, /
+    ) -> tuple[ShareAcceptance, ...]:
+        """Return the authoritative rows accepted for these exact terms."""
+
+        rows = await self.all(connection, scope_id, rule_id, version)
+        return tuple(record for record in rows if record.terms_digest == terms_digest)
+
+    async def get(self, connection: AsyncConnection, scope_id: str, acceptance_id: str, /) -> ShareAcceptance | None:
+        """Read one authoritative acceptance row by its identity."""
+
+        row = (
+            (
+                await connection.execute(
+                    select(SHARE_ACCEPTANCES_TABLE).where(
+                        SHARE_ACCEPTANCES_TABLE.c.scope_id == scope_id,
+                        SHARE_ACCEPTANCES_TABLE.c.acceptance_id == acceptance_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        return ShareAcceptance(
+            scope_id=str(row["scope_id"]),
+            rule_id=str(row["rule_id"]),
+            version=int(row["version"]),
+            side=_side(row["side"]),
+            actor=str(row["actor"]),
+            terms_digest=str(row["terms_digest"]),
+            covered_scope_ids=tuple(json.loads(bytes(row["covered_scope_ids"]))),
+            acceptance_id=str(row["acceptance_id"]),
+            accepted_at=from_ticks(int(row["accepted_at"])),
+        )
+
     async def all(
         self, connection: AsyncConnection, scope_id: str, rule_id: str, version: int, /
     ) -> tuple[ShareAcceptance, ...]:
