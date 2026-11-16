@@ -485,6 +485,59 @@ class ShareRunCoverage(_ShareValue):
         return set(self.declared_audience_scope_ids) <= set(self.accepted_audience_scope_ids)
 
 
+class ShareRunOriginCoverage(_ShareValue):
+    """Which accepted records cover the origins one pinned run actually recorded.
+
+    A consumer needs to know whose consent applies to this run, not the union over all
+    historical runs. Every recorded origin is paired with the acceptance rows that
+    cover it; an origin with no covering row is reported as uncovered. Structural
+    coverage is selection only and never authorizes reading the origin.
+    """
+
+    run_id: str
+    rule_id: str
+    rule_version: int = Field(ge=1)
+    terms_digest: str
+    run_origin_scope_ids: tuple[str, ...] = ()
+    covered_origin_scope_ids: tuple[str, ...] = ()
+    uncovered_origin_scope_ids: tuple[str, ...] = ()
+    acceptance_ids_by_origin: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    declared_audience_scope_ids: tuple[str, ...] = ()
+    accepted_audience_scope_ids: tuple[str, ...] = ()
+
+    @property
+    def origins_covered(self) -> bool:
+        return not self.uncovered_origin_scope_ids
+
+    @property
+    def audiences_covered(self) -> bool:
+        return set(self.declared_audience_scope_ids) <= set(self.accepted_audience_scope_ids)
+
+    def acceptance_ids_for(self, origin_scope_id: str) -> tuple[str, ...]:
+        """Return the acceptance rows whose contributor covers this origin."""
+
+        return next(
+            (ids for scope_id, ids in self.acceptance_ids_by_origin if scope_id == origin_scope_id),
+            (),
+        )
+
+
+class ShareAcceptanceContribution(_ShareValue):
+    """The origins one authoritative acceptance row actually contributes.
+
+    A record states the Scopes it covers; this reports the effective origins those
+    Scopes contribute for the rule version, including a declared root's descendants
+    and never more than the record itself accepted.
+    """
+
+    acceptance_id: str
+    actor: str
+    side: ShareAcceptanceSide
+    terms_digest: str
+    covered_scope_ids: tuple[str, ...] = ()
+    contributed_origin_scope_ids: tuple[str, ...] = ()
+
+
 class ShareRun(_ShareValue):
     """One recorded evaluation of a pinned rule version against pinned inputs."""
 
