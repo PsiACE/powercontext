@@ -1193,3 +1193,91 @@ def test_per_run_coverage_names_only_the_records_that_cover_this_run(tmp_path: P
     import asyncio
 
     asyncio.run(scenario())
+
+
+def test_sibling_origins_sharing_an_intermediate_parent_are_both_admitted(tmp_path: Path) -> None:
+    """Two selected origins under one shared intermediate must both stay admitted.
+
+    Their parent chains converge at the intermediate Scope; each candidate is still an
+    original origin of the run and must be reported as itself.
+    """
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "converge.db")) as runtime:
+            root = await scopes_of(runtime).create(ScopeDraft(title="R", summary="s", idempotency_key="r"))
+            mid = await scopes_of(runtime).create(
+                ScopeDraft(title="M", summary="s", parent_scope_id=root.scope_id, idempotency_key="m")
+            )
+            leaves = []
+            for key in ("left", "right"):
+                leaf = await scopes_of(runtime).create(
+                    ScopeDraft(title=key, summary="s", parent_scope_id=mid.scope_id, idempotency_key=key)
+                )
+                leaves.append(leaf.scope_id)
+                await runtime.sources.for_scope(leaf.scope_id).capture(
+                    CaptureSource(source_id=key, content=f"Fact from {key}.", metadata={})
+                )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=root.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            await agree(sharing, rule.rule_id)
+
+            run = await sharing.resolve(rule.rule_id)
+
+            assert set(run.origin_scopes()) == set(leaves)
+            assert set(source_ids(run)) == {"left", "right"}
+            per_run = await sharing.run_origin_coverage(run.run_id)
+            assert per_run.origins_covered and not per_run.uncovered_origin_scope_ids
+            for leaf in leaves:
+                assert per_run.acceptance_ids_for(leaf)
+            assert await sharing.covers_run(run.run_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_ancestor_and_descendant_origins_are_each_judged_on_their_own_chain(tmp_path: Path) -> None:
+    """An origin that is also another origin's ancestor must not absorb or drop it."""
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config(tmp_path / "nested.db")) as runtime:
+            root = await scopes_of(runtime).create(ScopeDraft(title="R", summary="s", idempotency_key="r"))
+            outer = await scopes_of(runtime).create(
+                ScopeDraft(title="O", summary="s", parent_scope_id=root.scope_id, idempotency_key="o")
+            )
+            inner = await scopes_of(runtime).create(
+                ScopeDraft(title="I", summary="s", parent_scope_id=outer.scope_id, idempotency_key="i")
+            )
+            target = await scopes_of(runtime).create(ScopeDraft(title="T", summary="s", idempotency_key="t"))
+            for scope, source_id in ((outer, "outer"), (inner, "inner")):
+                await runtime.sources.for_scope(scope.scope_id).capture(
+                    CaptureSource(source_id=source_id, content=f"Fact from {source_id}.", metadata={})
+                )
+            sharing = runtime.sharing.for_scope(target.scope_id)
+            rule = await sharing.create(
+                ShareRuleDraft(
+                    selection=ScopeSelection(mode="subtree", root_scope_id=root.scope_id),
+                    source_types=("content",),
+                    terms=ShareRuleTerms(use="project-conclusion", audience="project-members"),
+                )
+            )
+            await agree(sharing, rule.rule_id)
+
+            run = await sharing.resolve(rule.rule_id)
+
+            assert set(run.origin_scopes()) == {outer.scope_id, inner.scope_id}
+            assert set(source_ids(run)) == {"outer", "inner"}
+            per_run = await sharing.run_origin_coverage(run.run_id)
+            assert per_run.uncovered_origin_scope_ids == ()
+            assert per_run.acceptance_ids_for(outer.scope_id) == per_run.acceptance_ids_for(inner.scope_id)
+
+    import asyncio
+
+    asyncio.run(scenario())
