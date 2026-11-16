@@ -69,6 +69,36 @@ class _FailingHandler(ScopeResourceHandler):
             raise RuntimeError
 
 
+class _ExtendComplete:
+    """Marks a handler tuple that extends the complete set rather than replacing it."""
+
+
+_EXTEND = _ExtendComplete()
+
+
+async def _resolve_handlers(opened, handlers):
+    complete = await _complete_handlers(opened)
+    if handlers is None:
+        return complete
+    if handlers and handlers[0] is _EXTEND:
+        return complete + tuple(handlers[1:])
+    return handlers
+
+
+async def _complete_handlers(opened):
+    """The handler set a complete deletion needs, with its owners initialized."""
+
+    from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
+    from powercontext.builtin.persistence.sqlite.experience_index import SQLiteExperienceFTSIndex
+    from powercontext.builtin.scope.resources import ScopeEvidenceHandler, ScopeProjectionHandler
+
+    atomic, experience = SQLiteAtomicMemoryIndex(), SQLiteExperienceFTSIndex()
+    async with opened.database.transaction() as connection:
+        await atomic.initialize(connection)
+        await experience.initialize(connection)
+    return (ScopeResourceHandler(), ScopeEvidenceHandler(), ScopeProjectionHandler(atomic, experience))
+
+
 @asynccontextmanager
 async def _family(tmp_path, *, handlers=None):
     """A root with two children, plus the deletion service under test."""
@@ -77,8 +107,13 @@ async def _family(tmp_path, *, handlers=None):
         SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'deletion.db'}"), tables=BUILTIN_TABLES
     ) as opened:
         scopes = ScopeApplication(opened.database)
+        # A complete deletion needs the real projection owners. A test that injects
+        # its own store extends that complete set instead of replacing it, so the
+        # required-handler contract stays satisfied.
         deletion = ScopeDeletionApplication(
-            opened.database, scopes, handlers=default_handlers() if handlers is None else handlers
+            opened.database,
+            scopes,
+            handlers=await _resolve_handlers(opened, handlers),
         )
         root = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="root"))
         child = await scopes.create(
@@ -201,7 +236,7 @@ def test_failed_cleanup_stays_unavailable_and_retryable(tmp_path) -> None:
 
     async def scenario() -> None:
         failing = _FailingHandler()
-        async with _family(tmp_path, handlers=(ScopeResourceHandler(), failing)) as (
+        async with _family(tmp_path, handlers=(_EXTEND, failing)) as (
             opened,
             _scopes,
             deletion,
@@ -237,7 +272,7 @@ def test_failed_cleanup_stays_unavailable_and_retryable(tmp_path) -> None:
 def test_unsupported_cleanup_mode_is_refused_before_acceptance(tmp_path) -> None:
     async def scenario() -> None:
         async with _family(
-            tmp_path, handlers=(UnsupportedScopeResourceHandler("index-store", "no index adapter"),)
+            tmp_path, handlers=(_EXTEND, UnsupportedScopeResourceHandler("index-store", "no index adapter"))
         ) as (_opened, _scopes, deletion, _root, _child, target):
             selection = ScopeSelection(mode="exact", scope_ids=(target.scope_id,))
             preview = await deletion.preview(selection)
@@ -353,7 +388,7 @@ def test_confirmed_membership_cannot_change_after_the_cutoff(tmp_path) -> None:
 
     async def scenario() -> None:
         failing = _FailingHandler()
-        async with _family(tmp_path, handlers=(ScopeResourceHandler(), failing)) as (
+        async with _family(tmp_path, handlers=(_EXTEND, failing)) as (
             _opened,
             scopes,
             deletion,
@@ -643,3 +678,114 @@ def test_read_cutoff_refuses_publishing_from_and_exporting_a_deleting_scope(tmp_
 
 async def _allow_export(_scopes, /) -> None:
     return None
+
+
+def test_default_handler_constructor_refuses_before_cutoff_instead_of_reporting_complete(tmp_path) -> None:
+    """The class default must not claim `complete` over content it cannot remove.
+
+    `ScopeDeletionApplication(db, scopes)` without projection owners used to
+    accept the deletion and report `complete` while Atomic Memory text was still
+    stored and the Scope row was already gone. It must fail closed before the
+    cutoff. This test deliberately constructs the default — it does not pass a
+    handler set — so the omission branch is the one exercised.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.scope.resources import (
+            MissingScopeResourceHandlerError,
+        )
+
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'default.db'}"), tables=BUILTIN_TABLES
+        ) as profile:
+            scopes = ScopeApplication(profile.database)
+            scope = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="default"))
+
+            # The default set is genuinely short of the projection owner.
+            assert "projections" not in {handler.name for handler in default_handlers()}
+
+            deletion = ScopeDeletionApplication(profile.database, scopes)
+            selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+            preview = await deletion.preview(selection)
+
+            with pytest.raises(MissingScopeResourceHandlerError) as refused:
+                await deletion.confirm(selection, preview.membership_digest)
+            assert refused.value.missing == ("projections",)
+
+            # Refused before the cutoff: the Scope is still writable and present,
+            # so no content was orphaned behind a false `complete`.
+            assert (await deletion.state_of(scope.scope_id)).lifecycle_state == "writable"
+
+    _run(scenario)
+
+
+def test_deep_exact_chain_finalizes_without_recursion_and_retry_converges(tmp_path) -> None:
+    """A budget-legal deep chain orders iteratively and completes.
+
+    `MAX_SCOPE_RANGE_NODES` admits a chain this deep. A recursive ordering walk
+    raised `RecursionError` after the cutoff, so `confirm` returned no receipt and
+    every retry re-crashed, leaving the whole chain `deleting` forever.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
+        from powercontext.builtin.persistence.sqlite.experience_index import SQLiteExperienceFTSIndex
+        from powercontext.builtin.scope.models import ScopeRangeLimits
+        from powercontext.builtin.scope.resources import (
+            ScopeEvidenceHandler,
+            ScopeProjectionHandler,
+        )
+
+        depth = 1_000
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'deep.db'}"), tables=BUILTIN_TABLES
+        ) as profile:
+            scopes = ScopeApplication(profile.database)
+            atomic = SQLiteAtomicMemoryIndex()
+            experience = SQLiteExperienceFTSIndex()
+            async with profile.database.transaction() as connection:
+                await atomic.initialize(connection)
+                await experience.initialize(connection)
+            deletion = ScopeDeletionApplication(
+                profile.database,
+                scopes,
+                handlers=(
+                    ScopeResourceHandler(),
+                    ScopeEvidenceHandler(),
+                    ScopeProjectionHandler(atomic, experience),
+                ),
+                limits=ScopeRangeLimits(max_nodes=depth),
+            )
+
+            root = await scopes.create(ScopeDraft(title="root", summary="Project", idempotency_key="root"))
+            parent, chain = root.scope_id, [root.scope_id]
+            for index in range(depth - 1):
+                child = await scopes.create(
+                    ScopeDraft(
+                        title=f"child-{index}",
+                        summary="Library",
+                        parent_scope_id=parent,
+                        idempotency_key=f"child-{index}",
+                    )
+                )
+                chain.append(child.scope_id)
+                parent = child.scope_id
+
+            # Both lexical orders, and the deepest member sorted first.
+            for ordered in (tuple(sorted(chain)), tuple(sorted(chain, reverse=True))):
+                selection = ScopeSelection(mode="exact", scope_ids=ordered)
+                preview = await deletion.preview(selection)
+                assert len(preview.members) == depth
+                assert preview.outside_children == ()
+                receipt = await deletion.confirm(selection, preview.membership_digest)
+                assert receipt.complete, (receipt.state, receipt.failed[:3])
+                assert {item.state for item in receipt.progress} == {"done"}
+                break
+
+            # The whole chain is gone and a further cleanup stays idempotent.
+            for scope_id in chain:
+                with pytest.raises(ScopeNotFoundError):
+                    await deletion.state_of(scope_id)
+            assert (await deletion.cleanup(receipt.operation_id)).complete
+
+    _run(scenario)

@@ -58,6 +58,7 @@ from powercontext.builtin.scope.repository import ScopeRepository
 from powercontext.builtin.scope.resources import (
     ScopeResourceHandler,
     default_handlers,
+    require_complete_handlers,
     require_supported_handlers,
 )
 
@@ -123,6 +124,9 @@ class ScopeDeletionApplication:
         them, so a caller cannot widen an operation by accident.
         """
 
+        # Both checks run before any cutoff: an operation that cannot clean up every
+        # resource this build owns must never be accepted and then reported complete.
+        require_complete_handlers(self._handlers)
         require_supported_handlers(self._handlers)
         async with self._scopes._write_lock, self._database.transaction() as connection:
             # Structural attach/move and publication take this same boundary, so a
@@ -323,6 +327,15 @@ def receipt_scope_ids(receipt: ScopeDeletionReceipt, /) -> tuple[str, ...]:
     return tuple(member.scope_id for member in receipt.members)
 
 
+def _children_by_parent(members: tuple[ScopeDeletionMember, ...], /) -> dict[str | None, list[str]]:
+    """Group the confirmed member ids by their recorded parent edge."""
+
+    children: dict[str | None, list[str]] = {}
+    for member in members:
+        children.setdefault(member.parent_scope_id, []).append(member.scope_id)
+    return children
+
+
 def removal_order(members: tuple[ScopeDeletionMember, ...], /) -> tuple[str, ...]:
     """Order the confirmed members so every child is removed before its parent.
 
@@ -331,35 +344,46 @@ def removal_order(members: tuple[ScopeDeletionMember, ...], /) -> tuple[str, ...
     differs between an ``exact`` selection (sorted by id) and a ``subtree``
     (root-first), so the order that satisfies the constraint has to come from the
     parent edges in the set itself — never from the member order or from lexical
-    id order. A set that genuinely contains a cycle cannot be ordered, and the
-    remaining members are returned as-is for the caller's failure path.
+    id order.
+
+    The walk is iterative and bounded by the set size. The accepted range budget
+    admits a deep chain of up to ``MAX_SCOPE_RANGE_NODES`` members, and a
+    recursive walk would raise ``RecursionError`` after the cutoff, wedging the
+    operation with no receipt. Only members of the confirmed set are returned.
+
+    A member whose parent lies outside the set (an ``exact`` selection naming a
+    child but not its parent) is ordered too, starting from the highest such
+    member. A cycle cannot be ordered; it is unreachable through the relationship
+    validation that guards attach and move, so an unemitted member is instead
+    appended in id order and the caller's delete fails on the real constraint.
     """
 
-    children: dict[str | None, list[str]] = {}
-    for member in members:
-        children.setdefault(member.parent_scope_id, []).append(member.scope_id)
+    children = _children_by_parent(members)
+    confirmed = {member.scope_id for member in members}
     ordered: list[str] = []
-    ready = sorted(children.get(None, ()))
-    # Depth-first from each root: a node is emitted only after its own children,
-    # so a parent never precedes a child that is still in the set.
-    pending = {member.scope_id for member in members}
+    emitted: set[str] = set()
 
-    def emit(scope_id: str) -> None:
-        for child in sorted(children.get(scope_id, ())):
-            if child in pending:
-                emit(child)
-        if scope_id in pending:
-            pending.discard(scope_id)
-            ordered.append(scope_id)
+    def deepest_first(roots: list[str]) -> None:
+        for root in roots:
+            if root not in confirmed or root in emitted:
+                continue
+            stack: list[tuple[str, bool]] = [(root, False)]
+            while stack:
+                scope_id, children_done = stack.pop()
+                if children_done:
+                    if scope_id not in emitted:
+                        emitted.add(scope_id)
+                        ordered.append(scope_id)
+                    continue
+                if scope_id in emitted:
+                    continue
+                stack.append((scope_id, True))
+                for child in sorted(children.get(scope_id, ()), reverse=True):
+                    if child in confirmed and child not in emitted:
+                        stack.append((child, False))
 
-    for root in ready:
-        if root in pending:
-            emit(root)
-    # A member whose parent lies outside the set (an `exact` selection with the
-    # root omitted) is still a member; emit it after its own children.
-    for member in sorted(members, key=lambda item: item.scope_id):
-        if member.scope_id in pending:
-            emit(member.scope_id)
+    deepest_first(sorted(children.get(None, ())))
+    deepest_first(sorted(member.scope_id for member in members))
     return tuple(ordered)
 
 

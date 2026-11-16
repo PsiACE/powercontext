@@ -166,19 +166,45 @@ class ScopeProjectionHandler(ScopeResourceHandler):
         await self._experience_index.purge_scope(connection, scope_id)
 
 
+REQUIRED_SCOPE_RESOURCE_HANDLERS: tuple[str, ...] = ("owned-resources", "evidence", "projections")
+
+
+class MissingScopeResourceHandlerError(ValueError):
+    """A required owned-resource handler was not supplied, so cleanup cannot be complete."""
+
+    def __init__(self, missing: tuple[str, ...]) -> None:
+        self.missing = missing
+        super().__init__("Scope deletion requires its owned resource handlers")
+
+
 def default_handlers(*, atomic_memory_index=None, experience_index=None) -> tuple[ScopeResourceHandler, ...]:
     """Every handler this build ships for the resources it actually owns.
 
-    The plain relational handler always applies. The evidence handler covers the
-    retained evidence modules. The projection handler is included only when the
-    composition supplies the owners, so a Runtime without them never claims to
-    have cleaned up tables it does not know about.
+    The plain relational handler and the evidence handler always apply. The
+    projection handler needs the owners whose tables it asks to purge, so a
+    caller without them gets the shorter set — and ``require_complete_handlers``
+    then refuses the operation before any cutoff rather than reporting a
+    ``complete`` deletion over content that is still stored.
     """
 
     handlers: tuple[ScopeResourceHandler, ...] = (ScopeResourceHandler(), ScopeEvidenceHandler())
     if atomic_memory_index is not None and experience_index is not None:
         handlers += (ScopeProjectionHandler(atomic_memory_index, experience_index),)
     return handlers
+
+
+def require_complete_handlers(handlers: tuple[ScopeResourceHandler, ...], /) -> None:
+    """Refuse to accept a deletion that could not clean up every resource this build owns.
+
+    A deletion that skipped a required handler would remove the Scope row and
+    report success while that owner's content stayed stored and unreachable, so
+    the omission is refused before the access cutoff instead of after it.
+    """
+
+    supplied = {handler.name for handler in handlers}
+    missing = tuple(name for name in REQUIRED_SCOPE_RESOURCE_HANDLERS if name not in supplied)
+    if missing:
+        raise MissingScopeResourceHandlerError(missing)
 
 
 def require_supported_handlers(handlers: tuple[ScopeResourceHandler, ...]) -> None:
@@ -192,10 +218,13 @@ def require_supported_handlers(handlers: tuple[ScopeResourceHandler, ...]) -> No
 
 
 __all__ = [
+    "REQUIRED_SCOPE_RESOURCE_HANDLERS",
+    "MissingScopeResourceHandlerError",
     "ScopeEvidenceHandler",
     "ScopeProjectionHandler",
     "ScopeResourceHandler",
     "UnsupportedScopeResourceHandler",
     "default_handlers",
+    "require_complete_handlers",
     "require_supported_handlers",
 ]
