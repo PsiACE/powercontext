@@ -7748,6 +7748,7 @@ components:
       - refresh_handoff
       - revise_prompt
       - revise_tags
+      - initialize_profile
     DreamStatus:
       type: string
       enum:

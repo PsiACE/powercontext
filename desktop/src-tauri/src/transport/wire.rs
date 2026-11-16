@@ -1117,6 +1117,8 @@ pub enum DreamOperation {
     RevisePrompt,
     #[serde(rename = "revise_tags")]
     ReviseTags,
+    #[serde(rename = "initialize_profile")]
+    InitializeProfile,
 }
 
 impl std::fmt::Display for DreamOperation {
@@ -1131,6 +1133,7 @@ impl std::fmt::Display for DreamOperation {
             Self::RefreshHandoff => write!(f, "refresh_handoff"),
             Self::RevisePrompt => write!(f, "revise_prompt"),
             Self::ReviseTags => write!(f, "revise_tags"),
+            Self::InitializeProfile => write!(f, "initialize_profile"),
         }
     }
 }

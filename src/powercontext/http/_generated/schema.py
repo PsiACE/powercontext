@@ -8240,6 +8240,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "refresh_handoff",
                     "revise_prompt",
                     "revise_tags",
+                    "initialize_profile",
                 ],
             },
             "DreamStatus": {"type": "string", "enum": ["queued", "running", "succeeded", "failed"]},
