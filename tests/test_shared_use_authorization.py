@@ -368,6 +368,48 @@ def test_unsupported_modes_and_malformed_values_are_refused_by_name() -> None:
     asyncio.run(scenario())
 
 
+def test_decoded_terms_and_acceptance_containers_normalize() -> None:
+    async def scenario() -> None:
+        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(ADMIN,)) as access:
+            await _seed(access)
+            shared = SharedUseAuthorization(access)
+
+            # A documented JSON terms shape decodes to lists, not frozensets.
+            decoded = SharedUseTerms(
+                target_scope_id=TARGET,
+                origins=(SharedOrigin.of_artifact(ALICE_WORK, RETRY_TRACE),),
+                uses=cast("frozenset[SharedUse]", frozenset({"evidence"})),
+                audience_scope_ids=cast("frozenset[str]", [TARGET, AUDIENCE]),
+            )
+            assert decoded.audience_scope_ids == frozenset({TARGET, AUDIENCE})
+
+            # Genuine acts, then rebuilt from the documented list shape.
+            restored = [
+                SharedUseAcceptance(
+                    terms_digest=item.terms_digest,
+                    accepted_by=item.accepted_by,
+                    origins=cast("frozenset[str]", list(item.origins)),
+                    audience_scope_ids=cast("frozenset[str]", list(item.audience_scope_ids)),
+                    accepted_at=item.accepted_at,
+                )
+                for item in (
+                    await _accept(shared, ALICE, decoded),
+                    await _accept(shared, CAROL, decoded),
+                    await _accept(shared, DAVE, decoded),
+                )
+            ]
+            assert all(item.audience_scope_ids <= decoded.audience_scope_ids for item in restored)
+            # No acceptance_id means the reader is never consulted.
+            assert not any(item.durable for item in restored)
+
+            grant = await shared.require(
+                RUNNER, decoded, acceptances=tuple(restored), use=SharedUse.EVIDENCE, context=AUDIT
+            )
+            assert grant.terms_digest == decoded.digest
+
+    asyncio.run(scenario())
+
+
 def test_retained_target_conclusion_is_readable_without_origin_evidence_access() -> None:
     async def scenario() -> None:
         async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(ADMIN,)) as access:
