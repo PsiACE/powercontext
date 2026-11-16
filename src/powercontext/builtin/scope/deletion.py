@@ -279,12 +279,27 @@ class ScopeDeletionApplication:
             return receipt
         coverage = recorded_coverage(receipt)
         if coverage.missing:
-            async with self._scopes._write_lock, self._database.transaction() as connection:
-                await self._repository.lock_hierarchy(connection)
-                await self._repository.record_progress(connection, operation_id, coverage.missing)
-                # The gap is now recorded as real pending work, so the blocker code
-                # from a previous refusal no longer describes the operation.
-                await self._repository.clear_finalization_failure(connection, operation_id)
+            try:
+                async with self._scopes._write_lock, self._database.transaction() as connection:
+                    await self._repository.lock_hierarchy(connection)
+                    await self._repository.record_progress(connection, operation_id, coverage.missing)
+                    # The gap is now recorded as real pending work, so only this
+                    # service's own coverage blocker is removed; a row that failed
+                    # for its own reason keeps that diagnostic and its state.
+                    await self._repository.clear_coverage_blocker(connection, operation_id, MISSING_COVERAGE_CODE)
+            except IntegrityError:
+                # Two repairs of one operation race on the progress primary key.
+                # Roll back before rereading; a repair that already recorded the
+                # same work has converged, so return it. Any other integrity
+                # failure keeps its own outcome instead of being swallowed.
+                async with self._database.transaction() as connection:
+                    record = await self._repository.deletion(connection, operation_id)
+                if record is None:
+                    raise
+                reread = await self._receipt(operation_id)
+                if recorded_coverage(reread).missing:
+                    raise
+                return reread
         return await self._receipt(operation_id)
 
     async def operation(self, operation_id: str, /) -> ScopeDeletionReceipt | None:
@@ -403,7 +418,14 @@ def recorded_coverage(
 ) -> RecordedCoverage:
     """Report each (member, required handler) the operation never recorded."""
 
-    recorded = {(item.scope_id): {entry.handler for entry in receipt.progress} for item in receipt.progress}
+    # Group the persisted rows once by the member they belong to, then ask each
+    # confirmed member about its own rows only. A member's rows never supply
+    # another member's required owners, and a member with no rows at all reports
+    # every required handler. Grouping once also keeps this linear in the row
+    # count instead of rebuilding the whole set per member.
+    recorded: dict[str, set[str]] = {}
+    for entry in receipt.progress:
+        recorded.setdefault(entry.scope_id, set()).add(entry.handler)
     missing: list[tuple[str, str]] = []
     for member in receipt.members:
         present = recorded.get(member.scope_id, set())

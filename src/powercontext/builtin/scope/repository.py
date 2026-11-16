@@ -674,13 +674,28 @@ class ScopeRepository:
             .values(state="complete")
         )
 
-    async def clear_finalization_failure(self, connection: AsyncConnection, operation_id: str, /) -> None:
-        """Clear the recorded blocker once the operation gained real pending work."""
+    async def clear_coverage_blocker(
+        self,
+        connection: AsyncConnection,
+        operation_id: str,
+        blocker_code: str,
+        /,
+    ) -> None:
+        """Remove only the blocker this repair replaces, keeping real failures visible.
+
+        A row that failed for its own reason keeps that reason and its state until
+        the work actually succeeds; only the coverage blocker stamped by this
+        service's own refusal is removed, because the gap it described is now
+        recorded as real pending work.
+        """
         from powercontext.builtin.persistence.tables import SCOPE_DELETION_PROGRESS_TABLE
 
         await connection.execute(
             update(SCOPE_DELETION_PROGRESS_TABLE)
-            .where(SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id)
+            .where(
+                SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id,
+                SCOPE_DELETION_PROGRESS_TABLE.c.last_error_code == blocker_code,
+            )
             .values(last_error_code=None)
         )
 
@@ -701,11 +716,15 @@ class ScopeRepository:
             .where(SCOPE_DELETIONS_TABLE.c.operation_id == operation_id)
             .values(state="cleanup_pending")
         )
+        # Mark the blocker on rows that are otherwise clean. A row that already
+        # records its own failure keeps it: this service's finalization blocker is
+        # not more informative than the reason that row actually failed for.
         await connection.execute(
             update(SCOPE_DELETION_PROGRESS_TABLE)
             .where(
                 SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id,
                 SCOPE_DELETION_PROGRESS_TABLE.c.state == "done",
+                SCOPE_DELETION_PROGRESS_TABLE.c.last_error_code.is_(None),
             )
             .values(last_error_code=error_code)
         )
