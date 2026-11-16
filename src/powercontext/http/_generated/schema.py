@@ -8376,6 +8376,81 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "type": "array",
                         "default": [],
                     },
+                    "scoped": {
+                        "items": {"$ref": "#/components/schemas/DreamScopedEvidence"},
+                        "type": "array",
+                        "description": "Evidence "
+                        "admitted "
+                        "with "
+                        "its "
+                        "owning "
+                        "Scope, "
+                        "exactly "
+                        "as "
+                        "the "
+                        "run "
+                        "pinned "
+                        "it. "
+                        "Each "
+                        "entry "
+                        "names "
+                        "one "
+                        "Scope "
+                        "and "
+                        "one "
+                        "unqualified "
+                        "Artifact "
+                        "or "
+                        "Source "
+                        "reference "
+                        "there, "
+                        "so a "
+                        "stored "
+                        "selection "
+                        "stays "
+                        "readable "
+                        "without "
+                        "reinterpreting "
+                        "it. "
+                        "Present "
+                        "only "
+                        "on a "
+                        "run "
+                        "that "
+                        "admitted "
+                        "scoped "
+                        "evidence; "
+                        "omitted, "
+                        "not "
+                        "empty, "
+                        "for a "
+                        "run "
+                        "whose "
+                        "selection "
+                        "is "
+                        "local. "
+                        "It is "
+                        "a "
+                        "record "
+                        "of "
+                        "what "
+                        "one "
+                        "run "
+                        "selected, "
+                        "not a "
+                        "grant: "
+                        "reading "
+                        "the "
+                        "referenced "
+                        "material "
+                        "still "
+                        "needs "
+                        "authority "
+                        "at "
+                        "that "
+                        "Scope.",
+                        "default": [],
+                    },
                     "nodes": {
                         "items": {"$ref": "#/components/schemas/DreamEvidenceNode"},
                         "type": "array",
@@ -8398,6 +8473,61 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["projection_digest", "projection_bytes"],
+                "x-powercontext-omit-if-empty": ["scoped"],
+            },
+            "DreamScopedEvidence": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "artifact": {
+                        "allOf": [{"$ref": "#/components/schemas/ArtifactReference"}],
+                        "description": "The "
+                        "exact "
+                        "Artifact "
+                        "revision "
+                        "in "
+                        "this "
+                        "Scope. "
+                        "Exactly "
+                        "one "
+                        "of "
+                        "artifact "
+                        "or "
+                        "source "
+                        "is "
+                        "set; "
+                        "the "
+                        "other "
+                        "is "
+                        "stored "
+                        "as "
+                        "null, "
+                        "so "
+                        "a "
+                        "persisted "
+                        "selection "
+                        "reads "
+                        "back "
+                        "without "
+                        "reinterpretation.",
+                        "nullable": True,
+                    },
+                    "source": {
+                        "allOf": [{"$ref": "#/components/schemas/DreamSourceReference"}],
+                        "description": "The exact Source in this Scope, with its locator when one was recorded.",
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+                "description": "One admitted reference "
+                "together with the Scope that "
+                "owns it. The reference stays "
+                "unqualified because the owning "
+                "Scope is the separate field; "
+                "naming the run Scope is the "
+                "same selection as a local "
+                "one.",
             },
             "DreamEvidenceNode": {
                 "properties": {
@@ -8407,6 +8537,45 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "source": {"$ref": "#/components/schemas/DreamSourceReference", "nullable": True},
                     "artifact": {"$ref": "#/components/schemas/ArtifactReference", "nullable": True},
                     "role": {"$ref": "#/components/schemas/DreamEvidenceRole"},
+                    "origin_scope_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "description": "The "
+                        "Scope "
+                        "that "
+                        "owns "
+                        "this "
+                        "evidence "
+                        "when "
+                        "it "
+                        "differs "
+                        "from "
+                        "the "
+                        "run "
+                        "Scope. "
+                        "Omitted "
+                        "for "
+                        "a "
+                        "node "
+                        "from "
+                        "the "
+                        "run "
+                        "Scope, "
+                        "so "
+                        "an "
+                        "existing "
+                        "local "
+                        "run "
+                        "keeps "
+                        "the "
+                        "exact "
+                        "shape "
+                        "it "
+                        "recorded.",
+                        "nullable": True,
+                    },
                     "historical": {"type": "boolean", "default": False},
                 },
                 "additionalProperties": False,
@@ -8418,6 +8587,35 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "properties": {
                     "group_id": {"type": "string"},
                     "sources": {"items": {"$ref": "#/components/schemas/DreamSourceReference"}, "type": "array"},
+                    "scope_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "description": "The "
+                        "Scope "
+                        "owning "
+                        "this "
+                        "group "
+                        "of "
+                        "root "
+                        "Sources "
+                        "when "
+                        "it "
+                        "is "
+                        "not "
+                        "the "
+                        "run "
+                        "Scope. "
+                        "Omitted "
+                        "for "
+                        "a "
+                        "group "
+                        "of "
+                        "run-Scope "
+                        "Sources.",
+                        "nullable": True,
+                    },
                     "independence": {"$ref": "#/components/schemas/DreamEvidenceIndependence", "default": "unknown"},
                 },
                 "additionalProperties": False,
