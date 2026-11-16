@@ -789,3 +789,117 @@ def test_deep_exact_chain_finalizes_without_recursion_and_retry_converges(tmp_pa
             assert (await deletion.cleanup(receipt.operation_id)).complete
 
     _run(scenario)
+
+
+def test_legacy_short_recorded_operation_never_reports_false_complete(tmp_path) -> None:
+    """An operation recorded under a shorter handler set cannot finalize as complete.
+
+    `confirm` enforces the required owners, but a pending operation persisted by an
+    earlier build carries only the handler rows it recorded then. Resuming it with
+    a complete handler set used to mark it complete, delete the Scope row, and
+    leave the Scope's Atomic Memory text stored and unreachable. The record is now
+    validated per confirmed member before any member metadata is destroyed, and an
+    explicit repair records the missing owner as real pending work.
+    """
+
+    async def scenario() -> None:
+        from sqlalchemy import text
+
+        from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+        from powercontext.builtin.scope.deletion import _encode_members
+        from powercontext.builtin.scope.models import ScopeDeletionMember
+        from powercontext.builtin.scope.repository import ScopeRepository
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}")
+        async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            assert runtime.scopes is not None and runtime.atomic_memory is not None
+            scopes = runtime.scopes
+            scope = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="legacy"))
+            await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(kind="rule", text="legacy-private-42"),
+            ))
+
+            # Record the pending operation exactly as the previous build's confirm
+            # did: lifecycle cutoff, operation, and only the short handler set.
+            repository = ScopeRepository()
+            async with runtime.primary_database.transaction() as connection:
+                await repository.lock_hierarchy(connection)
+                await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
+                members = (ScopeDeletionMember(scope_id=scope.scope_id, parent_scope_id=None, version=scope.version),)
+                await repository.record_deletion(
+                    connection, "del_legacy0001", scope.scope_id, "0" * 64, _encode_members(members)
+                )
+                await repository.record_progress(
+                    connection, "del_legacy0001", ((scope.scope_id, "owned-resources"), (scope.scope_id, "evidence"))
+                )
+
+            assert runtime.scope_deletions is not None
+            deletion = runtime.scope_deletions
+
+            # Resuming must not finalize: the recorded set cannot cover the owner.
+            refused = await deletion.cleanup("del_legacy0001")
+            assert not refused.complete
+            assert refused.state == "cleanup_pending"
+            assert {item.handler for item in refused.progress} == {"owned-resources", "evidence"}
+            # The member metadata is intact, so the residue is still reachable.
+            assert (await deletion.state_of(scope.scope_id)).lifecycle_state == "deleting"
+
+            # An explicit repair adds the missing owner as genuinely pending work.
+            repaired = await deletion.repair_coverage("del_legacy0001")
+            assert ("projections", "pending") in {(item.handler, item.state) for item in repaired.progress}
+            # Existing rows keep their identity and their finished state.
+            done = {(item.scope_id, item.handler) for item in repaired.progress if item.state == "done"}
+            assert done == {
+                (scope.scope_id, "owned-resources"),
+                (scope.scope_id, "evidence"),
+            }
+
+            # Only now does a cleanup run the real owner and complete honestly.
+            completed = await deletion.cleanup("del_legacy0001")
+            assert completed.complete
+            assert completed.operation_id == "del_legacy0001"
+            assert [member.scope_id for member in completed.members] == [scope.scope_id]
+            assert {item.state for item in completed.progress} == {"done"}
+
+            async with runtime.primary_database.transaction() as connection:
+                current = text("SELECT COUNT(*) FROM pc_atomic_memory_current WHERE scope_id = :scope_id")
+                remaining = await connection.scalar(current, {"scope_id": scope.scope_id})
+                assert remaining == 0
+            with pytest.raises(ScopeNotFoundError):
+                await deletion.state_of(scope.scope_id)
+
+            # A legitimately completed operation stays idempotent.
+            assert (await deletion.cleanup("del_legacy0001")).complete
+            assert (await deletion.repair_coverage("del_legacy0001")).complete
+
+    _run(scenario)
+
+
+def test_full_recorded_operation_still_converges_after_a_failure(tmp_path) -> None:
+    """The normal path is unchanged: a recorded full set recovers to complete."""
+
+    async def scenario() -> None:
+        failing = _FailingHandler()
+        async with _family(tmp_path, handlers=(_EXTEND, failing)) as (
+            _opened,
+            _scopes,
+            deletion,
+            _root,
+            _child,
+            target,
+        ):
+            selection = ScopeSelection(mode="exact", scope_ids=(target.scope_id,))
+            preview = await deletion.preview(selection)
+            receipt = await deletion.confirm(selection, preview.membership_digest)
+            assert not receipt.complete
+            # Every required owner was recorded for this member, so no coverage gap
+            # is reported and recovery is the ordinary retry.
+            assert {item.handler for item in receipt.progress} >= {
+                "owned-resources",
+                "evidence",
+                "projections",
+            }
+            failing.fail = False
+            assert (await deletion.cleanup(receipt.operation_id)).complete
+
+    _run(scenario)

@@ -32,6 +32,7 @@ does not lose its own resources, and it does not gain authority.
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass
 
 import rfc8785
 from sqlalchemy.exc import IntegrityError
@@ -56,6 +57,7 @@ from powercontext.builtin.scope.models import (
 )
 from powercontext.builtin.scope.repository import ScopeRepository
 from powercontext.builtin.scope.resources import (
+    REQUIRED_SCOPE_RESOURCE_HANDLERS,
     ScopeResourceHandler,
     default_handlers,
     require_complete_handlers,
@@ -203,6 +205,10 @@ class ScopeDeletionApplication:
         receipt = await self._receipt(operation_id)
         if receipt.unfinished:
             return receipt
+        # Finishing the recorded work is not enough: the record itself may be a
+        # legacy operation created under a shorter handler set, in which case the
+        # required work for this build was never recorded and can never have run.
+        # That is refused before any member metadata is destroyed.
         return await self._finalize(receipt)
 
     async def _finalize(self, receipt: ScopeDeletionReceipt) -> ScopeDeletionReceipt:
@@ -214,6 +220,19 @@ class ScopeDeletionApplication:
         and visible instead of raising out of ``cleanup``. Nothing outside the
         confirmed set is ever deleted to force this to succeed.
         """
+
+        coverage = recorded_coverage(receipt)
+        if coverage.missing:
+            # The operation cannot be honestly completed: the recorded work does
+            # not cover a required owner for every confirmed member. Keep the
+            # members unavailable and the operation visible, and record the gap so
+            # a manager can decide how to repair it. No receipt row is rewritten,
+            # no missing task is stamped done, and the Scope metadata stays.
+            async with self._database.transaction() as connection:
+                await self._repository.record_finalization_failure(
+                    connection, receipt.operation_id, MISSING_COVERAGE_CODE
+                )
+            return await self._receipt(receipt.operation_id)
 
         members = removal_order(receipt.members)
         try:
@@ -232,6 +251,41 @@ class ScopeDeletionApplication:
                     connection, receipt.operation_id, type(error).__name__
                 )
         return await self._receipt(receipt.operation_id)
+
+    async def repair_coverage(self, operation_id: str, /) -> ScopeDeletionReceipt:
+        """Record the required owner work a legacy operation never had, as pending.
+
+        An operation created under an earlier, shorter handler set cannot be
+        completed honestly, and refusing it forever would leave the members
+        unavailable with no way forward. This adds one **pending** progress row for
+        each required handler the operation never recorded for a confirmed member,
+        and changes nothing else: existing rows keep their identity, state and
+        attempt count, no row is stamped `done`, and the operation stays
+        `cleanup_pending` until `cleanup` actually runs those owners and their
+        purge succeeds on the real, initialized handler.
+
+        The caller must already hold this build's complete handler set, so the
+        added work can really be performed.
+        """
+
+        require_complete_handlers(self._handlers)
+        async with self._database.transaction() as connection:
+            record = await self._repository.deletion(connection, operation_id)
+        if record is None:
+            raise ScopeNotFoundError(operation_id)
+        receipt = await self._receipt(operation_id)
+        if receipt.state == "complete":
+            # A legitimately completed operation is idempotent and is not reopened.
+            return receipt
+        coverage = recorded_coverage(receipt)
+        if coverage.missing:
+            async with self._scopes._write_lock, self._database.transaction() as connection:
+                await self._repository.lock_hierarchy(connection)
+                await self._repository.record_progress(connection, operation_id, coverage.missing)
+                # The gap is now recorded as real pending work, so the blocker code
+                # from a previous refusal no longer describes the operation.
+                await self._repository.clear_finalization_failure(connection, operation_id)
+        return await self._receipt(operation_id)
 
     async def operation(self, operation_id: str, /) -> ScopeDeletionReceipt | None:
         """Read one operation and its progress for an authorized manager."""
@@ -319,6 +373,42 @@ class ScopeDeletionApplication:
                 for row in progress
             ),
         )
+
+
+MISSING_COVERAGE_CODE = "MissingRequiredResourceCoverage"
+
+
+@dataclass(frozen=True)
+class RecordedCoverage:
+    """Whether an operation's recorded progress covers every required owner.
+
+    Coverage is read from the persisted progress rows, not from the handler set
+    this build happens to have, and it is checked per confirmed member so a member
+    whose own required work was never recorded is not masked by another member's
+    rows.
+    """
+
+    missing: tuple[tuple[str, str], ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing
+
+
+def recorded_coverage(
+    receipt: ScopeDeletionReceipt,
+    /,
+    *,
+    required: tuple[str, ...] = REQUIRED_SCOPE_RESOURCE_HANDLERS,
+) -> RecordedCoverage:
+    """Report each (member, required handler) the operation never recorded."""
+
+    recorded = {(item.scope_id): {entry.handler for entry in receipt.progress} for item in receipt.progress}
+    missing: list[tuple[str, str]] = []
+    for member in receipt.members:
+        present = recorded.get(member.scope_id, set())
+        missing.extend((member.scope_id, handler) for handler in required if handler not in present)
+    return RecordedCoverage(missing=tuple(missing))
 
 
 def receipt_scope_ids(receipt: ScopeDeletionReceipt, /) -> tuple[str, ...]:

@@ -674,6 +674,16 @@ class ScopeRepository:
             .values(state="complete")
         )
 
+    async def clear_finalization_failure(self, connection: AsyncConnection, operation_id: str, /) -> None:
+        """Clear the recorded blocker once the operation gained real pending work."""
+        from powercontext.builtin.persistence.tables import SCOPE_DELETION_PROGRESS_TABLE
+
+        await connection.execute(
+            update(SCOPE_DELETION_PROGRESS_TABLE)
+            .where(SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id)
+            .values(last_error_code=None)
+        )
+
     async def record_finalization_failure(
         self, connection: AsyncConnection, operation_id: str, error_code: str, /
     ) -> None:
