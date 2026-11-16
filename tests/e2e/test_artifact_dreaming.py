@@ -3906,3 +3906,188 @@ def test_admitted_origins_survive_candidate_approval_and_restart(database: Datab
             assert len(approved_again.origins) == 2
 
     asyncio.run(scenario())
+
+
+def test_recorded_origins_survive_portable_export_and_restore(tmp_path: Path) -> None:
+    """A committed origin set is immutable history, so an archive must carry it exactly.
+
+    Public entry points only: contexts, review, artifacts, portability. Mixed ordered
+    origins with a maximum-length Source id and a shared local id across two Scopes.
+    """
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.sources import SourceLineRangeLocator, SourceRef
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+    content = proposal.model_dump(mode="json")
+    long_id = "s" * 200
+    origins = (
+        RecordedOrigin(
+            scope_id="scp_alice",
+            source=SourceRef(
+                source_type="content",
+                source_id=long_id,
+                locator=SourceLineRangeLocator(start_line=3, end_line=9),
+            ),
+            digest=content_digest(b"alice"),
+        ),
+        RecordedOrigin(
+            scope_id="scp_bob",
+            artifact=ArtifactRef(family="experience", artifact_id="shared", revision=4),
+            digest=content_digest(b"bob"),
+        ),
+        # The same local Source id as Alice's, in a different Scope, with its own digest.
+        RecordedOrigin(
+            scope_id="scp_carol",
+            source=SourceRef(source_type="content", source_id=long_id),
+            digest=content_digest(b"carol"),
+        ),
+    )
+
+    async def authorize(scopes) -> None:
+        return None
+
+    async def export(database: Path, archive: Path) -> tuple[str, ArtifactRef]:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        ) as contexts:
+            scope_id = (
+                await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))
+            ).scope_id
+            created = await contexts.records.create_artifact(scope_id, "experience", ArtifactWrite(content=content))
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            candidate = await review.propose_experience_from_origins(
+                proposal,
+                sources=(),
+                artifacts=(citation,),
+                origins=origins,
+                target=None,
+                reason="Reconciled the two channels.",
+            )
+            approved = await review.approve(candidate.candidate_id, candidate.version)
+            result = approved.result_artifact
+            assert result is not None
+            await contexts.portability.export([scope_id], archive, authorize=authorize)
+            return scope_id, result
+
+    async def read(database: Path, scope_id: str, ref: ArtifactRef):
+        async with (
+            open_builtin_contexts(
+                BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+            ) as contexts,
+            contexts.database.transaction() as connection,
+        ):
+            return await contexts.repositories.artifacts.get(connection, scope_id, ref)
+
+    async def scenario() -> None:
+        archive = tmp_path / "bundle.pcb"
+        scope_id, ref = await export(tmp_path / "source.db", archive)
+        source_revision = await read(tmp_path / "source.db", scope_id, ref)
+        assert source_revision.lineage.origins == origins
+
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'restored.db'}"))
+        ) as contexts:
+            await contexts.portability.restore(archive)
+        restored = await read(tmp_path / "restored.db", scope_id, ref)
+        # Exact identities, ordering, locators and digests, with no dependency on the
+        # origin Scopes existing in the target database.
+        assert restored.lineage.origins == origins
+        assert [(item.scope_id, item.digest) for item in restored.lineage.origins] == [
+            (item.scope_id, item.digest) for item in source_revision.lineage.origins
+        ]
+
+        # A second export of the restored database is stable and reusable.
+        rearchive = tmp_path / "again.pcb"
+        await export_restored(tmp_path / "restored.db", rearchive, scope_id)
+        assert rearchive.stat().st_size > 0
+
+    async def export_restored(database: Path, archive: Path, scope_id: str) -> None:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        ) as contexts:
+            await contexts.portability.export([scope_id], archive, authorize=authorize)
+
+    asyncio.run(scenario())
+
+
+def test_origin_commit_refuses_when_storage_predates_origins(tmp_path: Path) -> None:
+    """A pre-relation database keeps its local records usable and refuses origins clearly.
+
+    It reports a handled domain error instead of leaking the missing relation's name,
+    while the Candidate stays pending and an ordinary local revision still works.
+    """
+
+    from sqlalchemy import text
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.errors import OriginStorageUnavailableError
+    from powercontext.sources import SourceRef
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+    content = proposal.model_dump(mode="json")
+
+    async def scenario() -> None:
+        database = tmp_path / "legacy.db"
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        async with open_builtin_contexts(config) as contexts:
+            scope_id = (
+                await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))
+            ).scope_id
+            created = await contexts.records.create_artifact(scope_id, "experience", ArtifactWrite(content=content))
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            candidate = await review.propose_experience_from_origins(
+                proposal,
+                sources=(),
+                artifacts=(citation,),
+                origins=(
+                    RecordedOrigin(
+                        scope_id="scp_origin",
+                        source=SourceRef(source_type="content", source_id="note"),
+                        digest=content_digest(b"note"),
+                    ),
+                ),
+                target=None,
+                reason="Admitted from another Scope.",
+            )
+            # A managed database whose revision chain predates recorded origins.
+            async with contexts.database.transaction() as connection:
+                await connection.execute(text("DROP TABLE pc_artifact_lineage_origins"))
+
+            with pytest.raises(OriginStorageUnavailableError):
+                await review.approve(candidate.candidate_id, candidate.version)
+
+            # The accepted proposal is unchanged, and local work still succeeds.
+            async with contexts.database.transaction() as connection:
+                pending = await contexts.repositories.candidates.get(connection, scope_id, candidate.candidate_id)
+            assert pending.status == "pending"
+            local = await contexts.records.create_artifact(scope_id, "experience", ArtifactWrite(content=content))
+            async with contexts.database.transaction() as connection:
+                readable = await contexts.repositories.artifacts.get(
+                    connection,
+                    scope_id,
+                    ArtifactRef(family="experience", artifact_id=local.artifact_id, revision=local.revision),
+                )
+            assert readable.lineage.origins == ()
+
+    asyncio.run(scenario())

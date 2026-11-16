@@ -215,6 +215,17 @@ class InvalidArtifactReferenceError(ArtifactError, ValueError):
         super().__init__(f"invalid Artifact reference {field}: {detail}")
 
 
+class OriginStorageUnavailableError(ArtifactError, RuntimeError):
+    """Raised when a revision with recorded origins has no relation to store them in.
+
+    A database whose managed revision chain predates recorded origins cannot hold
+    them, so the write is refused in domain terms instead of failing at INSERT.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("recorded origins require storage this database does not provide")
+
+
 class ArtifactFamilyMismatchError(ArtifactError, ValueError):
     """Raised when a Revision and Draft belong to different families."""
 

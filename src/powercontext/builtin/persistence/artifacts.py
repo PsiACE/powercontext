@@ -65,6 +65,7 @@ from powercontext.builtin.persistence.tables import (
 from powercontext.builtin.source_eligibility import ArtifactLineageTarget, require_source_eligible
 from powercontext.errors import (
     ArtifactFamilyMismatchError,
+    OriginStorageUnavailableError,
     RevisionConflictError,
 )
 from powercontext.limits import MAX_SCOPE_ID_LENGTH
@@ -930,6 +931,10 @@ class ArtifactRepository:
         revisions: Sequence[tuple[type[Artifact[Any]], ArtifactRef, object, ArtifactLineage]],
     ) -> tuple[Artifact[Any], ...]:
         bodies, sources, source_locators, artifact_refs, origins, artifacts = [], [], [], [], [], []
+        if any(lineage.origins for _, _, _, lineage in revisions) and not await _has_origin_relation(connection):
+            # A database whose revision chain predates the relation must refuse the
+            # origin-bearing write in domain terms, not fail at INSERT on a table name.
+            raise OriginStorageUnavailableError()
         for artifact_type, ref, content, lineage in revisions:
             if not isinstance(content, BaseModel):
                 raise TypeError("artifact content must be a BaseModel")  # noqa: TRY003

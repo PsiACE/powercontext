@@ -366,10 +366,12 @@ ARTIFACT_LINEAGE_ORIGINS_TABLE = Table(
     Column("origin_scope_id", identity_string(MAX_SCOPE_ID_LENGTH), nullable=False),
     Column("origin_kind", identity_string(16), nullable=False),
     Column("origin_family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), nullable=False),
-    Column("origin_id", identity_string(MAX_ARTIFACT_ID_LENGTH), nullable=False),
+    # An Artifact id or a Source id: both must fit, and a Source id is the wider one.
+    Column("origin_id", identity_string(MAX_SOURCE_ID_LENGTH), nullable=False),
     Column("origin_revision", Integer),
     Column("locator", _canonical_payload_type()),
-    Column("digest", identity_string(64), nullable=False),
+    # Exactly the prefixed sha256 the model accepts, matching material_digest.
+    Column("digest", identity_string(71), nullable=False),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id", "revision"),
         (
