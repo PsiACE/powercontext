@@ -33,6 +33,7 @@ authorization policy, no second conclusion store, and no revision lineage.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -80,6 +81,17 @@ from powercontext.builtin.source_eligibility import is_generation_eligible
 from powercontext.sources import SourceRef
 
 _MAX_SCOPE_DEPTH = 16
+
+
+@dataclass(frozen=True, slots=True)
+class _RunTerms:
+    """One run's loaded agreement: declaration and recorded consent held apart."""
+
+    rule: ShareRule
+    records: tuple[ShareAcceptance, ...]
+    required_audiences: tuple[str, ...]
+    accepted_audiences: tuple[str, ...]
+
 
 ShareAuthorizer = Callable[[str, "ArtifactAddress | SourceRef"], Awaitable[None]]
 """Check one origin under the execution principal's current authority.
@@ -729,14 +741,14 @@ class ShareRuleService:
         """Report which acceptance records cover one pinned run's actual origins.
 
         Per run on purpose: a consumer needs the consent applying to this manifest, not
-        the union of every historical run. Each recorded origin is paired with the rows
-        that contribute it under the same definition `acceptance_contribution` reports.
+        the union of every historical run. Origins and audiences both come from the
+        recorded rows, so an absent target acceptance makes `audiences_covered` false.
         """
 
         async with self._database.transaction() as connection:
             run = await self._require_run(connection, scope_id, run_id)
-            rule, records, audiences = await self._run_terms(connection, scope_id, run)
-        contributions = await self._run_origin_contributions(rule, records, run)
+            terms = await self._run_terms(connection, scope_id, run)
+        contributions = await self._run_origin_contributions(terms.rule, terms.records, run)
         used = run.origin_scopes()
         covered = tuple(origin for origin in used if contributions[origin])
         uncovered = tuple(origin for origin in used if not contributions[origin])
@@ -744,13 +756,13 @@ class ShareRuleService:
             run_id=run_id,
             rule_id=run.rule_id,
             rule_version=run.rule_version,
-            terms_digest=rule.terms_binding().digest(),
+            terms_digest=terms.rule.terms_binding().digest(),
             run_origin_scope_ids=used,
             covered_origin_scope_ids=covered,
             uncovered_origin_scope_ids=uncovered,
             acceptance_ids_by_origin=tuple((origin, contributions[origin]) for origin in used),
-            declared_audience_scope_ids=audiences,
-            accepted_audience_scope_ids=await self._accepted_audiences(scope_id, run.rule_id, run.rule_version),
+            declared_audience_scope_ids=terms.required_audiences,
+            accepted_audience_scope_ids=terms.accepted_audiences,
         )
 
     async def acceptance_contribution(
@@ -766,11 +778,11 @@ class ShareRuleService:
 
         async with self._database.transaction() as connection:
             run = await self._require_run(connection, scope_id, run_id)
-            rule, records, _ = await self._run_terms(connection, scope_id, run)
-            record = next((item for item in records if item.acceptance_id == acceptance_id), None)
+            terms = await self._run_terms(connection, scope_id, run)
+            record = next((item for item in terms.records if item.acceptance_id == acceptance_id), None)
         if record is None:
             raise ShareRuleNotFoundError(scope_id, run.rule_id, run.rule_version)
-        contributions = await self._run_origin_contributions(rule, (record,), run)
+        contributions = await self._run_origin_contributions(terms.rule, (record,), run)
         contributed = tuple(sorted(origin for origin, ids in contributions.items() if ids))
         return ShareAcceptanceContribution(
             run_id=run_id,
@@ -784,28 +796,20 @@ class ShareRuleService:
             contributed_origin_scope_ids=contributed,
         )
 
-    async def _accepted_audiences(self, scope_id: str, rule_id: str, rule_version: int, /) -> tuple[str, ...]:
-        """Return the audiences accepted for this exact rule version and terms."""
-
-        async with self._database.transaction() as connection:
-            rule = await self.rules.version(connection, scope_id, rule_id, rule_version)
-            if rule is None:
-                raise ShareRuleNotFoundError(scope_id, rule_id, rule_version)
-            _, audiences = await self.acceptances.coverage(
-                connection, scope_id, rule_id, rule_version, rule.terms_binding().digest()
-            )
-        return audiences
-
     async def covers_run(self, scope_id: str, run_id: str, /) -> bool:
-        """Confirm one recorded run's actual origins are inside the accepted agreement."""
+        """Confirm one recorded run's origins and audiences are actually agreed.
+
+        The required audience is the declaration the agreement binds; the accepted
+        audience is what the stored rows record. They are different sets, so a missing
+        target acceptance makes this false rather than trivially true.
+        """
 
         async with self._database.transaction() as connection:
             run = await self._require_run(connection, scope_id, run_id)
-            rule, records, audiences = await self._run_terms(connection, scope_id, run)
-        contributions = await self._run_origin_contributions(rule, records, run)
-        binding = rule.terms_binding()
-        return all(contributions[origin] for origin in run.origin_scopes()) and set(binding.audience_scope_ids) <= set(
-            audiences
+            terms = await self._run_terms(connection, scope_id, run)
+        contributions = await self._run_origin_contributions(terms.rule, terms.records, run)
+        return all(contributions[origin] for origin in run.origin_scopes()) and set(terms.required_audiences) <= set(
+            terms.accepted_audiences
         )
 
     async def _covered_origins(
@@ -836,21 +840,32 @@ class ShareRuleService:
         covered.update(await self._descendants_among(root_scope_id, required_origins, rule))
         return covered
 
-    async def _run_terms(
-        self, connection: AsyncConnection, scope_id: str, run: ShareRun
-    ) -> tuple[ShareRule, tuple[ShareAcceptance, ...], tuple[str, ...]]:
-        """Load one run's rule version, its accepted rows, and the agreed audience.
+    async def _run_terms(self, connection: AsyncConnection, scope_id: str, run: ShareRun) -> _RunTerms:
+        """Load one run's rule version, its accepted rows, and both audience sets.
 
-        The audience is the binding's set, not the raw declared tuple, so an unstated
-        audience (the target Scope) is reported exactly as admission enforces it.
+        The two audience sets stay distinct on purpose: `required_audiences` is the
+        declaration the agreement binds (the binding substitutes the target Scope for an
+        unstated audience), while `accepted_audiences` is what acceptance rows actually
+        record. Comparing a declaration with itself would answer nothing, so this value
+        keeps them as separate fields and every reader reads the recorded set.
         """
 
         rule = await self.rules.version(connection, scope_id, run.rule_id, run.rule_version)
         if rule is None:
             raise ShareRuleNotFoundError(scope_id, run.rule_id, run.rule_version)
-        digest = rule.terms_binding().digest()
-        records = await self.acceptances.for_terms(connection, scope_id, run.rule_id, run.rule_version, digest)
-        return rule, records, rule.terms_binding().audience_scope_ids
+        binding = rule.terms_binding()
+        records = await self.acceptances.for_terms(
+            connection, scope_id, run.rule_id, run.rule_version, binding.digest()
+        )
+        _, accepted_audiences = await self.acceptances.coverage(
+            connection, scope_id, run.rule_id, run.rule_version, binding.digest()
+        )
+        return _RunTerms(
+            rule=rule,
+            records=records,
+            required_audiences=binding.audience_scope_ids,
+            accepted_audiences=accepted_audiences,
+        )
 
     async def _run_origin_contributions(
         self, rule: ShareRule, records: tuple[ShareAcceptance, ...], run: ShareRun
