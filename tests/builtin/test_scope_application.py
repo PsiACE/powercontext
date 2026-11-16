@@ -32,6 +32,8 @@ from powercontext.builtin.scope import (
     ScopeExternalReference,
     ScopeIdempotencyConflictError,
     ScopeMutation,
+    ScopeRangeLimitError,
+    ScopeRangeLimits,
     ScopeRelationshipError,
     ScopeSelection,
 )
@@ -416,5 +418,115 @@ def test_scopes_listed_by_external_reference_match_kind_and_value_exactly(tmp_pa
             reference = ScopeExternalReference(kind="plugin", value="rooms")
             assert await scopes.list(external_reference=reference) == (owned,)
             assert await scopes.list(external_reference=ScopeExternalReference(kind="plugin", value="none")) == ()
+
+    asyncio.run(scenario())
+
+
+def test_structural_range_covers_descendants_and_excludes_referenced_scopes() -> None:
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
+            scopes = ScopeApplication(profile.database)
+            orders = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="orders"))
+            interface = await scopes.create(
+                ScopeDraft(
+                    title="Interface",
+                    summary="Library",
+                    parent_scope_id=orders.scope_id,
+                    idempotency_key="interface",
+                )
+            )
+            help_scope = await scopes.create(
+                ScopeDraft(title="Help", summary="Library", parent_scope_id=orders.scope_id, idempotency_key="help")
+            )
+            operations = await scopes.create(
+                ScopeDraft(title="Operations", summary="Team", idempotency_key="operations")
+            )
+            runbook = await scopes.create(
+                ScopeDraft(
+                    title="Runbook",
+                    summary="Library",
+                    parent_scope_id=operations.scope_id,
+                    idempotency_key="runbook",
+                )
+            )
+            # A direct Context Reference to an external Scope must not become membership.
+            await scopes.update(
+                orders.scope_id,
+                ScopeMutation(
+                    expected_version=orders.version,
+                    title="Orders",
+                    summary="Project",
+                    context_references=(runbook.scope_id,),
+                ),
+            )
+
+            structural = await scopes.resolve_range(ScopeSelection(mode="subtree", root_scope_id=orders.scope_id))
+            referenced = await scopes.resolve_range(ScopeSelection(mode="exact", scope_ids=(runbook.scope_id,)))
+
+            assert structural.scope_ids[0] == orders.scope_id
+            assert set(structural.scope_ids) == {orders.scope_id, interface.scope_id, help_scope.scope_id}
+            assert referenced.scope_ids == (runbook.scope_id,)
+            assert operations.scope_id not in structural.scope_ids
+            assert structural.versions == {
+                orders.scope_id: 2,
+                interface.scope_id: 1,
+                help_scope.scope_id: 1,
+            }
+            # Comparing structural membership is stable until the tree changes.
+            repeated = await scopes.resolve_range(ScopeSelection(mode="subtree", root_scope_id=orders.scope_id))
+            assert repeated == structural
+
+    asyncio.run(scenario())
+
+
+def test_structural_range_refuses_budget_exhaustion_instead_of_truncating() -> None:
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
+            scopes = ScopeApplication(profile.database)
+            root = await scopes.create(ScopeDraft(title="Root", summary="Root", idempotency_key="root"))
+            child = await scopes.create(
+                ScopeDraft(title="Child", summary="Child", parent_scope_id=root.scope_id, idempotency_key="child")
+            )
+            await scopes.create(
+                ScopeDraft(title="Leaf", summary="Leaf", parent_scope_id=child.scope_id, idempotency_key="leaf")
+            )
+
+            # A changed set or version changes what a later confirmation would see.
+            before = await scopes.resolve_range(ScopeSelection(mode="subtree", root_scope_id=root.scope_id))
+            await scopes.update(
+                child.scope_id,
+                ScopeMutation(
+                    expected_version=child.version,
+                    title="Child",
+                    summary="Child",
+                    parent_scope_id=root.scope_id,
+                ),
+            )
+            after = await scopes.resolve_range(ScopeSelection(mode="subtree", root_scope_id=root.scope_id))
+            assert after.scope_ids == before.scope_ids
+            assert after.membership_digest != before.membership_digest
+
+            with pytest.raises(ScopeRangeLimitError) as nodes:
+                await scopes.resolve_range(
+                    ScopeSelection(mode="subtree", root_scope_id=root.scope_id),
+                    limits=ScopeRangeLimits(max_nodes=2),
+                )
+            assert (nodes.value.kind, nodes.value.limit) == ("nodes", 2)
+
+            with pytest.raises(ScopeRangeLimitError) as depth:
+                await scopes.resolve_range(
+                    ScopeSelection(mode="subtree", root_scope_id=root.scope_id),
+                    limits=ScopeRangeLimits(max_depth=1),
+                )
+            assert (depth.value.kind, depth.value.limit) == ("depth", 1)
+
+            with pytest.raises(ScopeRangeLimitError):
+                await scopes.resolve_range(ScopeSelection(mode="all"))
+
+            # The observation contract keeps its existing unbounded behavior.
+            assert {
+                scope.scope_id
+                for scope in await scopes.resolve_selection(ScopeSelection(mode="subtree", root_scope_id=root.scope_id))
+            } == {scope.scope_id for scope in after.scopes}
 
     asyncio.run(scenario())
