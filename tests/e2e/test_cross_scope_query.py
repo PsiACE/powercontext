@@ -38,6 +38,7 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite, BaseValueNotFoundError
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig, open_builtin_contexts, open_builtin_runtime
 from powercontext.builtin.runtime.cross_scope_query import (
+    CrossScopeQueryBoundsError,
     CrossScopeQueryRequest,
     CrossScopeQueryUnsupported,
 )
@@ -131,6 +132,16 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
                 (helpdesk, "experience", RETRY_TRACE, 1),
             ]
             assert [(hit.origin_rank, hit.origin.scope_id) for hit in complete.hits] == [(1, interface), (1, helpdesk)]
+
+            # A candidate budget narrower than the caller's own window is never a complete search.
+            with pytest.raises(CrossScopeQueryBoundsError):
+                await query.search(request(limit=4, max_candidates=6), execution_context=context)
+            narrowed = await query.search(
+                request(limit=4, max_candidates=6, coverage="partial"), execution_context=context
+            )
+            assert narrowed.coverage.complete is False
+            assert narrowed.coverage.reason == "candidate_budget"
+            assert narrowed.coverage.bounded_origins == (interface, helpdesk)
 
             # The source publishes a new revision; the earlier hit still names revision one.
             published = await runtime.records.for_scope(interface).replace_artifact(
