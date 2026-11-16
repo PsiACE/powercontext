@@ -123,10 +123,9 @@ class CreateDreamRunRequest(BaseModel):
         operation = info.data.get("operation")
         if operation == "revise_tags":
             return value
-        # A first Profile may be initialized from Sources alone.
-        if operation == "initialize_profile" and not value:
-            return value
         scoped = info.data.get("scoped", ())
+        # A first Profile may be initialized from Sources alone, so it is exempt from the
+        # "at least one Artifact" rule only; the published Artifact bound still applies.
         # Every Artifact selection counts, whichever Scope owns it: naming the run Scope
         # is documented as the same selection as a local one, and a future external entry
         # is the same kind of input. ``scoped`` is declared first so it is visible here.
@@ -137,7 +136,7 @@ class CreateDreamRunRequest(BaseModel):
                 "artifacts must select at most 20 Artifacts (1 to 20 Artifacts, at most 32 references with Sources)",
             )
         # A scoped-only selection is complete without local Artifacts.
-        if not value and not scoped:
+        if not value and not scoped and operation != "initialize_profile":
             raise PydanticCustomError(
                 "evidence_selection_required",
                 "artifacts must select at least 1 Artifact (1 to 20 Artifacts, at most 32 references with Sources)",

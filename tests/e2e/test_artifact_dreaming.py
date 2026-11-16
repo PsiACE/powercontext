@@ -4507,3 +4507,193 @@ def test_first_profile_initialization_refuses_an_existing_baseline(database: Dat
                 )
 
     asyncio.run(scenario())
+
+
+def test_first_profile_initialization_keeps_the_published_bounds(database: DatabaseConfig) -> None:
+    """Init keeps the 20-Artifact and 32-reference bounds while allowing Sources-only input."""
+
+    from pydantic import ValidationError
+
+    from powercontext.artifacts import ArtifactRef
+
+    reference = ArtifactRef(family="experience", artifact_id="experience-1", revision=1)
+    artifacts = tuple(reference.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(21))
+    sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(33))
+
+    # The published Artifact bound applies to a scoped selection here too.
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="initialize_profile",
+            scoped=tuple(ScopedEvidence(scope_id="scp_init", artifact=item) for item in artifacts),
+            idempotency_key="init-over-artifacts",
+        )
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="initialize_profile",
+            sources=sources,
+            idempotency_key="init-over-references",
+        )
+
+    # Sources-only, the exact 20-Artifact bound, and the empty refusal are unchanged.
+    assert (
+        CreateDreamRunRequest(
+            operation="initialize_profile",
+            sources=sources[:1],
+            idempotency_key="init-sources-only",
+        ).target
+        is None
+    )
+    assert (
+        len(
+            CreateDreamRunRequest(
+                operation="initialize_profile",
+                scoped=tuple(ScopedEvidence(scope_id="scp_init", artifact=item) for item in artifacts[:20]),
+                idempotency_key="init-at-the-limit",
+            ).scoped
+        )
+        == 20
+    )
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(operation="initialize_profile", idempotency_key="init-empty")
+
+
+def test_first_profile_initialization_refuses_before_generating_without_policy(database: DatabaseConfig) -> None:
+    """A Scope without a Profile policy is refused before the billed generation attempt."""
+
+    from powercontext.builtin.dream.models import GetDreamRunRequest
+    from powercontext.builtin.records import BaseValueNotFoundError
+
+    class BillingGenerator:
+        config_id = "init-no-policy"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, value):
+            self.calls += 1
+            raise AssertionError  # a policy-less initialization must not reach generation
+
+    async def scenario() -> None:
+        generator = BillingGenerator()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=generator,
+        ) as runtime:
+            scope_id = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="nopolicy"))
+            ).scope_id
+            # No policy is created for this Scope.
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+            )
+            dream = runtime.dream.for_scope(scope_id)
+            accepted = await dream.create(
+                CreateDreamRunRequest(
+                    operation="initialize_profile",
+                    artifacts=(),
+                    sources=(source.source_ref,),
+                    idempotency_key="init-no-policy",
+                )
+            )
+            await process_pending(runtime)
+            completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+            assert (completed.status, completed.error) == ("failed", "capability_unavailable")
+            # The refusal costs nothing, and no Profile state was invented.
+            assert generator.calls == 0
+            # No Profile policy state was invented to make the operation succeed.
+            with pytest.raises(BaseValueNotFoundError):
+                await runtime.profiles.get_policy(scope_id)
+
+    asyncio.run(scenario())
+
+
+def test_first_profile_initialization_attests_its_candidate_under_enforced_access(
+    database: DatabaseConfig,
+) -> None:
+    """Enforced access records the initialization Candidate owner instead of failing.
+
+    The attester is the same callable the Server installs; no dummy attestation or
+    implicit write/admin grant is involved, and the run commits a Candidate normally.
+    """
+
+    from powercontext.builtin.authz.composition import open_builtin_access_control
+    from powercontext.builtin.authz.dream import principal_identity
+    from powercontext.builtin.authz.models import AccessRole, PrincipalRef, ResourceRef
+    from powercontext.builtin.authz.service import AccessAuditContext, CreateBinding
+    from powercontext.builtin.dream.models import GetDreamRunRequest
+    from powercontext.server.dream_access import DreamAccess
+
+    class EnforcedGenerator:
+        config_id = "init-enforced"
+
+        async def generate(self, value):
+            used = next(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="The first Profile comes from this Scope's own evidence.",
+                    intent="create",
+                    proposal=ProfileWriteContent(content="# Profile\n\nBased in Shenzhen."),
+                    evidence_ids=(used,),
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    admin = PrincipalRef(type="service", id="init-admin")
+    author = PrincipalRef(type="user", id="init-author")
+    context = AccessAuditContext(transport="http", operation="test_first_profile")
+
+    async def scenario() -> None:
+        async with open_builtin_access_control(database, bootstrap_administrators=(admin,)) as access:
+            adapter = DreamAccess(access)
+            async with open_builtin_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=EnforcedGenerator(),
+                dream_authorizer=adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+                dream_candidate_attester=adapter.attest_candidate,
+            ) as runtime:
+                adapter.bind(runtime)
+                scope_id = (
+                    await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="init"))
+                ).scope_id
+                for subject, role, key in (
+                    (admin, AccessRole.SCOPE_REVIEWER, "init-reviewer"),
+                    (author, AccessRole.SCOPE_CONTRIBUTOR, "init-contributor"),
+                ):
+                    await access.create_binding(
+                        admin,
+                        CreateBinding(
+                            subject=subject,
+                            resource=ResourceRef.scope(scope_id),
+                            role=role,
+                            idempotency_key=key,
+                        ),
+                        context=context,
+                    )
+                await runtime.profiles.put_policy(scope_id, generation_enabled=True, expected_version=0)
+                source = await runtime.sources.for_scope(scope_id).capture(
+                    CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+                )
+                principal = principal_identity(author)
+                dream = runtime.dream.for_scope(scope_id, principal_id=principal)
+                accepted = await dream.create(
+                    CreateDreamRunRequest(
+                        operation="initialize_profile",
+                        artifacts=(),
+                        sources=(source.source_ref,),
+                        idempotency_key="init-enforced",
+                    )
+                )
+                await process_pending(runtime)
+                completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                # The run commits a Candidate instead of dying on attestation.
+                assert completed.outcome == "proposed", completed.error
+                assert completed.candidate is not None
+                owner = await access.candidate_owner(scope_id, completed.candidate.candidate_id)
+                assert owner is not None
+                assert owner.proposed_owner == author
+
+    asyncio.run(scenario())

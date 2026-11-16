@@ -480,7 +480,9 @@ class DreamService:
                 if error.detail == "unsupported_target":
                     raise DreamError("unsupported_target") from error
                 raise
-        if run.operation == "revise_profile":
+        if run.operation in {"revise_profile", "initialize_profile"}:
+            # Both need the Scope policy; a policy-less Scope is refused before the billed
+            # generation attempt rather than after it.
             async with self._transaction() as connection:
                 await self._check_profile_policy(connection, record)
 
@@ -516,22 +518,18 @@ class DreamService:
         async with self._transaction() as connection:
             await self.repository.lock_owned(connection, record)
             await self._authorize(run.scope_id, record.principal_id, "contribute")
-            if run.operation == "revise_profile":
+            if run.operation in {"revise_profile", "initialize_profile"}:
                 await self._check_profile_policy(connection, record)
             resolved = await self._resolve(record, connection)
             candidate = None
             if plan.outcome == "proposed":
                 if self.attest_candidate is not None and run.operation != "revise_tags":
-                    family = {
-                        "derive_skill": "skill",
-                        "revise_skill": "skill",
-                        "refine_experience": "experience",
-                        "revise_profile": "profile",
-                        "revise_memory": "atomic-memory",
-                        "revise_topic_memory": "topic-memory",
-                        "refresh_handoff": "handoff",
-                        "revise_prompt": "prompt",
-                    }[run.operation]
+                    # The owning operation spec already declares the Family, so a new
+                    # operation cannot be left out of attestation the way a copied map
+                    # would allow.
+                    family = operation_spec(run.operation).family
+                    if family is None:
+                        raise DreamError("capability_unavailable")
                     await self.attest_candidate(connection, record, _candidate_id(record), family)
                 candidate = await self._propose(connection, record, plan, resolved)
             completed = run.model_copy(
