@@ -136,7 +136,7 @@ from powercontext.builtin.persistence.processing_migration import (
     bootstrap_processing_schema,
 )
 from powercontext.builtin.persistence.revision_metadata_schema import ensure_artifact_revision_metadata_schema
-from powercontext.builtin.persistence.schema import ensure_portable_timestamp_precision
+from powercontext.builtin.persistence.schema import create_tables, ensure_portable_timestamp_precision
 from powercontext.builtin.persistence.scope_search_schema import ensure_scope_search_schema
 from powercontext.builtin.persistence.seekdb.profile import SeekDBConfig, SeekDBProfile
 from powercontext.builtin.persistence.skill_distribution_schema import ensure_skill_distribution_schema
@@ -147,7 +147,7 @@ from powercontext.builtin.persistence.sqlite.topic_memory_index import (
     SQLiteTopicMemoryFTSIndex,
     SQLiteTopicMemoryVectorIndex,
 )
-from powercontext.builtin.persistence.tables import BUILTIN_TABLES, PORTABLE_RESTORE_RECEIPTS_TABLE
+from powercontext.builtin.persistence.tables import BUILTIN_TABLES, PORTABLE_RESTORE_RECEIPTS_TABLE, SHARE_TABLES
 from powercontext.builtin.persistence.tag_schema import ensure_topic_memory_tag_schema
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
@@ -229,6 +229,7 @@ from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecove
 from powercontext.builtin.runtime.topic_memory_scope import topic_memory_processing_block
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.runtime.worker_observability import worker_model_usage_collector
+from powercontext.builtin.sharing.service import ShareRuleService
 from powercontext.builtin.sources import (
     BUILTIN_SOURCE_REGISTRY,
     TEXT_EVIDENCE_PROJECTION_KEY,
@@ -927,6 +928,12 @@ async def open_builtin_runtime(  # noqa: C901
                 decision_model=configured_decision,
                 publication_application=contexts.publications,
                 scope_application=contexts.scopes,
+                share_rule_service=ShareRuleService(
+                    contexts.database,
+                    contexts.scopes,
+                    contexts.repositories.sources,
+                    contexts.repositories.artifacts,
+                ),
                 readiness=RuntimeReadinessChecks(
                     readiness_probes,
                     disabled_dependencies=(name for name, probe in inference_readiness if probe is None),
@@ -1280,6 +1287,7 @@ async def open_builtin_contexts(  # noqa: C901 -- Backend admission and resource
                     await ensure_scope_search_schema(connection)
                     await ensure_artifact_revision_metadata_schema(connection)
                     await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
+                    await create_tables(connection, SHARE_TABLES)
                     # A Topic child reuses its parent's schema. It never reads or
                     # writes Memory/Experience projections; rebuilding their FTS
                     # indexes here would take the shared SQLite write lock once
@@ -1370,6 +1378,7 @@ async def open_builtin_contexts(  # noqa: C901 -- Backend admission and resource
                 await ensure_scope_search_schema(connection)
                 await ensure_artifact_revision_metadata_schema(connection)
                 await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
+                await create_tables(connection, SHARE_TABLES)
                 if not _topic_memory_worker:
                     await _initialize_atomic_memory_authority(connection)
                     await atomic_index.initialize(connection)

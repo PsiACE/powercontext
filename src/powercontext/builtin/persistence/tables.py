@@ -1435,6 +1435,109 @@ RECURRENCE_OBSERVATION_TABLE = Table(
 
 RECURRENCE_TABLES = (RECURRENCE_MATCH_TABLE, RECURRENCE_OBSERVATION_TABLE)
 
+MAX_SHARE_RULE_ID_LENGTH = 64
+MAX_SHARE_RUN_ID_LENGTH = 64
+MAX_SHARE_NOTIFICATION_KEY_LENGTH = 128
+MAX_SHARE_DIGEST_LENGTH = 71
+MAX_SHARE_STATE_LENGTH = 16
+MAX_SHARE_ACTOR_LENGTH = 128
+MAX_SHARE_ACCEPTANCE_ID_LENGTH = 64
+
+# A standing rule belongs to its target Scope: the head row carries the accepted
+# selection state, every accepted version is retained, and a run keeps the whole
+# manifest it pinned. A retry reads the run, never today's heads.
+SHARE_RULE_HEADS_TABLE = Table(
+    "pc_share_rule_heads",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("rule_id", identity_string(MAX_SHARE_RULE_ID_LENGTH), primary_key=True),
+    Column("current_version", BigInteger, nullable=False),
+    Column("status", identity_string(MAX_SHARE_STATE_LENGTH), nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    ForeignKeyConstraint(("scope_id",), ("pc_scopes.scope_id",), ondelete="CASCADE"),
+    CheckConstraint("current_version > 0", name="ck_pc_share_rule_heads_version_positive"),
+    CheckConstraint("status IN ('active', 'invalidated')", name="ck_pc_share_rule_heads_status"),
+)
+
+SHARE_RULE_VERSIONS_TABLE = Table(
+    "pc_share_rule_versions",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("rule_id", identity_string(MAX_SHARE_RULE_ID_LENGTH), primary_key=True),
+    Column("version", BigInteger, primary_key=True),
+    Column("payload", _canonical_payload_type(), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    ForeignKeyConstraint(
+        ("scope_id", "rule_id"),
+        ("pc_share_rule_heads.scope_id", "pc_share_rule_heads.rule_id"),
+        ondelete="CASCADE",
+    ),
+    CheckConstraint("version > 0", name="ck_pc_share_rule_versions_version_positive"),
+)
+
+SHARE_RUNS_TABLE = Table(
+    "pc_share_runs",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("run_id", identity_string(MAX_SHARE_RUN_ID_LENGTH), primary_key=True),
+    Column("rule_id", identity_string(MAX_SHARE_RULE_ID_LENGTH), nullable=False),
+    Column("rule_version", BigInteger, nullable=False),
+    Column("state", identity_string(MAX_SHARE_STATE_LENGTH), nullable=False),
+    Column("outcome", identity_string(MAX_SHARE_STATE_LENGTH), nullable=False),
+    Column("notification_key", identity_string(MAX_SHARE_NOTIFICATION_KEY_LENGTH), nullable=True),
+    Column("manifest_digest", identity_string(MAX_SHARE_DIGEST_LENGTH), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("payload", _canonical_payload_type(), nullable=False),
+    ForeignKeyConstraint(("scope_id",), ("pc_scopes.scope_id",), ondelete="CASCADE"),
+    UniqueConstraint("scope_id", "rule_id", "notification_key", name="uq_pc_share_runs_notification"),
+    Index("ix_pc_share_runs_rule", "scope_id", "rule_id", "created_at", "run_id"),
+    CheckConstraint("rule_version > 0", name="ck_pc_share_runs_rule_version_positive"),
+    CheckConstraint("state IN ('pinned', 'invalidated')", name="ck_pc_share_runs_state"),
+    CheckConstraint(
+        "outcome IN ('pending', 'no_change', 'needs_evidence', 'rejected', 'committed')",
+        name="ck_pc_share_runs_outcome",
+    ),
+)
+
+# Registered separately from ``BUILTIN_TABLES``: the managed Server chain does not
+# carry these objects yet, so an additive unmanaged bootstrap creates them and a
+# managed database reports them as unavailable instead of silently lacking them.
+# One authenticated acceptance event per (rule version, actor, side). A recorded
+# actor is the identity that actually accepted, and `covered_scope_ids` records
+# exactly which origins or audiences that actor agreed to. Coverage composes
+# across actors, so a request field naming an approver never creates a row here.
+SHARE_ACCEPTANCES_TABLE = Table(
+    "pc_share_acceptances",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("rule_id", identity_string(MAX_SHARE_RULE_ID_LENGTH), primary_key=True),
+    Column("version", BigInteger, primary_key=True),
+    Column("actor", identity_string(MAX_SHARE_ACTOR_LENGTH), primary_key=True),
+    Column("side", identity_string(MAX_SHARE_STATE_LENGTH), primary_key=True),
+    Column("terms_digest", identity_string(MAX_SHARE_DIGEST_LENGTH), nullable=False),
+    Column("covered_scope_ids", _canonical_payload_type(), nullable=False),
+    Column("acceptance_id", identity_string(MAX_SHARE_ACCEPTANCE_ID_LENGTH), nullable=False),
+    Column("accepted_at", BigInteger, nullable=False),
+    ForeignKeyConstraint(
+        ("scope_id", "rule_id", "version"),
+        (
+            "pc_share_rule_versions.scope_id",
+            "pc_share_rule_versions.rule_id",
+            "pc_share_rule_versions.version",
+        ),
+        ondelete="CASCADE",
+    ),
+    UniqueConstraint("acceptance_id", name="uq_pc_share_acceptances_id"),
+    CheckConstraint("side IN ('origin', 'target')", name="ck_pc_share_acceptances_side"),
+)
+
+SHARE_TABLES = (
+    SHARE_RULE_HEADS_TABLE,
+    SHARE_RULE_VERSIONS_TABLE,
+    SHARE_RUNS_TABLE,
+    SHARE_ACCEPTANCES_TABLE,
+)
+
 LEXICAL_PROJECTION_VERSIONS_TABLE = Table(
     "pc_lexical_projection_versions",
     SHARED_METADATA,
