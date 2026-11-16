@@ -107,6 +107,16 @@ DREAM_OPERATIONS = (
         "profile.revise",
     ),
     DreamOperationSpec(
+        "initialize_profile",
+        "profile",
+        PROFILE_SOURCE_WINDOW_BINDING,
+        "none",
+        ("experience", "atomic-memory", "source"),
+        ProfileWriteContent,
+        "decide_profile",
+        "profile.initialize",
+    ),
+    DreamOperationSpec(
         "revise_memory",
         "atomic-memory",
         SOURCE_WINDOW_TRIGGER_NAME,
