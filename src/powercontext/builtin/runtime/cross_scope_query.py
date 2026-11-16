@@ -38,6 +38,7 @@ from powercontext.builtin.authz import (
     ResourceRef,
 )
 from powercontext.builtin.records import ArtifactRecord
+from powercontext.builtin.scope.errors import ScopeNotFoundError
 from powercontext.builtin.sources import validate_scope_id
 from powercontext.errors import PowerContextError
 
@@ -48,6 +49,10 @@ CROSS_SCOPE_SCOPE_LIMIT = 32
 CROSS_SCOPE_CANDIDATE_LIMIT = 256
 
 CoverageReason = Literal["complete", "origin_failure", "candidate_budget"]
+
+# Only these describe one origin being unreachable to this caller. A malformed or unsupported
+# common request would fail identically at every origin, so it is never degraded into coverage.
+_ORIGIN_FAILURES = (AccessDeniedError, ScopeNotFoundError)
 
 
 class CrossScopeQueryError(PowerContextError):
@@ -73,7 +78,12 @@ class CrossScopeQueryUnsupported(CrossScopeQueryError, ValueError):
 
 
 class CrossScopeQueryRequest(BaseModel):
-    """An explicit origin list, one Family's search fields, and the enforced budgets."""
+    """An explicit origin list, one Family's search fields, and the enforced budgets.
+
+    ``limit`` bounds the merged result set. ``max_candidates`` bounds per-origin candidate work
+    and is only ever a ceiling: it narrows a caller-declared ``payload.limit`` and never widens
+    it, and it adds no limit when the caller omitted one.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -89,6 +99,8 @@ class CrossScopeQueryRequest(BaseModel):
     @field_validator("scopes")
     @classmethod
     def validate_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        # The declared origin order is preserved: it is the merge tie break and the caller's own
+        # statement of which origins it asked for. Only uniqueness and shape are enforced.
         if not values:
             raise ValueError("cross-Scope query requires at least one explicit origin")  # noqa: TRY003
         normalized = tuple(validate_scope_id(value) for value in values)
@@ -151,7 +163,7 @@ class ScopedCrossScopeQuery:
     ) -> CrossScopeQueryResult:
         """Authorize and search every declared origin, then merge by origin rank."""
 
-        bounds = _query_bounds(request)
+        window = _OriginWindow(request)
         principal, access = _invocation(execution_context)
         if request.restrict_to is not None:
             raise CrossScopeQueryUnsupported(
@@ -159,7 +171,7 @@ class ScopedCrossScopeQuery:
                 "the approved-head projection indexes only current revisions, so candidates cannot be "
                 "restricted before scoring",
             )
-        if bounds.bounded and request.coverage == "complete":
+        if window.bounded and request.coverage == "complete":
             # Refuse before spending any origin search: this range cannot be fully searched.
             raise CrossScopeQueryBoundsError(
                 "max_candidates",
@@ -174,13 +186,15 @@ class ScopedCrossScopeQuery:
         bounded: list[str] = []
         for origin in request.scopes:
             try:
-                ranked = await self._origin_hits(origin, request, bounds, principal, access, execution_context)
-            except Exception:
+                ranked = await self._origin_hits(origin, request, window, principal, access, execution_context)
+            except _ORIGIN_FAILURES:
+                # Only origin-scoped unavailability degrades coverage. A malformed or unsupported
+                # common request fails the same way at every origin, so it keeps propagating.
                 if request.coverage == "complete":
                     raise
                 failed.append(origin)
                 continue
-            if bounds.bounded:
+            if window.bounded:
                 bounded.append(origin)
             searched.append((origin, ranked))
         hits = _merge_by_origin_rank(tuple(searched), limit=request.limit)
@@ -190,7 +204,7 @@ class ScopedCrossScopeQuery:
         self,
         origin: str,
         request: CrossScopeQueryRequest,
-        bounds: _QueryBounds,
+        window: _OriginWindow,
         principal: PrincipalRef | None,
         access: Any,
         execution_context: ArtifactSearchExecutionContext | None,
@@ -200,7 +214,7 @@ class ScopedCrossScopeQuery:
         await _authorize_origin(principal, access, execution_context, origin)
         outcome = await self._runtime.artifacts.for_scope(origin).search(
             request.family,
-            {**request.payload, "limit": bounds.per_origin},
+            window.payload(request.payload),
             execution_context=execution_context,
         )
         return _origin_ranks(origin, outcome)
@@ -240,8 +254,15 @@ class CrossScopeQueryApplication:
         return ScopedCrossScopeQuery(self._runtime, scope_id)
 
 
-class _QueryBounds:
-    """Divide the candidate budget across the declared origins before any search runs."""
+class _OriginWindow:
+    """Cap each origin's declared window by its share of the candidate budget.
+
+    The budget is a ceiling, never a work request: a caller-declared ``payload.limit`` is passed
+    through untouched when the allocation does not narrow it, and is lowered only to report that
+    the origin was searched less deeply than asked. When the caller declared no window, nothing is
+    injected, so the Family's own contract keeps owning its default and no valid query can become
+    invalid because of a budget.
+    """
 
     def __init__(self, request: CrossScopeQueryRequest) -> None:
         if len(request.scopes) > request.max_scopes:
@@ -252,30 +273,30 @@ class _QueryBounds:
             raise CrossScopeQueryBoundsError(
                 "max_candidates", "the result limit cannot exceed the total candidate budget"
             )
-        payload_limit = _payload_limit(request)
+        self._declared = _declared_window(request.payload)
         self.per_origin = request.max_candidates // len(request.scopes)
         if self.per_origin < 1:
             raise CrossScopeQueryBoundsError(
                 "max_candidates", "the candidate budget is smaller than the number of declared origins"
             )
-        # A per-origin window narrower than the caller's own request means the origin is only
-        # partially searched; that must never be reported as complete coverage.
-        self.bounded = self.per_origin < payload_limit
+        # Only a declared window can be narrowed; an omitted one belongs to the Family's contract.
+        self.bounded = self._declared is not None and self.per_origin < self._declared
+
+    def payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return the payload to send, capping a declared window and never adding one."""
+
+        if self._declared is None or self.per_origin >= self._declared:
+            return payload
+        return {**payload, "limit": self.per_origin}
 
 
-def _query_bounds(request: CrossScopeQueryRequest) -> _QueryBounds:
-    return _QueryBounds(request)
+def _declared_window(payload: dict[str, Any]) -> int | None:
+    """Read the caller's own per-Family ``limit`` field, which stays the Family's to validate."""
 
-
-def _payload_limit(request: CrossScopeQueryRequest) -> int:
-    """Read the caller's own per-Family limit, defaulting to the total result limit."""
-
-    declared = request.payload.get("limit")
-    if declared is None:
-        return request.limit
-    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 1:
-        raise CrossScopeQueryBoundsError("payload.limit", "must be a positive integer")
-    return declared
+    declared = payload.get("limit")
+    if declared is None or (not isinstance(declared, bool) and isinstance(declared, int)):
+        return declared
+    return None
 
 
 def _invocation(
