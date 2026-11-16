@@ -15,9 +15,10 @@
 """Recorded origins are persisted exactly, and no public readback claims them yet.
 
 The runtime records the full admitted origin set on a Candidate and on the committed revision, and
-reads it back from persistence with its exact Scope identity and digest. No public read surface
-promises those addresses, so the Candidate and revision payloads must keep their existing shapes
-rather than gaining a key the domain never published.
+reads it back from persistence with its exact Scope identity and digest. The Candidate, revision and
+create payloads must keep their existing shapes rather than gaining a key the domain never
+published. Search is the surface that does decode origins, so its disclosure boundary is covered
+separately in ``test_origin_disclosure_boundary.py``.
 """
 
 from __future__ import annotations
