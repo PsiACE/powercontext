@@ -159,6 +159,13 @@ class ScopedCrossScopeQuery:
                 "the approved-head projection indexes only current revisions, so candidates cannot be "
                 "restricted before scoring",
             )
+        if bounds.bounded and request.coverage == "complete":
+            # Refuse before spending any origin search: this range cannot be fully searched.
+            raise CrossScopeQueryBoundsError(
+                "max_candidates",
+                "the candidate budget is smaller than the requested per-origin limit, so the range "
+                "cannot be reported as completely searched",
+            )
         # The query Scope itself must exist before any origin is authorized.
         async with self._runtime._scoped_operation(self.scope_id):
             pass
@@ -174,12 +181,6 @@ class ScopedCrossScopeQuery:
                 failed.append(origin)
                 continue
             if bounds.bounded:
-                if request.coverage == "complete":
-                    raise CrossScopeQueryBoundsError(
-                        "max_candidates",
-                        "the candidate budget is smaller than the requested per-origin limit, so the "
-                        "range cannot be reported as completely searched",
-                    )
                 bounded.append(origin)
             searched.append((origin, ranked))
         hits = _merge_by_origin_rank(tuple(searched), limit=request.limit)
