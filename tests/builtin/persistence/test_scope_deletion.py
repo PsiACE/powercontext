@@ -36,6 +36,7 @@ from powercontext.builtin.scope.errors import (
     ScopeDeletionConflictError,
     ScopeNotFoundError,
     ScopeNotWritableError,
+    ScopeRangeLimitError,
     ScopeResourceHandlerUnsupportedError,
 )
 from powercontext.builtin.scope.resources import (
@@ -404,3 +405,34 @@ def _move_to(scope, *, parent_scope_id: str):
         summary=scope.summary,
         parent_scope_id=parent_scope_id,
     )
+
+
+def test_deletion_preview_refuses_an_over_budget_range_instead_of_truncating(tmp_path) -> None:
+    """Deletion acts on the bounded resolver's set, or on nothing at all.
+
+    A truncated set would delete part of a subtree while reporting success, so an
+    over-budget range raises before any cutoff or confirmation is possible.
+    """
+
+    async def scenario() -> None:
+        async with _family(tmp_path) as (_opened, scopes, deletion, root, child, _sibling):
+            await scopes.create(
+                ScopeDraft(title="Deep", summary="Library", parent_scope_id=child.scope_id, idempotency_key="deep")
+            )
+            selection = ScopeSelection(mode="subtree", root_scope_id=root.scope_id)
+
+            # The full set fits the default budget.
+            assert len((await deletion.preview(selection)).members) == 3
+
+            # A one-node budget refuses rather than returning just the root.
+            from powercontext.builtin.scope.models import ScopeRangeLimits
+
+            bounded = ScopeDeletionApplication(
+                scopes._database, scopes, limits=ScopeRangeLimits(max_nodes=1)
+            )
+            with pytest.raises(ScopeRangeLimitError):
+                await bounded.preview(selection)
+            # Refusing the preview left every member writable.
+            assert (await deletion.state_of(root.scope_id)).lifecycle_state == "writable"
+
+    _run(scenario)

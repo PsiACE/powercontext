@@ -36,11 +36,8 @@ from powercontext.builtin.scope.errors import (
     ScopeIdempotencyConflictError,
     ScopeLifecycleConflictError,
     ScopeNotFoundError,
-<<<<<<< HEAD
     ScopeNotWritableError,
-=======
     ScopeRangeLimitError,
->>>>>>> 8ece2d013 (feat(scope): resolve bounded structural Scope ranges)
     ScopeRelationshipError,
     ScopeVersionConflictError,
 )
@@ -376,7 +373,6 @@ class ScopeApplication:
             scopes = await self._repository.list(connection)
             return _subtree(scopes, root_scope_id)
 
-<<<<<<< HEAD
     async def _require_not_deleting(self, connection: AsyncConnection, scope_id: str) -> ScopeDescriptor:
         """Refuse new structural or binding attachment to a Scope past its cutoff.
 
@@ -388,7 +384,7 @@ class ScopeApplication:
         if scope.lifecycle_state in {"deleting", "deleted"}:
             raise ScopeNotWritableError(scope_id, scope.lifecycle_state)
         return scope
-=======
+
     async def resolve_range(
         self,
         selection: ScopeSelection,
@@ -462,7 +458,6 @@ class ScopeApplication:
             pending = tuple(child.scope_id for child in children)
             depth += 1
         return tuple(resolved)
->>>>>>> 8ece2d013 (feat(scope): resolve bounded structural Scope ranges)
 
     async def _required(self, connection: AsyncConnection, scope_id: str) -> ScopeDescriptor:
         scope = await self._repository.get(connection, scope_id)

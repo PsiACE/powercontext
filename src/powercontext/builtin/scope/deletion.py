@@ -31,9 +31,7 @@ does not lose its own resources, and it does not gain authority.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
-from collections.abc import Sequence
 
 import rfc8785
 from sqlalchemy.exc import IntegrityError
@@ -52,6 +50,7 @@ from powercontext.builtin.scope.models import (
     ScopeDeletionPreview,
     ScopeDeletionReceipt,
     ScopeDescriptor,
+    ScopeRangeLimits,
     ScopeResourceProgress,
     ScopeSelection,
 )
@@ -76,14 +75,18 @@ class ScopeDeletionApplication:
         *,
         repository: ScopeRepository | None = None,
         handlers: tuple[ScopeResourceHandler, ...] | None = None,
+        limits: ScopeRangeLimits | None = None,
     ) -> None:
         self._database = database
         self._scopes = scopes
         self._repository = ScopeRepository() if repository is None else repository
         self._handlers = default_handlers() if handlers is None else handlers
+        # Bounded resolution contract: exceeding either budget refuses the whole
+        # operation instead of acting on a truncated set.
+        self._limits = ScopeRangeLimits() if limits is None else limits
 
     async def preview(self, selection: ScopeSelection, /) -> ScopeDeletionPreview:
-        """Return the exact structural set and its digest. This grants no authority."""
+        """Return the exact bounded structural set and its digest. This grants no authority."""
 
         if selection.mode == "all":
             raise ScopeDeletionConflictError("<all>", "deletion requires an explicit Scope selection")
@@ -91,14 +94,17 @@ class ScopeDeletionApplication:
             return await self._preview(connection, selection)
 
     async def _preview(self, connection: AsyncConnection, selection: ScopeSelection) -> ScopeDeletionPreview:
-        scopes = await self._scopes.resolve_selection(selection)
-        members = tuple(ScopeDeletionMember.of(scope) for scope in scopes)
+        # The bounded resolver owns structural membership and bounds: it reads
+        # parent edges only, refuses over budget instead of truncating, and
+        # carries the per-member versions the confirmation digest is built on.
+        resolved = await self._scopes.resolve_range(selection, limits=self._limits)
+        members = tuple(ScopeDeletionMember.of(scope) for scope in resolved.scopes)
         root_scope_id = selection.root_scope_id or selection.scope_ids[0]
         outside = await self._outside_children(connection, members)
         return ScopeDeletionPreview(
             root_scope_id=root_scope_id,
             members=members,
-            membership_digest=membership_digest(members),
+            membership_digest=resolved.membership_digest,
             outside_children=outside,
         )
 
@@ -303,19 +309,6 @@ class ScopeDeletionApplication:
         )
 
 
-def membership_digest(members: Sequence[ScopeDeletionMember], /) -> str:
-    """Bind a deletion to the exact structural state the requester confirmed.
-
-    This mirrors the bounded range resolver's contract: any attachment, move or
-    metadata change alters a member's parent or version and therefore the digest,
-    while an unchanged set repeats it. A digest is evidence of equality, not an
-    authorization for any member.
-    """
-
-    lines = sorted(f"{m.scope_id}\t{m.parent_scope_id or ''}\t{m.version}" for m in members)
-    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
-
-
 def receipt_scope_ids(receipt: ScopeDeletionReceipt, /) -> tuple[str, ...]:
     """Members in confirmed order: root first, then structural descendants.
 
@@ -344,6 +337,5 @@ def _operation_id() -> str:
 
 __all__ = [
     "ScopeDeletionApplication",
-    "membership_digest",
     "receipt_scope_ids",
 ]
