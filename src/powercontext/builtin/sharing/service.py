@@ -117,6 +117,23 @@ class ShareRuleService:
         self.runs = ShareRunRepository()
         self.acceptances = ShareAcceptanceRepository()
 
+    def configure_authorization(
+        self,
+        *,
+        authorize_origin: ShareAuthorizer | None = None,
+        authorize_target: ShareOriginCheck | None = None,
+    ) -> None:
+        """Bind the owning Access adapter after construction.
+
+        Composition builds this service before the Server binds its authenticated
+        Access adapter, so the checks arrive later. Leaving them unset keeps the
+        service usable for storage-only tests, which is why callers that enforce
+        authority must bind them.
+        """
+
+        self._authorize_origin = authorize_origin
+        self._authorize_target = authorize_target
+
     # -- rules ---------------------------------------------------------------
 
     async def create(self, scope_id: str, draft: ShareRuleDraft, /) -> ShareRule:

@@ -312,6 +312,8 @@ from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sharing.application import ShareApplication
+from powercontext.builtin.sharing.service import ShareAuthorizer as StandingOriginAuthorizer
+from powercontext.builtin.sharing.service import ShareOriginCheck as StandingTargetAuthorizer
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_ADAPTER,
     CONTENT_SOURCE_NAME,
@@ -4287,6 +4289,7 @@ class BuiltinRuntime:
         self._generation_service = generation_service
         self._dream_service = dream_service
         self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        self._standing_use_origin_authorizer: StandingOriginAuthorizer | None = None
         self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
         self._review_evidence_batch_authorizer: ScopedEvidenceBatchAuthorizer | None = None
@@ -4494,6 +4497,25 @@ class BuiltinRuntime:
                 ),
             },
         )
+
+    def configure_standing_use_authorization(
+        self,
+        authorize_origin: StandingOriginAuthorizer,
+        *,
+        authorize_target: StandingTargetAuthorizer | None = None,
+    ) -> None:
+        """Bind the trusted Access checks that own standing-agreement decisions.
+
+        Only a Server adapter that can name the authenticated principal may bind
+        these, because a recorded rule term is an agreement, not a grant. Discovery
+        then rechecks every origin it reaches through ``authorize_origin``, and a run
+        start through ``authorize_target``.
+        """
+
+        self._standing_use_origin_authorizer = authorize_origin
+        service = self.share_rules
+        if service is not None:
+            service.configure_authorization(authorize_origin=authorize_origin, authorize_target=authorize_target)
 
     def configure_evidence_authorization(
         self,
