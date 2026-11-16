@@ -853,8 +853,10 @@ class PortableBundleService:
                 spec = _SPECS[record.record_type]
                 table = spec.table
                 if table.name not in existing_tables:
-                    if record.record_type == "artifact_lineage_origin":
-                        # Recorded origins need their relation; see _require_storage.
+                    if record.record_type == "artifact_lineage_origin" and ARTIFACTS_TABLE.name in existing_tables:
+                        # A target that already holds the domain schema but not this relation
+                        # cannot record origins; the operator's remedy is an upgrade. A target
+                        # with no domain schema is the fresh case: restore initializes it.
                         missing_capabilities.add("artifact_lineage_origins")
                     processed += 1
                     _report_progress(progress, "target", processed, total)
@@ -1524,6 +1526,10 @@ def _origin_value(record: _Record, /) -> RecordedOrigin:
 
     payload = record.payload
     kind = payload["origin_kind"]
+    # The kind decides how every other field is read, so its type is checked first: an
+    # array or object must be a handled format refusal, never an unhashable-value crash.
+    if not isinstance(kind, str):
+        raise BundleFormatError("record payload has an invalid string field")
     if kind not in {"source", "artifact"}:
         raise BundleFormatError("Artifact lineage origin kind is not supported")
     revision = payload["origin_revision"]
