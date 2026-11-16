@@ -56,7 +56,9 @@ def require_candidate_contract(request: Request, candidate: Any) -> None:
 def _legacy_profile(result: dict[str, Any]) -> None:
     if result.get("schema") == "powercontext.profile.v1":
         generation = dict(result.get("generation", {}))
-        if generation.get("mode") == "dream_review_approved":
+        # Every Dream-reviewed mode is outside the legacy closed enum, so a legacy client
+        # is told to upgrade rather than decoding a mode it does not know.
+        if generation.get("mode") in {"dream_review_approved", "initialize_review_approved"}:
             raise DreamError("client_upgrade_required")
         generation.pop("dream_run_id", None)
         result["generation"] = generation

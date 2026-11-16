@@ -3757,3 +3757,943 @@ def test_scoped_selection_counts_against_the_published_budgets() -> None:
         idempotency_key="qualified-at-the-limit",
     )
     assert len(qualified.scoped) == 20
+
+
+def test_admitted_origins_survive_candidate_approval_and_restart(database: DatabaseConfig) -> None:
+    """Two Scopes' equal local IDs stay two exact recorded origins after commit.
+
+    This drives the public lower-level Candidate/Artifact persistence with a controlled
+    authorized fixture. It is not full Server Dream admission, which still refuses
+    external evidence until agreed use and origin recording are wired end to end.
+    """
+
+    from sqlalchemy import delete
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.tables import SOURCES_TABLE
+    from powercontext.builtin.review.errors import InvalidCandidateError
+    from powercontext.builtin.runtime.relational import RelationalContexts
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            target = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="t"))
+            ).scope_id
+            alice = (
+                await runtime.scopes.create(ScopeDraft(title="Alice", summary="Origin", idempotency_key="a"))
+            ).scope_id
+            bob = (await runtime.scopes.create(ScopeDraft(title="Bob", summary="Origin", idempotency_key="b"))).scope_id
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+            )
+            from_alice = await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+            )
+            from_bob = await runtime.sources.for_scope(bob).capture(
+                CaptureSource(
+                    source_id="retry-trace", content="The duplicate callback came from the old channel.", metadata={}
+                )
+            )
+            artifact = await runtime.records.for_scope(target).create_artifact(
+                "experience",
+                ArtifactWrite(
+                    content={
+                        "situation": "A write timed out.",
+                        "action": "Replay with the same idempotency key.",
+                        "outcome": "No duplicate record was created.",
+                        "lesson": "Retry only with a deduplication contract.",
+                    }
+                ),
+            )
+            local_ref = ArtifactRef(family="experience", artifact_id=artifact.artifact_id, revision=artifact.revision)
+
+            # All three Sources have the same local id; only the owning Scope tells them apart.
+            origins = (
+                RecordedOrigin(scope_id=alice, source=from_alice.source_ref, digest=content_digest(b"alice")),
+                RecordedOrigin(scope_id=bob, source=from_bob.source_ref, digest=content_digest(b"bob")),
+            )
+            identities = {
+                item.reference.source_id
+                for item in (
+                    *origins,
+                    RecordedOrigin(scope_id=target, source=local.source_ref, digest=content_digest(b"l")),
+                )
+                if isinstance(item.reference, SourceRef)
+            }
+            assert identities == {"retry-trace"}
+
+            review = RelationalContexts(database=runtime._provider.database).review(target)
+            # A local reference is refused rather than recorded as an origin.
+            with pytest.raises(InvalidCandidateError):
+                await review.propose_experience_from_origins(
+                    experience(),
+                    sources=(local.source_ref,),
+                    artifacts=(local_ref,),
+                    origins=(RecordedOrigin(scope_id=target, source=local.source_ref, digest=content_digest(b"x")),),
+                    target=None,
+                    reason="A local reference is not an origin.",
+                )
+
+            candidate = await review.propose_experience_from_origins(
+                experience(),
+                # The author cites only local supporting evidence, so the recorded origins
+                # below must come from the admitted set rather than from the citations.
+                sources=(local.source_ref,),
+                artifacts=(local_ref,),
+                origins=origins,
+                target=None,
+                reason="Reconciled the two channels.",
+            )
+            assert candidate.sources == (local.source_ref,)
+            assert {
+                (item.scope_id, item.reference.source_id)
+                for item in candidate.origins
+                if isinstance(item.reference, SourceRef)
+            } == {(alice, "retry-trace"), (bob, "retry-trace")}
+
+            approved = await review.approve(candidate.candidate_id, candidate.version)
+            result = approved.result_artifact
+            assert result is not None
+
+            async with runtime._provider.database.transaction() as connection:
+                committed = await runtime._provider.repositories.artifacts.get(connection, target, result)
+            # The committed revision keeps both origins even though the author cited one.
+            assert {(item.scope_id, item.source.source_id) for item in committed.lineage.origins} == {
+                (alice, "retry-trace"),
+                (bob, "retry-trace"),
+            }
+            assert len({item.digest for item in committed.lineage.origins}) == 2
+            # Local supporting citations stay local and unqualified.
+            assert committed.lineage.sources == (local.source_ref,)
+
+            # Removing the origin Source leaves the independently retained conclusion and
+            # its exact recorded address intact: nothing cascades from the origin row.
+            async with runtime._provider.database.transaction() as connection:
+                await connection.execute(
+                    delete(SOURCES_TABLE).where(
+                        SOURCES_TABLE.c.scope_id == alice,
+                        SOURCES_TABLE.c.source_id == "retry-trace",
+                    )
+                )
+            async with runtime._provider.database.transaction() as connection:
+                survived = await runtime._provider.repositories.artifacts.get(connection, target, result)
+            assert {(item.scope_id, item.source.source_id, item.digest) for item in survived.lineage.origins} == {
+                (item.scope_id, item.source.source_id, item.digest) for item in committed.lineage.origins
+            }
+
+        # A fresh runtime over the same database reads the same exact origins.
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            async with runtime._provider.database.transaction() as connection:
+                restored = await runtime._provider.repositories.artifacts.get(connection, target, result)
+            assert [(item.scope_id, item.source.source_id, item.digest) for item in restored.lineage.origins] == [
+                (item.scope_id, item.source.source_id, item.digest) for item in committed.lineage.origins
+            ]
+            approved_again = (
+                await RelationalContexts(database=runtime._provider.database)
+                .review(target)
+                .get_candidate(candidate.candidate_id)
+            )
+            assert approved_again.status == "approved"
+            assert len(approved_again.origins) == 2
+
+    asyncio.run(scenario())
+
+
+def test_recorded_origins_survive_portable_export_and_restore(tmp_path: Path) -> None:
+    """A committed origin set is immutable history, so an archive must carry it exactly.
+
+    Public entry points only: contexts, review, artifacts, portability. Mixed ordered
+    origins with a maximum-length Source id and a shared local id across two Scopes.
+    """
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.sources import SourceLineRangeLocator, SourceRef
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+    content = proposal.model_dump(mode="json")
+    long_id = "s" * 200
+    origins = (
+        RecordedOrigin(
+            scope_id="scp_alice",
+            source=SourceRef(
+                source_type="content",
+                source_id=long_id,
+                locator=SourceLineRangeLocator(start_line=3, end_line=9),
+            ),
+            digest=content_digest(b"alice"),
+        ),
+        RecordedOrigin(
+            scope_id="scp_bob",
+            artifact=ArtifactRef(family="experience", artifact_id="shared", revision=4),
+            digest=content_digest(b"bob"),
+        ),
+        # The same local Source id as Alice's, in a different Scope, with its own digest.
+        RecordedOrigin(
+            scope_id="scp_carol",
+            source=SourceRef(source_type="content", source_id=long_id),
+            digest=content_digest(b"carol"),
+        ),
+    )
+
+    async def authorize(scopes) -> None:
+        return None
+
+    async def export(database: Path, archive: Path) -> tuple[str, ArtifactRef]:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        ) as contexts:
+            scope_id = (
+                await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))
+            ).scope_id
+            created = await contexts.records.create_artifact(scope_id, "experience", ArtifactWrite(content=content))
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            candidate = await review.propose_experience_from_origins(
+                proposal,
+                sources=(),
+                artifacts=(citation,),
+                origins=origins,
+                target=None,
+                reason="Reconciled the two channels.",
+            )
+            approved = await review.approve(candidate.candidate_id, candidate.version)
+            result = approved.result_artifact
+            assert result is not None
+            await contexts.portability.export([scope_id], archive, authorize=authorize)
+            return scope_id, result
+
+    async def read(database: Path, scope_id: str, ref: ArtifactRef):
+        async with (
+            open_builtin_contexts(
+                BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+            ) as contexts,
+            contexts.database.transaction() as connection,
+        ):
+            return await contexts.repositories.artifacts.get(connection, scope_id, ref)
+
+    async def scenario() -> None:
+        archive = tmp_path / "bundle.pcb"
+        scope_id, ref = await export(tmp_path / "source.db", archive)
+        source_revision = await read(tmp_path / "source.db", scope_id, ref)
+        assert source_revision.lineage.origins == origins
+
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'restored.db'}"))
+        ) as contexts:
+            await contexts.portability.restore(archive)
+        restored = await read(tmp_path / "restored.db", scope_id, ref)
+        # Exact identities, ordering, locators and digests, with no dependency on the
+        # origin Scopes existing in the target database.
+        assert restored.lineage.origins == origins
+        assert [(item.scope_id, item.digest) for item in restored.lineage.origins] == [
+            (item.scope_id, item.digest) for item in source_revision.lineage.origins
+        ]
+
+        # A second export of the restored database is stable and reusable.
+        rearchive = tmp_path / "again.pcb"
+        await export_restored(tmp_path / "restored.db", rearchive, scope_id)
+        assert rearchive.stat().st_size > 0
+
+    async def export_restored(database: Path, archive: Path, scope_id: str) -> None:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        ) as contexts:
+            await contexts.portability.export([scope_id], archive, authorize=authorize)
+
+    asyncio.run(scenario())
+
+
+def test_origin_commit_refuses_when_storage_predates_origins(tmp_path: Path) -> None:
+    """A pre-relation database keeps its local records usable and refuses origins clearly.
+
+    It reports a handled domain error instead of leaking the missing relation's name,
+    while the Candidate stays pending and an ordinary local revision still works.
+    """
+
+    from sqlalchemy import text
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.errors import OriginStorageUnavailableError
+    from powercontext.sources import SourceRef
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+    content = proposal.model_dump(mode="json")
+
+    async def scenario() -> None:
+        database = tmp_path / "legacy.db"
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        async with open_builtin_contexts(config) as contexts:
+            scope_id = (
+                await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))
+            ).scope_id
+            created = await contexts.records.create_artifact(scope_id, "experience", ArtifactWrite(content=content))
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            candidate = await review.propose_experience_from_origins(
+                proposal,
+                sources=(),
+                artifacts=(citation,),
+                origins=(
+                    RecordedOrigin(
+                        scope_id="scp_origin",
+                        source=SourceRef(source_type="content", source_id="note"),
+                        digest=content_digest(b"note"),
+                    ),
+                ),
+                target=None,
+                reason="Admitted from another Scope.",
+            )
+            # Simulated absent storage: the relation is dropped from this unmanaged
+            # runtime, which is the supported pre-relation state. This is not a real
+            # managed upgrade and establishes nothing about managed-backend qualification.
+            async with contexts.database.transaction() as connection:
+                await connection.execute(text("DROP TABLE pc_artifact_lineage_origins"))
+
+            with pytest.raises(OriginStorageUnavailableError):
+                await review.approve(candidate.candidate_id, candidate.version)
+
+            # The accepted proposal is unchanged, and local work still succeeds.
+            async with contexts.database.transaction() as connection:
+                pending = await contexts.repositories.candidates.get(connection, scope_id, candidate.candidate_id)
+            assert pending.status == "pending"
+            local = await contexts.records.create_artifact(scope_id, "experience", ArtifactWrite(content=content))
+            async with contexts.database.transaction() as connection:
+                readable = await contexts.repositories.artifacts.get(
+                    connection,
+                    scope_id,
+                    ArtifactRef(family="experience", artifact_id=local.artifact_id, revision=local.revision),
+                )
+            assert readable.lineage.origins == ()
+
+    asyncio.run(scenario())
+
+
+def test_archive_refuses_origin_payloads_its_reader_could_not_decode(tmp_path: Path) -> None:
+    """An accepted archive must imply a readable origin, so malformed ones are refused.
+
+    Each bundle is canonical (record, total digests and bundle id recomputed), so the
+    only defect is the origin value itself. Both the dry run and the restore refuse,
+    and the target keeps no rows and no receipt.
+    """
+
+    from sqlalchemy import text
+
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.portability import BundleCompatibilityError, BundleFormatError
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+
+    async def scenario() -> None:
+        source = tmp_path / "bundle.pcb"
+        await _build_origin_archive(tmp_path, proposal)
+        for name, mutate in (
+            ("digest", bad_digest),
+            ("scope", blank_scope),
+            ("artifact_id", over_long_artifact_id),
+            # A non-string kind is a format refusal, never an unhashable-value crash.
+            ("kind_list", kind_as_list),
+            ("kind_object", kind_as_object),
+        ):
+            bundle = tmp_path / f"{name}.pcb"
+            _rewrite_archive(source, bundle, mutate)
+            config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / f'{name}.db'}"))
+            async with open_builtin_contexts(config) as contexts:
+                with pytest.raises((BundleFormatError, BundleCompatibilityError)):
+                    await contexts.portability.validate(bundle)
+                with pytest.raises((BundleFormatError, BundleCompatibilityError)):
+                    await contexts.portability.restore(bundle)
+                async with contexts.database.transaction() as connection:
+                    receipts = await connection.scalar(text("SELECT COUNT(*) FROM pc_portable_restore_receipts"))
+                    rows = await connection.scalar(text("SELECT COUNT(*) FROM pc_artifact_lineage_origins"))
+                assert (receipts, rows) == (0, 0)
+
+    asyncio.run(scenario())
+
+
+def test_origin_archive_refuses_target_without_origin_storage(tmp_path: Path) -> None:
+    """Dry run reports the missing capability and restore refuses before any write.
+
+    Simulated absent storage: the relation is dropped from an unmanaged runtime, which is
+    the supported pre-relation state. This establishes nothing about managed-backend
+    qualification. An origin-free archive still restores on that same target.
+    """
+
+    from sqlalchemy import text
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.portability import BundleCompatibilityError
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.sources import SourceRef
+
+    proposal = ExperienceContent(
+        situation="A write timed out.",
+        action="Replay with the same idempotency key.",
+        outcome="No duplicate record was created.",
+        lesson="Retry only with a deduplication contract.",
+    )
+
+    async def authorize(_scopes) -> None:
+        return None
+
+    async def build(archive: Path, *, with_origins: bool) -> str:
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'source.db'}"))
+        async with open_builtin_contexts(config) as contexts:
+            scope_id = (
+                await contexts.scopes.create(
+                    ScopeDraft(title="Orders", summary="s", idempotency_key=f"t-{with_origins}")
+                )
+            ).scope_id
+            created = await contexts.records.create_artifact(
+                scope_id, "experience", ArtifactWrite(content=proposal.model_dump(mode="json"))
+            )
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            if with_origins:
+                candidate = await review.propose_experience_from_origins(
+                    proposal,
+                    sources=(),
+                    artifacts=(citation,),
+                    origins=(
+                        RecordedOrigin(
+                            scope_id="scp_alice",
+                            source=SourceRef(source_type="content", source_id="note"),
+                            digest=content_digest(b"alice"),
+                        ),
+                    ),
+                    target=None,
+                    reason="Reconciled the two channels.",
+                )
+            else:
+                candidate = await review.propose_experience(
+                    proposal, sources=(), artifacts=(citation,), target=None, reason="Local only."
+                )
+            await review.approve(candidate.candidate_id, candidate.version)
+            await contexts.portability.export([scope_id], archive, authorize=authorize)
+            return scope_id
+
+    async def scenario() -> None:
+        with_origins = tmp_path / "with-origins.pcb"
+        without = tmp_path / "without-origins.pcb"
+        await build(with_origins, with_origins=True)
+        await build(without, with_origins=False)
+
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'target.db'}"))
+        async with open_builtin_contexts(config) as contexts:
+            async with contexts.database.transaction() as connection:
+                await connection.execute(text("DROP TABLE pc_artifact_lineage_origins"))
+
+            validation = await contexts.portability.validate(with_origins)
+            assert validation.compatible is False
+            assert validation.missing_capabilities == ("artifact_lineage_origins",)
+            with pytest.raises(BundleCompatibilityError):
+                await contexts.portability.restore(with_origins)
+            async with contexts.database.transaction() as connection:
+                receipts = await connection.scalar(text("SELECT COUNT(*) FROM pc_portable_restore_receipts"))
+                revisions = await connection.scalar(text("SELECT COUNT(*) FROM pc_artifacts"))
+            assert (receipts, revisions) == (0, 0)
+
+            # An origin-free archive is unaffected by the missing capability.
+            receipt = await contexts.portability.restore(without)
+            assert receipt.inserted > 0
+
+    asyncio.run(scenario())
+
+
+def _rewrite_archive(source: Path, destination: Path, mutate) -> None:
+    """Rewrite one portable bundle, recomputing record, total digests and identity."""
+
+    import hashlib
+    import uuid
+    import zipfile
+
+    with zipfile.ZipFile(source) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        records = [json.loads(line) for line in archive.read("records.ndjson").decode().splitlines()]
+    for record in records:
+        mutate(record)
+        canonical = {
+            "record_type": record["record_type"],
+            "schema_version": record["schema_version"],
+            "identity": record["identity"],
+            "payload": record["payload"],
+        }
+        encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        record["digest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    total = "sha256:" + hashlib.sha256("\n".join(item["digest"] for item in records).encode("ascii")).hexdigest()
+    manifest["total_digest"] = total
+    manifest["record_count"] = len(records)
+    counts: dict[str, int] = {}
+    for item in records:
+        counts[item["record_type"]] = counts.get(item["record_type"], 0) + 1
+    manifest["records_by_type"] = dict(sorted(counts.items()))
+    manifest["bundle_id"] = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"powercontext:portable:v{manifest['format_version']}:{total}",
+        )
+    )
+    body = "".join(
+        json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" for item in records
+    )
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as out:
+        out.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode())
+        out.writestr("records.ndjson", body.encode())
+
+
+async def _build_origin_archive(tmp_path: Path, proposal: ExperienceContent) -> None:
+    """Export one committed origin-bearing revision from a fresh database."""
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.scope import ScopeDraft
+    from powercontext.sources import SourceRef
+
+    async def authorize(_scopes) -> None:
+        return None
+
+    archive = tmp_path / "bundle.pcb"
+    config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'source.db'}"))
+    async with open_builtin_contexts(config) as contexts:
+        scope_id = (await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="t"))).scope_id
+        created = await contexts.records.create_artifact(
+            scope_id, "experience", ArtifactWrite(content=proposal.model_dump(mode="json"))
+        )
+        citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+        review = contexts.review(scope_id)
+        candidate = await review.propose_experience_from_origins(
+            proposal,
+            sources=(),
+            artifacts=(citation,),
+            origins=(
+                RecordedOrigin(
+                    scope_id="scp_alice",
+                    source=SourceRef(source_type="content", source_id="note"),
+                    digest=content_digest(b"alice"),
+                ),
+                RecordedOrigin(
+                    scope_id="scp_bob",
+                    artifact=ArtifactRef(family="experience", artifact_id="shared", revision=4),
+                    digest=content_digest(b"bob"),
+                ),
+            ),
+            target=None,
+            reason="Reconciled the two channels.",
+        )
+        await review.approve(candidate.candidate_id, candidate.version)
+        await contexts.portability.export([scope_id], archive, authorize=authorize)
+
+
+def _origin_payload(record) -> dict[str, object] | None:
+    """The origin payload of one archive record, when it is one."""
+    return record["payload"] if record["record_type"] == "artifact_lineage_origin" else None
+
+
+def bad_digest(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["digest"] = "sha256:" + "z" * 64
+
+
+def blank_scope(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["origin_scope_id"] = " "
+
+
+def over_long_artifact_id(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and payload["origin_kind"] == "artifact":
+        payload["origin_id"] = "a" * 200
+
+
+def kind_as_list(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["origin_kind"] = ["source"]
+
+
+def kind_as_object(record) -> None:
+    payload = _origin_payload(record)
+    if payload is not None and record["identity"]["ordinal"] == 0:
+        payload["origin_kind"] = {"kind": "source"}
+
+
+def test_first_profile_initialization_is_explicit_and_idempotent(database: DatabaseConfig) -> None:
+    """A Scope with no Profile gets one only through the explicit init operation.
+
+    The proposal is reviewed like any other, the committed revision is the ordinary
+    Profile identity, and repeating the request neither creates a second Profile nor
+    applies again. Generator output here is a deterministic local fixture, not a
+    real-provider acceptance claim.
+    """
+
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.artifacts.profile.models import PROFILE_ARTIFACT_ID, ProfileContent
+    from powercontext.builtin.dream.models import GetDreamRunRequest
+    from powercontext.builtin.runtime import ApproveCandidateRequest
+
+    class FirstProfileGenerator:
+        config_id = "first-profile-init"
+
+        def __init__(self) -> None:
+            self.inputs: list[DreamGenerationInput] = []
+
+        async def generate(self, value: DreamGenerationInput):
+            self.inputs.append(value)
+            used = next(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="The first Profile comes from this Scope's own evidence.",
+                    intent="create",
+                    proposal=ProfileWriteContent(content="# Profile\n\nBased in Shenzhen."),
+                    evidence_ids=(used,),
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    async def scenario() -> None:
+        generator = FirstProfileGenerator()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=generator,
+        ) as runtime:
+            scope_id = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="init"))
+            ).scope_id
+            await runtime.profiles.put_policy(scope_id, generation_enabled=True, expected_version=0)
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+            )
+            request = CreateDreamRunRequest(
+                operation="initialize_profile",
+                artifacts=(),
+                sources=(source.source_ref,),
+                idempotency_key="first-profile",
+            )
+            dream = runtime.dream.for_scope(scope_id)
+            accepted = await dream.create(request)
+            assert accepted.operation == "initialize_profile"
+            assert accepted.target is None
+
+            # The same key replays the accepted run instead of queueing another.
+            assert await dream.create(request) == accepted
+            await process_pending(runtime)
+            completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+            assert completed.outcome == "proposed", completed.error
+            assert completed.candidate is not None
+
+            review = runtime.review.for_scope(scope_id)
+            approved = await review.approve(
+                ApproveCandidateRequest(
+                    candidate_id=completed.candidate.candidate_id, expected_version=completed.candidate.version
+                )
+            )
+            reference = ArtifactRef(family="profile", artifact_id=PROFILE_ARTIFACT_ID, revision=1)
+            assert approved.result_artifact == reference
+
+            async with runtime.profiles.database.transaction() as connection:
+                committed = await runtime.profiles.artifacts.get(connection, scope_id, reference)
+            assert isinstance(committed.content, ProfileContent)
+            # The history records an explicit initialization, not a revision of a baseline.
+            assert committed.content.generation.mode == "initialize_review_approved"
+            assert committed.content.generation.dream_run_id == accepted.run_id
+            assert committed.lineage.sources == (source.source_ref,)
+            assert committed.lineage.artifacts == ()
+
+            # A retry after commit cannot create another Profile or apply again.
+            with pytest.raises(DreamError) as refused:
+                await dream.create(request.model_copy(update={"idempotency_key": "second-profile"}))
+            assert refused.value.code == "profile_exists"
+            async with runtime.profiles.database.transaction() as connection:
+                head = await runtime.profiles.artifacts.latest(connection, scope_id, "profile", PROFILE_ARTIFACT_ID)
+            assert head.as_ref() == reference
+
+    asyncio.run(scenario())
+
+
+def test_first_profile_initialization_refuses_an_existing_baseline(database: DatabaseConfig) -> None:
+    """Initialization is only for a Scope with no Profile; an existing one is untouched."""
+
+    from pydantic import ValidationError
+
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.artifacts.profile.models import PROFILE_ARTIFACT_ID, ProfileContent
+    from powercontext.builtin.records import ArtifactWrite
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            scope_id = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="existing"))
+            ).scope_id
+            await runtime.profiles.put_policy(scope_id, generation_enabled=True, expected_version=0)
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+            )
+            await runtime.records.for_scope(scope_id).create_artifact(
+                "profile", ArtifactWrite(content={"content": "# Profile\n\nBased in Shanghai."})
+            )
+
+            with pytest.raises(DreamError) as refused:
+                await runtime.dream.for_scope(scope_id).create(
+                    CreateDreamRunRequest(
+                        operation="initialize_profile",
+                        artifacts=(),
+                        sources=(source.source_ref,),
+                        idempotency_key="init-existing",
+                    )
+                )
+            assert refused.value.code == "profile_exists"
+
+            # The existing Profile head is exactly the one that was already committed.
+            reference = ArtifactRef(family="profile", artifact_id=PROFILE_ARTIFACT_ID, revision=1)
+            async with runtime.profiles.database.transaction() as connection:
+                head = await runtime.profiles.artifacts.latest(connection, scope_id, "profile", PROFILE_ARTIFACT_ID)
+            assert head.as_ref() == reference
+            assert isinstance(head.content, ProfileContent)
+            assert head.content.generation.mode == "manual_create"
+            assert head.content.content.strip() == "# Profile\n\nBased in Shanghai."
+
+            # Initialization with a target is not a revision path either: naming a Profile
+            # as input is refused, so the request cannot become a rewritten baseline.
+            with pytest.raises(ValidationError):
+                CreateDreamRunRequest(
+                    operation="initialize_profile",
+                    artifacts=(reference,),
+                    target=reference,
+                    idempotency_key="init-with-target",
+                )
+
+    asyncio.run(scenario())
+
+
+def test_first_profile_initialization_keeps_the_published_bounds(database: DatabaseConfig) -> None:
+    """Init keeps the 20-Artifact and 32-reference bounds while allowing Sources-only input."""
+
+    from pydantic import ValidationError
+
+    from powercontext.artifacts import ArtifactRef
+
+    reference = ArtifactRef(family="experience", artifact_id="experience-1", revision=1)
+    artifacts = tuple(reference.model_copy(update={"artifact_id": f"e-{index}"}) for index in range(21))
+    sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(33))
+
+    # The published Artifact bound applies to a scoped selection here too.
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="initialize_profile",
+            scoped=tuple(ScopedEvidence(scope_id="scp_init", artifact=item) for item in artifacts),
+            idempotency_key="init-over-artifacts",
+        )
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="initialize_profile",
+            sources=sources,
+            idempotency_key="init-over-references",
+        )
+
+    # Sources-only, the exact 20-Artifact bound, and the empty refusal are unchanged.
+    assert (
+        CreateDreamRunRequest(
+            operation="initialize_profile",
+            sources=sources[:1],
+            idempotency_key="init-sources-only",
+        ).target
+        is None
+    )
+    assert (
+        len(
+            CreateDreamRunRequest(
+                operation="initialize_profile",
+                scoped=tuple(ScopedEvidence(scope_id="scp_init", artifact=item) for item in artifacts[:20]),
+                idempotency_key="init-at-the-limit",
+            ).scoped
+        )
+        == 20
+    )
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(operation="initialize_profile", idempotency_key="init-empty")
+
+
+def test_first_profile_initialization_refuses_before_generating_without_policy(database: DatabaseConfig) -> None:
+    """A Scope without a Profile policy is refused before the billed generation attempt."""
+
+    from powercontext.builtin.dream.models import GetDreamRunRequest
+    from powercontext.builtin.records import BaseValueNotFoundError
+
+    class BillingGenerator:
+        config_id = "init-no-policy"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, value):
+            self.calls += 1
+            raise AssertionError  # a policy-less initialization must not reach generation
+
+    async def scenario() -> None:
+        generator = BillingGenerator()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=generator,
+        ) as runtime:
+            scope_id = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="nopolicy"))
+            ).scope_id
+            # No policy is created for this Scope.
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+            )
+            dream = runtime.dream.for_scope(scope_id)
+            accepted = await dream.create(
+                CreateDreamRunRequest(
+                    operation="initialize_profile",
+                    artifacts=(),
+                    sources=(source.source_ref,),
+                    idempotency_key="init-no-policy",
+                )
+            )
+            await process_pending(runtime)
+            completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+            assert (completed.status, completed.error) == ("failed", "capability_unavailable")
+            # The refusal costs nothing, and no Profile state was invented.
+            assert generator.calls == 0
+            # No Profile policy state was invented to make the operation succeed.
+            with pytest.raises(BaseValueNotFoundError):
+                await runtime.profiles.get_policy(scope_id)
+
+    asyncio.run(scenario())
+
+
+def test_first_profile_initialization_attests_its_candidate_under_enforced_access(
+    database: DatabaseConfig,
+) -> None:
+    """Enforced access records the initialization Candidate owner instead of failing.
+
+    The attester is the same callable the Server installs; no dummy attestation or
+    implicit write/admin grant is involved, and the run commits a Candidate normally.
+    """
+
+    from powercontext.builtin.authz.composition import open_builtin_access_control
+    from powercontext.builtin.authz.dream import principal_identity
+    from powercontext.builtin.authz.models import AccessRole, PrincipalRef, ResourceRef
+    from powercontext.builtin.authz.service import AccessAuditContext, CreateBinding
+    from powercontext.builtin.dream.models import GetDreamRunRequest
+    from powercontext.server.dream_access import DreamAccess
+
+    class EnforcedGenerator:
+        config_id = "init-enforced"
+
+        async def generate(self, value):
+            used = next(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="The first Profile comes from this Scope's own evidence.",
+                    intent="create",
+                    proposal=ProfileWriteContent(content="# Profile\n\nBased in Shenzhen."),
+                    evidence_ids=(used,),
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    admin = PrincipalRef(type="service", id="init-admin")
+    author = PrincipalRef(type="user", id="init-author")
+    context = AccessAuditContext(transport="http", operation="test_first_profile")
+
+    async def scenario() -> None:
+        async with open_builtin_access_control(database, bootstrap_administrators=(admin,)) as access:
+            adapter = DreamAccess(access)
+            async with open_builtin_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=EnforcedGenerator(),
+                dream_authorizer=adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+                dream_candidate_attester=adapter.attest_candidate,
+            ) as runtime:
+                adapter.bind(runtime)
+                scope_id = (
+                    await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="init"))
+                ).scope_id
+                for subject, role, key in (
+                    (admin, AccessRole.SCOPE_REVIEWER, "init-reviewer"),
+                    (author, AccessRole.SCOPE_CONTRIBUTOR, "init-contributor"),
+                ):
+                    await access.create_binding(
+                        admin,
+                        CreateBinding(
+                            subject=subject,
+                            resource=ResourceRef.scope(scope_id),
+                            role=role,
+                            idempotency_key=key,
+                        ),
+                        context=context,
+                    )
+                await runtime.profiles.put_policy(scope_id, generation_enabled=True, expected_version=0)
+                source = await runtime.sources.for_scope(scope_id).capture(
+                    CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+                )
+                principal = principal_identity(author)
+                dream = runtime.dream.for_scope(scope_id, principal_id=principal)
+                accepted = await dream.create(
+                    CreateDreamRunRequest(
+                        operation="initialize_profile",
+                        artifacts=(),
+                        sources=(source.source_ref,),
+                        idempotency_key="init-enforced",
+                    )
+                )
+                await process_pending(runtime)
+                completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                # The run commits a Candidate instead of dying on attestation.
+                assert completed.outcome == "proposed", completed.error
+                assert completed.candidate is not None
+                owner = await access.candidate_owner(scope_id, completed.candidate.candidate_id)
+                assert owner is not None
+                assert owner.proposed_owner == author
+
+    asyncio.run(scenario())

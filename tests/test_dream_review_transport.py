@@ -203,7 +203,8 @@ def test_catalog_http_client_preserves_separate_result_and_version_history(tmp_p
     asyncio.run(scenario())
 
 
-def test_legacy_profile_read_gets_upgrade_signal_without_disguising_mode():
+@pytest.mark.parametrize("mode", ["dream_review_approved", "initialize_review_approved"])
+def test_legacy_profile_read_gets_upgrade_signal_without_disguising_mode(mode):
     app = FastAPI()
     app.middleware("http")(negotiate_dream_contract)
 
@@ -212,18 +213,19 @@ def test_legacy_profile_read_gets_upgrade_signal_without_disguising_mode():
         return {
             "schema": "powercontext.profile.v1",
             "content": "Based in Shenzhen",
-            "generation": {"mode": "dream_review_approved", "dream_run_id": "run-1"},
+            "generation": {"mode": mode, "dream_run_id": "run-1"},
         }
 
     with TestClient(app) as client:
         old = client.get("/v1/scopes/example/artifacts/profile/profile")
+        # Every Dream-reviewed mode is outside the legacy enum, including initialization.
         assert old.status_code == 426
         assert old.json()["error"]["details"]["required_dream_contract"] == 2
         current = client.get(
             "/v1/scopes/example/artifacts/profile/profile", headers={"X-PowerContext-Dream-Contract": "2"}
         )
         assert current.status_code == 200
-        assert current.json()["generation"]["mode"] == "dream_review_approved"
+        assert current.json()["generation"]["mode"] == mode
 
 
 def test_legacy_original_dream_retains_decodable_envelope():
@@ -325,11 +327,15 @@ def test_review_dashboard_exposes_evidence_and_requires_same_origin_decisions(da
     assert result.json()["status"] == "approved"
 
 
-def test_profile_dream_generation_label_renders_in_both_locales():
+@pytest.mark.parametrize("mode", ["dream_review_approved", "initialize_review_approved"])
+def test_profile_dream_generation_label_renders_in_both_locales(mode):
+    """Every Dream-reviewed generation mode has a localized Dashboard label."""
     template = ENV.from_string("{{ t['profile_mode_' ~ mode] }}")
     for locale in ("zh", "en"):
-        rendered = template.render(t=CATALOGS[locale], mode="dream_review_approved")
-        assert "Dream" in rendered
+        rendered = template.render(t=CATALOGS[locale], mode=mode)
+        assert rendered.strip()
+    assert "Dream" in template.render(t=CATALOGS["en"], mode="dream_review_approved")
+    assert "Profile" in template.render(t=CATALOGS["en"], mode="initialize_review_approved")
 
 
 def test_enforced_dream_writes_use_scope_config_and_entry_permissions(tmp_path):

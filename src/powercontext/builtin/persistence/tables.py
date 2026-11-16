@@ -354,6 +354,42 @@ ARTIFACT_LINEAGE_ARTIFACTS_TABLE = Table(
     ),
 )
 
+ARTIFACT_LINEAGE_ORIGINS_TABLE = Table(
+    "pc_artifact_lineage_origins",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), primary_key=True),
+    Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    # The owning Scope of the origin, which may differ from this revision's Scope.
+    Column("origin_scope_id", identity_string(MAX_SCOPE_ID_LENGTH), nullable=False),
+    Column("origin_kind", identity_string(16), nullable=False),
+    Column("origin_family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), nullable=False),
+    # An Artifact id or a Source id: both must fit, and a Source id is the wider one.
+    Column("origin_id", identity_string(MAX_SOURCE_ID_LENGTH), nullable=False),
+    Column("origin_revision", Integer),
+    Column("locator", _canonical_payload_type()),
+    # Exactly the prefixed sha256 the model accepts, matching material_digest.
+    Column("digest", identity_string(71), nullable=False),
+    ForeignKeyConstraint(
+        ("scope_id", "family", "artifact_id", "revision"),
+        (
+            "pc_artifacts.scope_id",
+            "pc_artifacts.family",
+            "pc_artifacts.artifact_id",
+            "pc_artifacts.revision",
+        ),
+        ondelete="CASCADE",
+    ),
+    CheckConstraint("origin_kind IN ('source', 'artifact')", name="ck_pc_artifact_lineage_origins_kind"),
+    CheckConstraint(
+        "(origin_kind = 'source' AND origin_revision IS NULL) OR (origin_kind = 'artifact' AND origin_revision > 0)",
+        name="ck_pc_artifact_lineage_origins_revision",
+    ),
+)
+
+
 ARTIFACT_PUBLICATIONS_TABLE = Table(
     "pc_artifact_publications",
     SHARED_METADATA,
@@ -389,6 +425,12 @@ ARTIFACT_PUBLICATIONS_TABLE = Table(
     ),
     UniqueConstraint("target_scope_id", "idempotency_key", name="uq_pc_artifact_publications_request"),
 )
+
+
+# Additive relation owned beside the lineage tables. It is kept out of SHARED_TABLES
+# until one registered managed revision creates it, so an existing managed database
+# is never asked to cover a table its revision chain does not yet define.
+ARTIFACT_LINEAGE_ORIGIN_TABLES = (ARTIFACT_LINEAGE_ORIGINS_TABLE,)
 
 
 CANDIDATE_VERSIONS_TABLE = Table(

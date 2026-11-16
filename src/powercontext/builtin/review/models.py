@@ -21,7 +21,7 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactRef, RecordedOrigin
 from powercontext.artifacts.models import _reject_legacy_memory_citations
 from powercontext.builtin.evidence.models import ResolvedEvidence
 from powercontext.limits import MAX_ARTIFACT_ID_LENGTH
@@ -69,6 +69,12 @@ class Candidate(BaseModel, Generic[ProposalT]):
     proposal: ProposalT
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
     artifacts: tuple[ArtifactRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
+    # The full admitted input binding, including origins the proposal did not cite.
+    # ``sources``/``artifacts`` above stay the supporting citations, so a proposal can
+    # never narrow what approval has to keep rechecking by citing less.
+    origins: tuple[RecordedOrigin, ...] = Field(
+        default=(), max_length=MAX_CANDIDATE_EVIDENCE, exclude_if=lambda value: not value
+    )
     target: ArtifactRef | None = None
     reason: str | None = Field(default=None, min_length=1, max_length=MAX_CANDIDATE_REASON_LENGTH)
     result_artifact: ArtifactRef | None = None

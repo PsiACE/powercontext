@@ -125,6 +125,69 @@ class ArtifactAddress(BaseModel):
         return value
 
 
+class SourceAddress(BaseModel):
+    """A complete address for one exact Source across Scope boundaries."""
+
+    scope_id: str
+    source: SourceRef
+
+    @field_validator("scope_id")
+    @classmethod
+    def validate_scope_id(cls, value: str) -> str:
+        _validate_reference_part("scope_id", value)
+        if len(value) > MAX_SCOPE_ID_LENGTH:
+            raise InvalidArtifactReferenceError(
+                "scope_id",
+                f"must not exceed {MAX_SCOPE_ID_LENGTH} characters",
+            )
+        return value
+
+
+_ORIGIN_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class RecordedOrigin(BaseModel):
+    """One exact reference a revision was produced from, with the digest first read.
+
+    The reference keeps its owning Scope beside it, so the same local identity in two
+    Scopes stays two origins. It is recorded instead of linked: removing the origin
+    later must not delete an independently retained conclusion, and two origins with
+    equal digests are still two origins because a digest is not provenance.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scope_id: str
+    source: SourceRef | None = None
+    artifact: ArtifactRef | None = None
+    digest: str
+
+    @field_validator("scope_id")
+    @classmethod
+    def validate_scope_id(cls, value: str) -> str:
+        return SourceAddress.validate_scope_id(value)
+
+    @field_validator("digest")
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if _ORIGIN_DIGEST_PATTERN.fullmatch(value) is None:
+            raise InvalidArtifactReferenceError("digest", "must be a sha256 digest")
+        return value
+
+    @model_validator(mode="after")
+    def require_one_reference(self):
+        if (self.source is None) == (self.artifact is None):
+            raise ValueError("a recorded origin must name exactly one Artifact or Source")  # noqa: TRY003
+        return self
+
+    @property
+    def reference(self) -> ArtifactRef | SourceRef:
+        reference = self.source if self.artifact is None else self.artifact
+        if reference is None:
+            raise ValueError("recorded origin has no reference")  # noqa: TRY003
+        return reference
+
+
 class ArtifactLineage(BaseModel):
     """The direct evidence used to produce one artifact revision."""
 
@@ -132,6 +195,9 @@ class ArtifactLineage(BaseModel):
 
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
+    # Where the evidence of this revision actually came from, including other Scopes.
+    # Omitted when empty, so a local revision keeps the serialization it always had.
+    origins: tuple[RecordedOrigin, ...] = Field(default=(), exclude_if=lambda value: not value)
     publication_source: ArtifactAddress | None = None
     publication_digest: str | None = None
 
@@ -152,6 +218,7 @@ class ArtifactDraft(BaseModel, Generic[ContentT]):
     content: ContentT
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
+    origins: tuple[RecordedOrigin, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @model_validator(mode="after")
     def validate_family(self):

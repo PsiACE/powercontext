@@ -24,6 +24,9 @@ from click.utils import strip_ansi
 from sqlalchemy import update
 from typer.testing import CliRunner
 
+from powercontext.artifacts import ArtifactRef, RecordedOrigin
+from powercontext.builtin.artifacts.experience import ExperienceContent
+from powercontext.builtin.evidence.models import content_digest
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import SCOPES_TABLE
 from powercontext.builtin.records import ArtifactWrite
@@ -33,7 +36,7 @@ from powercontext.cli import archive as archive_module
 from powercontext.cli.app import create_cli
 from powercontext.cli.archive import archive_app
 from powercontext.paths import default_database_path, sqlite_url
-from powercontext.sources import AdapterSourceDefinition, SourceDefinitionRegistry
+from powercontext.sources import AdapterSourceDefinition, SourceDefinitionRegistry, SourceRef
 from tests.builtin.persistence.contract import NoteAdapter, NoteInput
 
 
@@ -416,3 +419,63 @@ def test_archive_cli_dry_run_does_not_create_missing_sqlite_uri_target(tmp_path,
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["compatible"]
     assert not target_path.parent.exists()
+
+
+def test_archive_cli_validates_an_origin_archive_against_a_fresh_target(tmp_path, monkeypatch) -> None:
+    """A not-yet-created target is the fresh case: the dry run is compatible and writes nothing.
+
+    The same bundle then restores into that target, so the dry run never pre-declares
+    incompatible an operation this build performs. No database file or parent directory
+    may appear during the dry run.
+    """
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    output = tmp_path / "origins.pcb"
+    cli = create_cli([archive_app])
+    runner = CliRunner()
+
+    async def seed() -> None:
+        async def authorize(_scopes: tuple[str, ...]) -> None:
+            pass
+
+        config = BuiltinConfig(database=SQLiteConfig(url=sqlite_url(default_database_path())))
+        async with open_builtin_contexts(config) as contexts:
+            scope_id = (
+                await contexts.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="o"))
+            ).scope_id
+            created = await contexts.records.create_artifact(
+                scope_id,
+                "experience",
+                ArtifactWrite(content={"situation": "s", "action": "a", "outcome": "o", "lesson": "l"}),
+            )
+            citation = ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=created.revision)
+            review = contexts.review(scope_id)
+            candidate = await review.propose_experience_from_origins(
+                ExperienceContent(situation="s", action="a", outcome="o", lesson="l"),
+                sources=(),
+                artifacts=(citation,),
+                origins=(
+                    RecordedOrigin(
+                        scope_id="scp_origin",
+                        source=SourceRef(source_type="content", source_id="note"),
+                        digest=content_digest(b"note"),
+                    ),
+                ),
+                target=None,
+                reason="Admitted from another Scope.",
+            )
+            await review.approve(candidate.candidate_id, candidate.version)
+            await contexts.portability.export([scope_id], output, authorize=authorize)
+
+    asyncio.run(seed())
+
+    target_home = tmp_path / "unused-target"
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(target_home))
+    validated = runner.invoke(cli, ["archive", "restore", str(output), "--dry-run"])
+    assert validated.exit_code == 0, validated.output
+    assert json.loads(validated.stdout)["compatible"] is True
+    assert json.loads(validated.stdout)["missing_capabilities"] == []
+    assert not target_home.exists()
+
+    restored = runner.invoke(cli, ["archive", "restore", str(output), "--yes"])
+    assert restored.exit_code == 0, restored.output
+    assert json.loads(restored.stdout)["inserted"] > 0

@@ -33,6 +33,7 @@ from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryCont
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import HandoffContent
 from powercontext.builtin.artifacts.profile.models import (
+    PROFILE_ARTIFACT_ID,
     ProfileCandidateProposal,
     ProfileDreamPolicy,
     ProfileWriteContent,
@@ -88,7 +89,10 @@ from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.candidates import attach_candidate_audit, proposal_digest
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.dream import DreamRepository, database_now
-from powercontext.builtin.persistence.errors import ArtifactProcessingLeadershipLostError
+from powercontext.builtin.persistence.errors import (
+    ArtifactProcessingLeadershipLostError,
+    RepositoryNotFoundError,
+)
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.profile import ProfilePolicyRepository
 from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE, SCOPES_TABLE
@@ -220,9 +224,13 @@ class DreamService:
                 return existing.run
             profile_policy = (
                 await ProfilePolicyRepository().get(connection, scope_id, for_update=True)
-                if request.operation == "revise_profile"
+                if request.operation in {"revise_profile", "initialize_profile"}
                 else None
             )
+            if request.operation == "initialize_profile":
+                # A first Profile exists only while no Profile head does; an existing one
+                # is refused here, at admission, and is never overwritten.
+                await self._require_no_profile(connection, scope_id)
             await self._check_target(connection, scope_id, principal_id, request.target)
 
             if request.tag_target is not None:
@@ -472,7 +480,9 @@ class DreamService:
                 if error.detail == "unsupported_target":
                     raise DreamError("unsupported_target") from error
                 raise
-        if run.operation == "revise_profile":
+        if run.operation in {"revise_profile", "initialize_profile"}:
+            # Both need the Scope policy; a policy-less Scope is refused before the billed
+            # generation attempt rather than after it.
             async with self._transaction() as connection:
                 await self._check_profile_policy(connection, record)
 
@@ -508,22 +518,18 @@ class DreamService:
         async with self._transaction() as connection:
             await self.repository.lock_owned(connection, record)
             await self._authorize(run.scope_id, record.principal_id, "contribute")
-            if run.operation == "revise_profile":
+            if run.operation in {"revise_profile", "initialize_profile"}:
                 await self._check_profile_policy(connection, record)
             resolved = await self._resolve(record, connection)
             candidate = None
             if plan.outcome == "proposed":
                 if self.attest_candidate is not None and run.operation != "revise_tags":
-                    family = {
-                        "derive_skill": "skill",
-                        "revise_skill": "skill",
-                        "refine_experience": "experience",
-                        "revise_profile": "profile",
-                        "revise_memory": "atomic-memory",
-                        "revise_topic_memory": "topic-memory",
-                        "refresh_handoff": "handoff",
-                        "revise_prompt": "prompt",
-                    }[run.operation]
+                    # The owning operation spec already declares the Family, so a new
+                    # operation cannot be left out of attestation the way a copied map
+                    # would allow.
+                    family = operation_spec(run.operation).family
+                    if family is None:
+                        raise DreamError("capability_unavailable")
                     await self.attest_candidate(connection, record, _candidate_id(record), family)
                 candidate = await self._propose(connection, record, plan, resolved)
             completed = run.model_copy(
@@ -537,6 +543,15 @@ class DreamService:
             )
             await self.repository.finish(connection, record, completed)
             await self._complete_invocation(connection)
+
+    async def _require_no_profile(self, connection: AsyncConnection, scope_id: str) -> None:
+        """Refuse initialization of a Scope that already has a committed Profile."""
+
+        try:
+            await self.artifacts.latest(connection, scope_id, "profile", PROFILE_ARTIFACT_ID)
+        except RepositoryNotFoundError:
+            return
+        raise DreamError("profile_exists")
 
     async def _check_profile_policy(self, connection: AsyncConnection, record: DreamRecord) -> None:
         policy = await ProfilePolicyRepository().get(connection, record.run.scope_id, for_update=True)
@@ -600,10 +615,15 @@ class DreamService:
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
             )
-        elif isinstance(plan.proposal, ProfileWriteContent) and record.run.operation == "revise_profile":
+        elif isinstance(plan.proposal, ProfileWriteContent) and record.run.operation in {
+            "revise_profile",
+            "initialize_profile",
+        }:
             await self._check_profile_policy(connection, record)
             policy = record.profile_policy
-            if policy is None or record.run.target is None or self.generator is None:
+            if policy is None or self.generator is None:
+                raise DreamError("capability_unavailable")
+            if record.run.operation == "revise_profile" and record.run.target is None:
                 raise DreamError("capability_unavailable")
             proposal = ProfileCandidateProposal(
                 content=plan.proposal.content,

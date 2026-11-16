@@ -3345,7 +3345,7 @@ export interface components {
             receiver_identity_matches: boolean;
         };
         /** @enum {string} */
-        DreamOperation: "refine_experience" | "derive_skill" | "revise_skill" | "revise_profile" | "revise_memory" | "revise_topic_memory" | "refresh_handoff" | "revise_prompt" | "revise_tags";
+        DreamOperation: "refine_experience" | "derive_skill" | "revise_skill" | "revise_profile" | "revise_memory" | "revise_topic_memory" | "refresh_handoff" | "revise_prompt" | "revise_tags" | "initialize_profile";
         /** @enum {string} */
         DreamStatus: "queued" | "running" | "succeeded" | "failed";
         /** @enum {string} */

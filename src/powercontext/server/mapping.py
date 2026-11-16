@@ -23,7 +23,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactLineage, ArtifactRef
 from powercontext.artifacts.search import ArtifactSearchOutcome
 from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemoryContent as RuntimeAtomicMemoryContent,
@@ -354,6 +354,24 @@ from powercontext.sources import (
 from powercontext.sources import SourceRef
 
 
+def published_lineage(lineage: ArtifactLineage) -> dict[str, Any]:
+    """Serialize lineage to the keys this response has always published.
+
+    The domain now records more than a hit may disclose: a recorded origin names another
+    Scope with its exact reference and digest, and reading that address has to be
+    authorized at that Scope. A published hit therefore keeps the direct evidence and
+    publication provenance it already promised, in the same shape it had, and omits the
+    origin set instead of dumping the whole domain object.
+    """
+
+    return lineage.model_dump(
+        mode="json",
+        by_alias=True,
+        serialize_as_any=True,
+        exclude={"origins"},
+    )
+
+
 def artifact_search_response(outcome: ArtifactSearchOutcome, /, *, include_scores: bool) -> SearchArtifactsResponse:
     """Serialize actual Artifact content while retaining the Family's final match order."""
 
@@ -364,7 +382,7 @@ def artifact_search_response(outcome: ArtifactSearchOutcome, /, *, include_score
             "artifact_id": artifact.artifact_id,
             "revision": artifact.revision,
             "content": artifact.content.model_dump(mode="json", by_alias=True, serialize_as_any=True),
-            "lineage": artifact.lineage.model_dump(mode="json", by_alias=True, serialize_as_any=True),
+            "lineage": published_lineage(artifact.lineage),
         }
         if include_scores:
             if match.channel_scores is None:

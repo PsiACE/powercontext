@@ -47,6 +47,7 @@ DreamOperation = Literal[
     "derive_skill",
     "revise_skill",
     "revise_profile",
+    "initialize_profile",
     "revise_memory",
     "revise_topic_memory",
     "refresh_handoff",
@@ -66,6 +67,8 @@ _EVIDENCE_FAMILIES = {
     "derive_skill": ("experience",),
     "revise_skill": ("experience", "atomic-memory", "skill"),
     "revise_profile": ("experience", "atomic-memory", "profile"),
+    # A first Profile has no baseline, so the target Family is not an input.
+    "initialize_profile": ("experience", "atomic-memory"),
     "revise_memory": ("experience", "atomic-memory"),
     "revise_topic_memory": ("experience", "atomic-memory", "topic-memory"),
     "refresh_handoff": ("experience", "atomic-memory", "handoff"),
@@ -117,9 +120,12 @@ class CreateDreamRunRequest(BaseModel):
     @field_validator("artifacts")
     @classmethod
     def validate_artifact_selection(cls, value, info):
-        if info.data.get("operation") == "revise_tags":
+        operation = info.data.get("operation")
+        if operation == "revise_tags":
             return value
         scoped = info.data.get("scoped", ())
+        # A first Profile may be initialized from Sources alone, so it is exempt from the
+        # "at least one Artifact" rule only; the published Artifact bound still applies.
         # Every Artifact selection counts, whichever Scope owns it: naming the run Scope
         # is documented as the same selection as a local one, and a future external entry
         # is the same kind of input. ``scoped`` is declared first so it is visible here.
@@ -221,6 +227,13 @@ class CreateDreamRunRequest(BaseModel):
             or self.target.family != "profile"
             or any(ref.family == "profile" and ref != self.target for ref in self.artifacts)
         ):
+            raise DreamError("invalid_dream_operation")
+        if self.operation == "initialize_profile" and (
+            self.target is not None
+            or self.tag_target is not None
+            or not (self.artifacts or self.sources or self.scoped)
+        ):
+            # A first Profile has no baseline to name and needs at least one input.
             raise DreamError("invalid_dream_operation")
         if self.operation == "revise_memory" and (self.target is None or self.target.family != "atomic-memory"):
             raise DreamError("invalid_dream_operation")
@@ -373,6 +386,12 @@ class DreamPlan(BaseModel):
         elif request.operation == "revise_skill":
             valid = (
                 isinstance(self.proposal, SkillContent) and self.intent == "correct" and self.proposal.package is None
+            )
+        elif request.operation == "initialize_profile":
+            valid = (
+                isinstance(self.proposal, ProfileWriteContent)
+                and self.proposal.restored_from_revision is None
+                and self.intent == "create"
             )
         elif request.operation == "revise_profile":
             valid = (

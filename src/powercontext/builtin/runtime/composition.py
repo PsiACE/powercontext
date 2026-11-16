@@ -124,6 +124,7 @@ from powercontext.builtin.persistence.atomic_memory_readiness import (
 from powercontext.builtin.persistence.bootstrap_receipts import BootstrapReceiptRepository
 from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
 from powercontext.builtin.persistence.lexical_projection import refresh_lexical_projections
+from powercontext.builtin.persistence.lineage_origins_schema import ensure_artifact_lineage_origins_schema
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.oceanbase.experience_index import OceanBaseExperienceFTSIndex
 from powercontext.builtin.persistence.oceanbase.profile import OceanBaseConfig, OceanBaseProfile
@@ -1289,6 +1290,7 @@ async def open_builtin_contexts(  # noqa: C901 -- Backend admission and resource
                     await ensure_topic_memory_tag_schema(connection)
                     await ensure_scope_search_schema(connection)
                     await ensure_artifact_revision_metadata_schema(connection)
+                    await ensure_artifact_lineage_origins_schema(connection)
                     await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
                     await create_tables(connection, SHARE_TABLES)
                     # A Topic child reuses its parent's schema. It never reads or
@@ -1380,6 +1382,7 @@ async def open_builtin_contexts(  # noqa: C901 -- Backend admission and resource
                 await ensure_topic_memory_tag_schema(connection)
                 await ensure_scope_search_schema(connection)
                 await ensure_artifact_revision_metadata_schema(connection)
+                await ensure_artifact_lineage_origins_schema(connection)
                 await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
                 await create_tables(connection, SHARE_TABLES)
                 if not _topic_memory_worker:

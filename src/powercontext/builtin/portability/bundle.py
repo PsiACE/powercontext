@@ -66,7 +66,7 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import StableHandle
+from powercontext.artifacts import ArtifactRef, RecordedOrigin, StableHandle
 from powercontext.builtin.artifacts.experience.recurrence import (
     RecurrenceMatch,
     RecurrenceObservation,
@@ -92,6 +92,7 @@ from powercontext.builtin.persistence.tables import (
     ARTIFACT_HANDLES_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
+    ARTIFACT_LINEAGE_ORIGINS_TABLE,
     ARTIFACT_LINEAGE_SOURCES_TABLE,
     ARTIFACT_PUBLICATIONS_TABLE,
     ARTIFACT_SOURCE_LOCATORS_TABLE,
@@ -183,6 +184,7 @@ RecordType = Literal[
     "artifact_lineage_source",
     "artifact_source_locator",
     "artifact_lineage_artifact",
+    "artifact_lineage_origin",
     "artifact_publication",
     "artifact_head",
     "memory_entry_version",
@@ -246,6 +248,9 @@ class BundleValidation(BundleInspection):
     required_artifact_families: tuple[str, ...]
     unsupported_artifact_families: tuple[str, ...]
     reader_version: str
+    # A capability the target lacks, such as storage for recorded origins. A dry run
+    # reports it instead of raising; restore refuses before any write.
+    missing_capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,6 +375,19 @@ _SPECS: dict[RecordType, _RecordSpec] = {
         ("scope_id", "family", "artifact_id", "revision", "ordinal"),
         ("upstream_family", "upstream_artifact_id", "upstream_revision", "is_merge_input"),
         schema_version=2,
+    ),
+    "artifact_lineage_origin": _RecordSpec(
+        ARTIFACT_LINEAGE_ORIGINS_TABLE,
+        ("scope_id", "family", "artifact_id", "revision", "ordinal"),
+        (
+            "origin_scope_id",
+            "origin_kind",
+            "origin_family",
+            "origin_id",
+            "origin_revision",
+            "locator",
+            "digest",
+        ),
     ),
     "artifact_publication": _RecordSpec(
         ARTIFACT_PUBLICATIONS_TABLE,
@@ -640,7 +658,7 @@ class PortableBundleService:
                 if self._supported_artifact_families is None
                 else tuple(sorted(required_families - self._supported_artifact_families))
             )
-            already_present, conflicts = await self._target_compatibility(
+            already_present, conflicts, missing_capabilities = await self._target_compatibility(
                 source,
                 supported_source_types=configured,
                 total=inspection.record_count,
@@ -658,11 +676,12 @@ class PortableBundleService:
             already_present=already_present,
             conflicts=conflicts,
             projections_supported=self._projection_rebuilder is not None,
-            compatible=not missing_sources and not missing_families and conflicts == 0,
+            compatible=(not missing_sources and not missing_families and conflicts == 0 and not missing_capabilities),
             required_source_types=tuple(sorted(required_sources)),
             unsupported_source_types=missing_sources,
             required_artifact_families=tuple(sorted(required_families)),
             unsupported_artifact_families=missing_families,
+            missing_capabilities=tuple(sorted(missing_capabilities)),
             reader_version=_producer_version(),
         )
 
@@ -794,7 +813,7 @@ class PortableBundleService:
                 .values(**values)
             )
 
-    async def _target_compatibility(
+    async def _target_compatibility(  # noqa: C901 - one ordered target-compatibility scan
         self,
         source: Path,
         /,
@@ -803,9 +822,10 @@ class PortableBundleService:
         total: int,
         progress: ProgressObserver | None,
         dependency_index: sqlite3.Connection,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, set[str]]:
         already_present = 0
         conflicts = 0
+        missing_capabilities: set[str] = set()
         async with self._database.transaction() as connection:
             existing_tables = await connection.run_sync(
                 lambda sync_connection: {
@@ -833,6 +853,11 @@ class PortableBundleService:
                 spec = _SPECS[record.record_type]
                 table = spec.table
                 if table.name not in existing_tables:
+                    if record.record_type == "artifact_lineage_origin" and ARTIFACTS_TABLE.name in existing_tables:
+                        # A target that already holds the domain schema but not this relation
+                        # cannot record origins; the operator's remedy is an upgrade. A target
+                        # with no domain schema is the fresh case: restore initializes it.
+                        missing_capabilities.add("artifact_lineage_origins")
                     processed += 1
                     _report_progress(progress, "target", processed, total)
                     continue
@@ -873,7 +898,7 @@ class PortableBundleService:
                 and not await _validate_target_tag_sets(connection, dependency_index)
             ):
                 conflicts += 1
-        return already_present, conflicts
+        return already_present, conflicts, missing_capabilities
 
     def _validate_target_content(self, record: _Record, /, *, supported_source_types: frozenset[str] | None) -> None:
         if record.record_type == "source":
@@ -1001,6 +1026,11 @@ class PortableBundleService:
         return count, records_by_type, digest.value()
 
 
+async def _relation_exists(connection: AsyncConnection, name: str) -> bool:
+    tables = await connection.run_sync(lambda sync: set(sqlalchemy_inspect(sync).get_table_names()))
+    return name in tables
+
+
 async def _check_target_batch(
     connection: AsyncConnection, kind: RecordType, lookups: list[_TargetLookup]
 ) -> tuple[int, int]:
@@ -1041,6 +1071,9 @@ async def _export_rows(
     connection: AsyncConnection, kind: RecordType, scopes: tuple[str, ...]
 ) -> AsyncIterator[Mapping[str, Any]]:
     spec = _SPECS[kind]
+    if kind == "artifact_lineage_origin" and not await _relation_exists(connection, spec.table.name):
+        # A database whose revision chain predates recorded origins has none to archive.
+        return
     if spec.scope_field is not None:
         predicate = spec.table.c[spec.scope_field].in_(scopes)
         if kind in {"memory_entry_version", "memory_entry_head"}:
@@ -1483,6 +1516,48 @@ def _parse_record(value: object) -> _Record:
     return record
 
 
+def _origin_value(record: _Record, /) -> RecordedOrigin:
+    """Reconstruct the recorded origin this archive row must become.
+
+    The digest, the Scope and the reference are validated by their own domain values,
+    so a malformed digest, a blank Scope, or an Artifact id wider than an Artifact
+    allows is refused before acceptance instead of becoming an unreadable row.
+    """
+
+    payload = record.payload
+    kind = payload["origin_kind"]
+    # The kind decides how every other field is read, so its type is checked first: an
+    # array or object must be a handled format refusal, never an unhashable-value crash.
+    if not isinstance(kind, str):
+        raise BundleFormatError("record payload has an invalid string field")
+    if kind not in {"source", "artifact"}:
+        raise BundleFormatError("Artifact lineage origin kind is not supported")
+    revision = payload["origin_revision"]
+    if (revision is None) != (kind == "source"):
+        raise BundleFormatError("Artifact lineage origin revision does not match its kind")
+    locator = (
+        None
+        if payload["locator"] is None
+        else TypeAdapter(SourceLocator).validate_python(_decoded_bytes_json(payload["locator"], "Source locator"))
+    )
+    if locator is not None and kind != "source":
+        raise BundleFormatError("Artifact lineage origin locator is not a Source reference")
+    try:
+        reference = (
+            SourceRef(source_type=payload["origin_family"], source_id=payload["origin_id"], locator=locator)
+            if kind == "source"
+            else ArtifactRef(family=payload["origin_family"], artifact_id=payload["origin_id"], revision=revision)
+        )
+        return RecordedOrigin(
+            scope_id=payload["origin_scope_id"],
+            digest=payload["digest"],
+            source=cast(SourceRef | None, reference if kind == "source" else None),
+            artifact=cast(ArtifactRef | None, reference if kind == "artifact" else None),
+        )
+    except ValidationError as error:
+        raise BundleFormatError("Artifact lineage origin is not a valid recorded reference") from error
+
+
 def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one versioned schema contract.
     identity = record.identity
     payload = record.payload
@@ -1620,6 +1695,10 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("artifact handle is invalid") from error
     elif kind == "artifact_lineage_source":
         strings("source_type", "source_id")
+    elif kind == "artifact_lineage_origin":
+        # Accept exactly the value the read path will build, so an archived origin can
+        # never be stored in a shape `_recorded_origin` refuses to decode.
+        _origin_value(record)
     elif kind == "artifact_source_locator":
         bytes_values("locator")
         try:
@@ -2446,7 +2525,7 @@ def _validate_skill_package_dependency(
         content = _decoded_bytes_json(record.payload["content"], "Skill content")
     elif record.record_type == "candidate_version" and record.payload["family"] == "skill":
         try:
-            proposal, _audit = decode_candidate_proposal_envelope(
+            proposal, _audit, _origins = decode_candidate_proposal_envelope(
                 cast(bytes, _database_value(record.payload["proposal"]))
             )
         except InvalidStoredPayloadError as error:
