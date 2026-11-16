@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime
 from functools import lru_cache
 from hashlib import sha256
 from typing import cast
@@ -413,6 +414,26 @@ class ScopeRepository:
             )
         return ScopeBinding(key=key, scope_id=scope_id)
 
+    async def binding_to(self, connection: AsyncConnection, scope_id: str, /) -> tuple[str, str, str] | None:
+        """Return one persistent binding that still names this Scope, if any."""
+        row = (
+            await connection.execute(
+                select(
+                    SCOPE_BINDINGS_TABLE.c.integration,
+                    SCOPE_BINDINGS_TABLE.c.kind,
+                    SCOPE_BINDINGS_TABLE.c.external_id,
+                )
+                .where(SCOPE_BINDINGS_TABLE.c.scope_id == scope_id)
+                .order_by(
+                    SCOPE_BINDINGS_TABLE.c.integration,
+                    SCOPE_BINDINGS_TABLE.c.kind,
+                    SCOPE_BINDINGS_TABLE.c.external_id,
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        return None if row is None else (str(row[0]), str(row[1]), str(row[2]))
+
     async def clear_binding(self, connection: AsyncConnection, key: ScopeBindingKey, /) -> bool:
         result = await connection.execute(
             delete(SCOPE_BINDINGS_TABLE).where(
@@ -459,3 +480,215 @@ class ScopeRepository:
                     for ordinal, reference in enumerate(external_references)
                 ],
             )
+
+    async def deletion_targets(
+        self,
+        connection: AsyncConnection,
+        scope_ids: tuple[str, ...],
+        /,
+    ) -> tuple[tuple[str, str | None, int, str], ...]:
+        """Read the current structural state and lifecycle of the named Scopes."""
+
+        if not scope_ids:
+            return ()
+        rows = (
+            await connection.execute(
+                select(
+                    SCOPES_TABLE.c.scope_id,
+                    SCOPES_TABLE.c.parent_scope_id,
+                    SCOPES_TABLE.c.version,
+                    SCOPES_TABLE.c.lifecycle_state,
+                )
+                .where(SCOPES_TABLE.c.scope_id.in_(scope_ids))
+                .order_by(SCOPES_TABLE.c.scope_id)
+            )
+        ).mappings()
+        return tuple(
+            (
+                str(row["scope_id"]),
+                None if row["parent_scope_id"] is None else str(row["parent_scope_id"]),
+                int(row["version"]),
+                str(row["lifecycle_state"]),
+            )
+            for row in rows
+        )
+
+    async def child_scope_ids(
+        self, connection: AsyncConnection, parent_scope_ids: tuple[str, ...], /
+    ) -> tuple[str, ...]:
+        """List direct structural children, so a single-Scope delete can report them."""
+
+        if not parent_scope_ids:
+            return ()
+        return tuple(
+            str(value)
+            for value in (
+                await connection.execute(
+                    select(SCOPES_TABLE.c.scope_id)
+                    .where(SCOPES_TABLE.c.parent_scope_id.in_(parent_scope_ids))
+                    .order_by(SCOPES_TABLE.c.scope_id)
+                )
+            ).scalars()
+        )
+
+    async def references_to(self, connection: AsyncConnection, scope_ids: tuple[str, ...], /) -> tuple[str, ...]:
+        """Scopes holding an inbound Context Reference to any deleted Scope."""
+        if not scope_ids:
+            return ()
+        table = SCOPE_CONTEXT_REFERENCES_TABLE
+        return tuple(
+            str(value)
+            for value in (
+                await connection.execute(
+                    select(table.c.scope_id)
+                    .where(table.c.referenced_scope_id.in_(scope_ids))
+                    .order_by(table.c.scope_id)
+                )
+            ).scalars()
+        )
+
+    async def clear_references_to(self, connection: AsyncConnection, scope_ids: tuple[str, ...], /) -> None:
+        """Remove outgoing references to deleted Scopes; the referencing Scope persists."""
+        if not scope_ids:
+            return
+        table = SCOPE_CONTEXT_REFERENCES_TABLE
+        await connection.execute(delete(table).where(table.c.referenced_scope_id.in_(scope_ids)))
+
+    async def purge_scope_metadata(self, connection: AsyncConnection, scope_ids: tuple[str, ...], /) -> None:
+        """Remove the Scope rows themselves once their owned resources are gone.
+
+        Removed one statement at a time in the given order, because
+        ``pc_scopes.parent_scope_id`` references ``pc_scopes``: a child row must
+        be gone before its parent within the same transaction.
+        """
+
+        for scope_id in scope_ids:
+            await connection.execute(delete(SCOPES_TABLE).where(SCOPES_TABLE.c.scope_id == scope_id))
+
+    async def record_deletion(
+        self,
+        connection: AsyncConnection,
+        operation_id: str,
+        root_scope_id: str,
+        membership_digest: str,
+        confirmed_scopes: bytes,
+        /,
+    ) -> None:
+        from powercontext.builtin.persistence.tables import SCOPE_DELETIONS_TABLE
+
+        await connection.execute(
+            insert(SCOPE_DELETIONS_TABLE).values(
+                operation_id=operation_id,
+                root_scope_id=root_scope_id,
+                membership_digest=membership_digest,
+                confirmed_scopes=confirmed_scopes,
+                state="cleanup_pending",
+                requested_at=datetime.now(UTC),
+            )
+        )
+
+    async def record_progress(
+        self,
+        connection: AsyncConnection,
+        operation_id: str,
+        entries: tuple[tuple[str, str], ...],
+        /,
+    ) -> None:
+        from powercontext.builtin.persistence.tables import SCOPE_DELETION_PROGRESS_TABLE
+
+        if not entries:
+            return
+        await connection.execute(
+            insert(SCOPE_DELETION_PROGRESS_TABLE),
+            [
+                {"operation_id": operation_id, "scope_id": scope_id, "handler": handler, "state": "pending"}
+                for scope_id, handler in entries
+            ],
+        )
+
+    async def finish_progress(
+        self,
+        connection: AsyncConnection,
+        operation_id: str,
+        scope_id: str,
+        handler: str,
+        /,
+        *,
+        state: str,
+        error_code: str | None,
+    ) -> None:
+        from powercontext.builtin.persistence.tables import SCOPE_DELETION_PROGRESS_TABLE
+
+        if state == "done":
+            await connection.execute(
+                update(SCOPE_DELETION_PROGRESS_TABLE)
+                .where(
+                    SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id,
+                    SCOPE_DELETION_PROGRESS_TABLE.c.scope_id == scope_id,
+                    SCOPE_DELETION_PROGRESS_TABLE.c.handler == handler,
+                )
+                .values(state=state, attempts=SCOPE_DELETION_PROGRESS_TABLE.c.attempts + 1, last_error_code=None)
+            )
+            return
+        await connection.execute(
+            update(SCOPE_DELETION_PROGRESS_TABLE)
+            .where(
+                SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id,
+                SCOPE_DELETION_PROGRESS_TABLE.c.scope_id == scope_id,
+                SCOPE_DELETION_PROGRESS_TABLE.c.handler == handler,
+            )
+            .values(state=state, attempts=SCOPE_DELETION_PROGRESS_TABLE.c.attempts + 1, last_error_code=error_code)
+        )
+
+    async def complete_deletion(self, connection: AsyncConnection, operation_id: str, /) -> None:
+        from powercontext.builtin.persistence.tables import SCOPE_DELETIONS_TABLE
+
+        await connection.execute(
+            update(SCOPE_DELETIONS_TABLE)
+            .where(SCOPE_DELETIONS_TABLE.c.operation_id == operation_id)
+            .values(state="complete")
+        )
+
+    async def deletion(self, connection: AsyncConnection, operation_id: str, /):
+        from powercontext.builtin.persistence.tables import (
+            SCOPE_DELETION_PROGRESS_TABLE,
+            SCOPE_DELETIONS_TABLE,
+        )
+
+        record = (
+            (
+                await connection.execute(
+                    select(SCOPE_DELETIONS_TABLE).where(SCOPE_DELETIONS_TABLE.c.operation_id == operation_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if record is None:
+            return None
+        progress = (
+            (
+                await connection.execute(
+                    select(SCOPE_DELETION_PROGRESS_TABLE)
+                    .where(SCOPE_DELETION_PROGRESS_TABLE.c.operation_id == operation_id)
+                    .order_by(SCOPE_DELETION_PROGRESS_TABLE.c.scope_id, SCOPE_DELETION_PROGRESS_TABLE.c.handler)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return record, progress
+
+    async def pending_deletions(self, connection: AsyncConnection, /) -> tuple[str, ...]:
+        from powercontext.builtin.persistence.tables import SCOPE_DELETIONS_TABLE
+
+        return tuple(
+            str(value)
+            for value in (
+                await connection.execute(
+                    select(SCOPE_DELETIONS_TABLE.c.operation_id)
+                    .where(SCOPE_DELETIONS_TABLE.c.state == "cleanup_pending")
+                    .order_by(SCOPE_DELETIONS_TABLE.c.operation_id)
+                )
+            ).scalars()
+        )

@@ -17,8 +17,8 @@ The design follows [RFC #1771](https://github.com/oceanbase/powercontext/pull/17
 The full Server framework uses two normalization checkpoints before its shared migration chain for the PowerContext
 1.5.2 target (stored compatibility IDs shown below):
 
-- **1.3.0:** `s1300 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006`.
-- **1.4.0:** `r1400 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006` through a separate frozen source bridge.
+- **1.3.0:** `s1300 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006 → v1_5_0_007`.
+- **1.4.0:** `r1400 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006 → v1_5_0_007` through a separate frozen source bridge.
 
 Application release numbers and schema revisions are distinct. The 1.4.0 release is not the `s1400` checkpoint:
 its existing Candidate schema is current, but its Topic attempt storage still needs the registered bridge.
@@ -97,6 +97,8 @@ Revision `v1_5_0_005` removes the previous Artifact plugin-framework storage and
 
 Revision `v1_5_0_006` adds `pc_scopes.lifecycle_state` and nothing else. It is a `NOT NULL` column with a server default of `writable`, so every Scope that already exists reads back `writable`: the revision rewrites no row, retags no history and synthesizes no archival state. Name, summary, parent edge, Context References, external references, creation requests, settings and bindings keep their existing definitions, and the revision adds no table, index, foreign key or check constraint. Artifact, Source, Candidate, processing and publication storage keep their exact shape, so revision `v1_5_0_005` retains its recorded schema fingerprint and an upgraded database keeps every identity, revision, digest and evidence row. The revision is additive DDL only and needs no domain step or backfill, so repeated `apply` and `verify` stay no-op after the first successful run. An older binary rejects the newer schema before serving it.
 
+Revision `v1_5_0_007` adds `pc_scope_deletions` and `pc_scope_deletion_progress`. They record one explicit deletion's operation identity, the exact structural set and versions the requester confirmed, and one progress row per member and owned-resource handler. Access cutoff is not stored here: it is `pc_scopes.lifecycle_state`, so an incomplete cleanup still leaves the members unavailable instead of readable again. Both tables are additive; no existing table, index or row changes, and `v1_5_0_005` and `v1_5_0_006` keep their recorded fingerprints.
+
 Revision `v1_4_1_006` registers `pc_source_write_plugins` for persisted Source write plugin declarations.
 Revision `v1_5_0_001` adds Artifact plugin registration fields, family schemas, search state and projections,
 index coverage and change tracking, and vector-space/index registrations. SQLite also registers portable vector
@@ -169,12 +171,13 @@ Sequence `000` identifies a registered historical baseline; upgrade steps start 
 | `v1_5_0_004` | 1.5.0 | 4 | `v1_5_0_004` | Source citation position locators |
 | `v1_5_0_005` | 1.5.0 | 5 | `v1_5_0_005` | Remove previous plugin-framework storage and add nullable Artifact metadata |
 | `v1_5_0_006` | 1.5.0 | 6 | `v1_5_0_006` | Add Scope lifecycle state for archive and deletion |
+| `v1_5_0_007` | 1.5.0 | 7 | `v1_5_0_007` | Add the explicit Scope deletion operation and per-resource progress |
 
-Both registered source paths reach `v1_5_0_006`; only 1.3.0 is selected for CI upgrade acceptance:
+Both registered source paths reach `v1_5_0_007`; only 1.3.0 is selected for CI upgrade acceptance:
 
 ```text
-1.3.0: v1_3_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006
-1.4.0: v1_4_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006
+1.3.0: v1_3_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006 -> v1_5_0_007
+1.4.0: v1_4_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006 -> v1_5_0_007
 ```
 
 `status` and `plan` show `source_migration`, `target_migration` and `pending_migrations`
@@ -196,7 +199,7 @@ existing plans and original backups usable. Partial prototype bundles keep their
 
 For a new Server migration, use the release-based name directly as its Alembic `revision` and
 register its schema, domain steps and recovery checkpoints as usual. `down_revision` must reference
-the actual preceding ID (`v1_5_0_006` when appending directly to the current head), even if that ID has
+the actual preceding ID (`v1_5_0_007` when appending directly to the current head), even if that ID has
 a display alias. The framework follows this registered chain, not lexical name ordering. Already
 registered names and release assignments stay immutable; a version bump must not rename history.
 

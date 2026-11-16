@@ -47,10 +47,13 @@ from powercontext.limits import (
     MAX_SCOPE_BINDING_EXTERNAL_ID_LENGTH,
     MAX_SCOPE_BINDING_INTEGRATION_LENGTH,
     MAX_SCOPE_BINDING_KIND_LENGTH,
+    MAX_SCOPE_DELETION_OPERATION_ID_LENGTH,
     MAX_SCOPE_EXTERNAL_REFERENCE_KIND_LENGTH,
     MAX_SCOPE_EXTERNAL_REFERENCE_VALUE_LENGTH,
     MAX_SCOPE_ID_LENGTH,
     MAX_SCOPE_IDEMPOTENCY_KEY_LENGTH,
+    MAX_SCOPE_PURGE_STATE_LENGTH,
+    MAX_SCOPE_RESOURCE_HANDLER_LENGTH,
     MAX_SCOPE_SUMMARY_LENGTH,
     MAX_SCOPE_TITLE_LENGTH,
     MAX_SOURCE_ID_LENGTH,
@@ -163,6 +166,50 @@ SCOPE_BINDINGS_TABLE = Table(
     ForeignKeyConstraint(("scope_id",), ("pc_scopes.scope_id",), ondelete="RESTRICT"),
 )
 
+# Deletion is an explicit, confirmed operation over an exact structural set. The
+# authoritative records are here: the operation identity, the set and versions
+# the requester confirmed, and one progress row per member and resource handler.
+# Access cutoff itself is `pc_scopes.lifecycle_state`, so an incomplete cleanup
+# still leaves the members unavailable rather than readable again.
+SCOPE_DELETIONS_TABLE = Table(
+    "pc_scope_deletions",
+    SHARED_METADATA,
+    Column("operation_id", identity_string(MAX_SCOPE_DELETION_OPERATION_ID_LENGTH), primary_key=True),
+    Column("root_scope_id", identity_string(MAX_SCOPE_ID_LENGTH), nullable=False),
+    Column("membership_digest", identity_string(64), nullable=False),
+    # Confirmed exact membership with the structural state it was confirmed at.
+    # A digest proves equality; this keeps the set readable without re-resolving.
+    Column("confirmed_scopes", _canonical_payload_type(), nullable=False),
+    Column("state", identity_string(MAX_SCOPE_PURGE_STATE_LENGTH), nullable=False),
+    Column("requested_at", DateTime(timezone=True).with_variant(DATETIME(fsp=6), "mysql"), nullable=False),
+    CheckConstraint(
+        "state IN ('cleanup_pending', 'complete')",
+        name="ck_pc_scope_deletions_state",
+    ),
+)
+
+SCOPE_DELETION_PROGRESS_TABLE = Table(
+    "pc_scope_deletion_progress",
+    SHARED_METADATA,
+    Column("operation_id", identity_string(MAX_SCOPE_DELETION_OPERATION_ID_LENGTH), primary_key=True),
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("handler", identity_string(MAX_SCOPE_RESOURCE_HANDLER_LENGTH), primary_key=True),
+    Column("state", identity_string(MAX_SCOPE_PURGE_STATE_LENGTH), nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    # A stable code, never a payload: cleanup diagnostics stay content-free.
+    Column("last_error_code", identity_string(64)),
+    ForeignKeyConstraint(
+        ("operation_id",),
+        ("pc_scope_deletions.operation_id",),
+        ondelete="CASCADE",
+    ),
+    CheckConstraint(
+        "state IN ('pending', 'done', 'failed')",
+        name="ck_pc_scope_deletion_progress_state",
+    ),
+    CheckConstraint("attempts >= 0", name="ck_pc_scope_deletion_progress_attempts_nonnegative"),
+)
+
 SCOPE_TABLES = (
     SCOPES_TABLE,
     SCOPE_CONTEXT_REFERENCES_TABLE,
@@ -170,6 +217,8 @@ SCOPE_TABLES = (
     SCOPE_CREATION_REQUESTS_TABLE,
     SCOPE_SETTINGS_TABLE,
     SCOPE_BINDINGS_TABLE,
+    SCOPE_DELETIONS_TABLE,
+    SCOPE_DELETION_PROGRESS_TABLE,
 )
 
 
