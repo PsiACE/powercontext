@@ -153,12 +153,15 @@ class ArtifactPublicationApplication:
         *,
         on_commit: Callable[[AsyncConnection, ArtifactPublication], Awaitable[None]] | None = None,
     ) -> ArtifactPublication:
-        source = await self._artifacts.get(connection, request.source.scope_id, request.source.artifact)
-        if source.family in {"profile", "prompt"}:
-            raise ArtifactPublicationUnsupportedError(source.family)
+        # Report an already completed request before reading the origin. The target was authorized for
+        # independent retention, so replaying it must survive the origin's later purge: reading the source
+        # first would both refetch a purged body and turn a promised idempotent retry into a not-found error.
         existing = await self._find_request(connection, request.target_scope_id, request.idempotency_key)
         if existing is not None:
             return _resolve_request(existing, request)
+        source = await self._artifacts.get(connection, request.source.scope_id, request.source.artifact)
+        if source.family in {"profile", "prompt"}:
+            raise ArtifactPublicationUnsupportedError(source.family)
 
         content_digest = hashlib.sha256(dump_model(source.content, kind="artifact", name=source.family)).hexdigest()
         if source.family == TopicMemory.family:

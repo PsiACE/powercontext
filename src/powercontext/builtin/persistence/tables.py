@@ -377,16 +377,10 @@ ARTIFACT_PUBLICATIONS_TABLE = Table(
         ),
         ondelete="RESTRICT",
     ),
-    ForeignKeyConstraint(
-        ("source_scope_id", "source_family", "source_artifact_id", "source_revision"),
-        (
-            "pc_artifacts.scope_id",
-            "pc_artifacts.family",
-            "pc_artifacts.artifact_id",
-            "pc_artifacts.revision",
-        ),
-        ondelete="RESTRICT",
-    ),
+    # The source columns stay a content-free address, not an FK target. A consuming Scope's immortal
+    # provenance must outlive the origin's physical content: the published revision was authorized for
+    # independent retention, so purging the origin may not fail on, or cascade away, this row. The full
+    # address and content_digest are already stored here, and readback never resolves the origin row.
     UniqueConstraint("target_scope_id", "idempotency_key", name="uq_pc_artifact_publications_request"),
 )
 
