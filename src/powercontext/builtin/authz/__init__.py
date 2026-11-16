@@ -73,7 +73,6 @@ from powercontext.builtin.authz.service import (
     access_control_for_mode,
 )
 from powercontext.builtin.authz.shared_use import (
-    AcceptanceSide,
     SharedOrigin,
     SharedPermissionScope,
     SharedRetention,
@@ -109,7 +108,6 @@ __all__ = (
     "IDEMPOTENCY_KEY_LIMIT",
     "PUBLIC_ACCESS_ACTIONS",
     "ROLE_CARDINALITIES",
-    "AcceptanceSide",
     "AccessAction",
     "AccessAuditContext",
     "AccessAuditEvent",
