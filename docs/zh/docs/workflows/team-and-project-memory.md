@@ -248,24 +248,36 @@ POST /v1/scopes/S_PROJECT/artifacts/search:cross-scope
                     "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}},
           "origin_rank":1,
           "retrieval_score":2.37e-06}],
- "coverage":{"complete":true,
-             "reason":"complete",
+ "coverage":{"complete":false,
+             "reason":"origin_failure",
              "searched_origins":["S_ALICE_WORK"],
-             "failed_origins":[],
+             "failed_origins":["S_BOB_WORK"],
              "bounded_origins":[]}}
 ```
+
+此处该成员可以读取 Alice 的工作 Scope，但不能读取 Bob 的，因此答案明确是不完整的：Alice 提供了命中，Bob 被列为失败。
+这不是需要掩盖的错误——响应绝不会声称检索过它无法读取的来源。
 
 分数在不同来源之间不可比较，因此合并使用各来源自身的排名与稳定的并列顺序。同一个本地 Artifact ID 出现在两个 Scope 中仍然是
 两个不同输入，因为身份是完整的来源地址。命中请用既有的确切 Revision 读取打开，它会在该地址上重新校验权限，且不会回落到
 当前头：
 
 ```http
-GET /v1/scopes/S_ALICE_WORK/artifacts/experience/retry-trace/revisions/3
+GET /v1/scopes/S_ALICE_WORK/artifacts/experience/art_1f0c/revisions/3
 ```
 
-查询是有边界的。`max_scopes` 限制检索的来源数量，`max_candidates` 作为该 Family 有效窗口的上限限定每个来源的候选工作量
-——它绝不会放宽已声明或默认的 limit。无法在预算内检索已声明窗口时会直接拒绝，而不是静默截断结果，因此你会知道范围过宽，
-而不会收到一个悄悄不完整的答案。把查询限制到单个 Artifact 或 Revision 会被拒绝，因为可检索投影只索引当前头。
+查询是有边界的。`max_scopes` 限制可声明的来源数量，`limit` 限制合并后的结果数量，`max_candidates` 作为该 Family 有效窗口的
+上限限定每个来源的候选工作量——它绝不会放宽已声明或默认的 limit。`limit` 不得大于 `max_candidates`。
+
+预算与覆盖度相互作用，两种模式表现不同：
+
+- 使用 `"partial"` 时，预算小于有效单来源窗口是允许的。查询照常执行，响应会如实报告缺口：`coverage.complete` 为
+  `false`，`reason` 为 `"candidate_budget"`，`bounded_origins` 列出每个以收窄窗口检索过的来源。
+- 使用 `"complete"` 时，同样的请求会在检索任何来源前被拒绝（`422`、`cross_scope_query_bounds`），因为收窄后的范围无法
+  诚实地报告为已完整检索。
+
+两种情况下结果都不会被静默截断：你要么在覆盖度中看到缺口，要么请求被拒绝。`"partial"` 的缺口并不等于整个查询失败。把查询
+限制到单个 Artifact 或 Revision 会被拒绝，因为可检索投影只索引当前头。
 
 ## 修正它，并在新事实出现时重新评估
 

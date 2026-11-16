@@ -274,12 +274,16 @@ hit carries its origin address and its rank within that origin:
                     "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}},
           "origin_rank":1,
           "retrieval_score":2.37e-06}],
- "coverage":{"complete":true,
-             "reason":"complete",
+ "coverage":{"complete":false,
+             "reason":"origin_failure",
              "searched_origins":["S_ALICE_WORK"],
-             "failed_origins":[],
+             "failed_origins":["S_BOB_WORK"],
              "bounded_origins":[]}}
 ```
+
+Here the member could read Alice's work Scope and not Bob's, so the answer is explicitly incomplete: Alice
+contributed a hit and Bob is named as failed. That is not an error to hide — the response never claims to have
+searched an origin it could not read.
 
 Scores are not comparable across origins, so merge uses each origin's own rank and a stable tie order. The same
 local Artifact ID in two Scopes stays two distinct inputs, because identity is the complete origin address. Open a
@@ -287,14 +291,24 @@ hit through the existing exact-revision read, which rechecks access at that addr
 current head:
 
 ```http
-GET /v1/scopes/S_ALICE_WORK/artifacts/experience/retry-trace/revisions/3
+GET /v1/scopes/S_ALICE_WORK/artifacts/experience/art_1f0c/revisions/3
 ```
 
-A query is bounded. `max_scopes` limits how many origins are searched, and `max_candidates` bounds per-origin
-candidate work as a ceiling on the Family's own effective window — it never widens a declared or default limit.
-A budget that cannot search the declared window is refused instead of silently truncating the result, so you learn
-the range is too wide rather than receiving a quietly partial answer. Restricting a query to one Artifact or
-revision is refused, because the searchable projection indexes current heads only.
+A query is bounded. `max_scopes` limits how many origins may be declared, `limit` caps the merged result count,
+and `max_candidates` bounds per-origin candidate work as a ceiling on the Family's effective window — it never
+widens a declared or default limit. `limit` must not exceed `max_candidates`.
+
+The budget interacts with coverage, and the two modes differ:
+
+- With `"partial"`, a budget smaller than the effective per-origin window is allowed. The query runs, and the
+  response reports the shortfall rather than hiding it: `coverage.complete` is `false`, `reason` is
+  `"candidate_budget"`, and `bounded_origins` names each origin that was searched with a narrowed window.
+- With `"complete"`, the same request is refused before any origin is searched (`422`,
+  `cross_scope_query_bounds`), because a narrowed range cannot honestly be reported as completely searched.
+
+Either way results are never silently truncated: you either see the gap in coverage or the range is rejected. A
+`"partial"` gap is not a whole-query failure. Restricting a query to one Artifact or revision is refused, because
+the searchable projection indexes current heads only.
 
 ## Correct it, and revisit on new facts
 
