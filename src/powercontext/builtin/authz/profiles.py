@@ -120,7 +120,9 @@ ARTIFACT_FAMILY_PROFILES: dict[str, ArtifactFamilyAccessProfile] = {
         shareable_states=frozenset({"committed"}),
         base_action=AccessAction.ARTIFACT_READ,
         additional_actions=frozenset(),
-        grantable_roles=frozenset({AccessRole.ARTIFACT_VIEWER}),
+        # A project Profile is maintained by several people; only the explicitly
+        # bound maintainers may write it. Ownership stays with the original owner.
+        grantable_roles=frozenset({AccessRole.ARTIFACT_VIEWER, AccessRole.ARTIFACT_MAINTAINER}),
         selector="forbidden",
         mutation_semantics=frozenset({AccessAction.ARTIFACT_WRITE}),
     ),

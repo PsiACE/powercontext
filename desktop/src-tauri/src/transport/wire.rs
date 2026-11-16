@@ -244,6 +244,8 @@ pub enum AccessRole {
     PromptUser,
     #[serde(rename = "artifact.owner")]
     ArtifactOwner,
+    #[serde(rename = "artifact.maintainer")]
+    ArtifactMaintainer,
     #[serde(rename = "scope.viewer")]
     ScopeViewer,
     #[serde(rename = "scope.contributor")]
@@ -270,6 +272,7 @@ impl std::fmt::Display for AccessRole {
             Self::ArtifactViewer => write!(f, "artifact.viewer"),
             Self::PromptUser => write!(f, "prompt.user"),
             Self::ArtifactOwner => write!(f, "artifact.owner"),
+            Self::ArtifactMaintainer => write!(f, "artifact.maintainer"),
             Self::ScopeViewer => write!(f, "scope.viewer"),
             Self::ScopeContributor => write!(f, "scope.contributor"),
             Self::ScopeReviewer => write!(f, "scope.reviewer"),

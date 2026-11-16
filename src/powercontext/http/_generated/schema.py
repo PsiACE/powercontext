@@ -15182,6 +15182,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "artifact.viewer",
                     "prompt.user",
                     "artifact.owner",
+                    "artifact.maintainer",
                     "scope.viewer",
                     "scope.contributor",
                     "scope.reviewer",
