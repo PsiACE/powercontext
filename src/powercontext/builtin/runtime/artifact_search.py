@@ -56,11 +56,21 @@ class _SearcherBinding(Generic[RequestT, OutcomeT_co]):
         payload: Mapping[str, Any],
         execution_context: ArtifactSearchExecutionContext | None,
     ) -> ArtifactSearchOutcome:
-        encoded = _encode_request_payload(payload, self.searcher.request_type.__name__)
-        request = self.searcher.request_type.model_validate_json(encoded, strict=True)
+        request = self.parse(payload)
         outcome = await self.searcher.search(scope_id, request, execution_context=execution_context)
         _validate_public_outcome(self.searcher.family, request, outcome)
         return outcome
+
+    def parse(self, payload: Mapping[str, Any]) -> RequestT:
+        """Decode one payload with the registered Family request model, without searching.
+
+        This is the Family's own admission: defaults, per-Family fields, and rejection of an
+        out-of-range value all stay owned by ``request_type``. A caller that needs the effective
+        request window reads ``limit`` from the returned model rather than guessing a default.
+        """
+
+        encoded = _encode_request_payload(payload, self.searcher.request_type.__name__)
+        return self.searcher.request_type.model_validate_json(encoded, strict=True)
 
 
 class ArtifactSearchService:
@@ -90,6 +100,17 @@ class ArtifactSearchService:
         """Read invocation metadata while preserving unknown/unsupported failures."""
 
         return self._binding(family).embedding_purpose
+
+    def parse_request(self, family: str, payload: Mapping[str, Any]) -> ArtifactSearchQuery:
+        """Decode one payload with its registered Family request model, without searching.
+
+        The registered ``request_type`` owns defaults, Family-specific fields, and rejection of an
+        out-of-range value. A caller reads the *effective* window from the returned model instead of
+        assuming a Family default, and an invalid original payload is reported before any caller
+        changes the limit.
+        """
+
+        return self._binding(family).parse(payload)
 
     async def search(
         self,

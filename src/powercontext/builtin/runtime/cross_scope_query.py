@@ -29,7 +29,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
-from powercontext.artifacts.search import ArtifactSearchExecutionContext
+from powercontext.artifacts.search import (
+    ArtifactSearchExecutionContext,
+    ArtifactSearchUnavailable,
+    ArtifactSearchUnsupported,
+)
 from powercontext.builtin.authz import (
     AccessAction,
     AccessDeniedError,
@@ -50,9 +54,14 @@ CROSS_SCOPE_CANDIDATE_LIMIT = 256
 
 CoverageReason = Literal["complete", "origin_failure", "candidate_budget"]
 
-# Only these describe one origin being unreachable to this caller. A malformed or unsupported
-# common request would fail identically at every origin, so it is never degraded into coverage.
-_ORIGIN_FAILURES = (AccessDeniedError, ScopeNotFoundError)
+# One origin being unreachable to this caller: refused, unavailable, or absent. These degrade
+# partial coverage into a reported gap. Everything else — a malformed or unsupported common
+# request — fails identically at every origin, so it keeps propagating as its owner reported it.
+_ORIGIN_FAILURES = (
+    AccessDeniedError,
+    ArtifactSearchUnavailable,
+    ScopeNotFoundError,
+)
 
 
 class CrossScopeQueryError(PowerContextError):
@@ -163,7 +172,6 @@ class ScopedCrossScopeQuery:
     ) -> CrossScopeQueryResult:
         """Authorize and search every declared origin, then merge by origin rank."""
 
-        window = _OriginWindow(request)
         principal, access = _invocation(execution_context)
         if request.restrict_to is not None:
             raise CrossScopeQueryUnsupported(
@@ -171,16 +179,21 @@ class ScopedCrossScopeQuery:
                 "the approved-head projection indexes only current revisions, so candidates cannot be "
                 "restricted before scoring",
             )
+        _require_range(request)
+        # The query Scope itself must exist before any origin is authorized.
+        async with self._runtime._scoped_operation(self.scope_id):
+            pass
+        # The Family validates the caller's original payload first, so its own defaults and errors
+        # are what the budget caps — never a guess and never a rewritten invalid value.
+        declared = _invocation_window(self._runtime, request)
+        window = _OriginWindow(request, declared)
         if window.bounded and request.coverage == "complete":
             # Refuse before spending any origin search: this range cannot be fully searched.
             raise CrossScopeQueryBoundsError(
                 "max_candidates",
-                "the candidate budget is smaller than the requested per-origin limit, so the range "
+                "the candidate budget is smaller than the effective per-origin window, so the range "
                 "cannot be reported as completely searched",
             )
-        # The query Scope itself must exist before any origin is authorized.
-        async with self._runtime._scoped_operation(self.scope_id):
-            pass
         searched: list[tuple[str, tuple[CrossScopeHit, ...]]] = []
         failed: list[str] = []
         bounded: list[str] = []
@@ -188,8 +201,6 @@ class ScopedCrossScopeQuery:
             try:
                 ranked = await self._origin_hits(origin, request, window, principal, access, execution_context)
             except _ORIGIN_FAILURES:
-                # Only origin-scoped unavailability degrades coverage. A malformed or unsupported
-                # common request fails the same way at every origin, so it keeps propagating.
                 if request.coverage == "complete":
                     raise
                 failed.append(origin)
@@ -255,48 +266,55 @@ class CrossScopeQueryApplication:
 
 
 class _OriginWindow:
-    """Cap each origin's declared window by its share of the candidate budget.
+    """Cap the Family's own effective window by each origin's share of the candidate budget.
 
-    The budget is a ceiling, never a work request: a caller-declared ``payload.limit`` is passed
-    through untouched when the allocation does not narrow it, and is lowered only to report that
-    the origin was searched less deeply than asked. When the caller declared no window, nothing is
-    injected, so the Family's own contract keeps owning its default and no valid query can become
-    invalid because of a budget.
+    The effective window is decoded by the registered Family request model, so a default and an
+    explicit value are treated identically and an invalid original value has already been reported.
+    The allocation is a ceiling, never a work request: it only ever lowers that window, so it can
+    neither widen a declared top-1 request nor inject a value above a Family's own limit.
     """
 
-    def __init__(self, request: CrossScopeQueryRequest) -> None:
-        if len(request.scopes) > request.max_scopes:
-            raise CrossScopeQueryBoundsError(
-                "max_scopes", f"{len(request.scopes)} origins exceed the declared maximum of {request.max_scopes}"
-            )
-        if request.limit > request.max_candidates:
-            raise CrossScopeQueryBoundsError(
-                "max_candidates", "the result limit cannot exceed the total candidate budget"
-            )
-        self._declared = _declared_window(request.payload)
+    def __init__(self, request: CrossScopeQueryRequest, declared: int) -> None:
+        self._declared = declared
         self.per_origin = request.max_candidates // len(request.scopes)
         if self.per_origin < 1:
             raise CrossScopeQueryBoundsError(
                 "max_candidates", "the candidate budget is smaller than the number of declared origins"
             )
-        # Only a declared window can be narrowed; an omitted one belongs to the Family's contract.
-        self.bounded = self._declared is not None and self.per_origin < self._declared
+        # The Family's effective window — explicit or default — is the work the caller asked for.
+        self.bounded = self.per_origin < self._declared
 
     def payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return the payload to send, capping a declared window and never adding one."""
+        """Return the payload to send, capping the effective window and never widening it."""
 
-        if self._declared is None or self.per_origin >= self._declared:
+        if self.per_origin >= self._declared:
             return payload
         return {**payload, "limit": self.per_origin}
 
 
-def _declared_window(payload: dict[str, Any]) -> int | None:
-    """Read the caller's own per-Family ``limit`` field, which stays the Family's to validate."""
+def _require_range(request: CrossScopeQueryRequest) -> None:
+    """Reject a range no search could satisfy, before any origin is touched."""
 
-    declared = payload.get("limit")
-    if declared is None or (not isinstance(declared, bool) and isinstance(declared, int)):
-        return declared
-    return None
+    if len(request.scopes) > request.max_scopes:
+        raise CrossScopeQueryBoundsError(
+            "max_scopes", f"{len(request.scopes)} origins exceed the declared maximum of {request.max_scopes}"
+        )
+    if request.limit > request.max_candidates:
+        raise CrossScopeQueryBoundsError("max_candidates", "the result limit cannot exceed the total candidate budget")
+
+
+def _invocation_window(runtime: Any, request: CrossScopeQueryRequest) -> int:
+    """Decode the caller's payload with its registered Family model and return its effective window.
+
+    Validation happens here, on the original payload, through the same binding the search will use:
+    a Family default, a Family-specific field, and a rejected out-of-range value all stay that
+    Family's own contract, and no caller rewrites the limit before it has been admitted.
+    """
+
+    service = runtime._artifact_search
+    if service is None:
+        raise ArtifactSearchUnsupported(request.family, field="family")
+    return service.parse_request(request.family, request.payload).limit
 
 
 def _invocation(
