@@ -3718,15 +3718,19 @@ def test_scoped_selection_counts_against_the_published_budgets() -> None:
     sources = tuple(SourceRef(source_type="content", source_id=f"s-{index}") for index in range(32))
 
     # A scoped Artifact is an Artifact selection: naming any Scope cannot exceed 20.
-    for selection in (
-        {"scoped": tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts)},
-        {
-            "artifacts": artifacts[:10],
-            "scoped": tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts[10:]),
-        },
-    ):
-        with pytest.raises((ValidationError, DreamError)):
-            CreateDreamRunRequest(operation="refine_experience", idempotency_key="over-artifacts", **selection)
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="refine_experience",
+            scoped=tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts),
+            idempotency_key="over-scoped-artifacts",
+        )
+    with pytest.raises((ValidationError, DreamError)):
+        CreateDreamRunRequest(
+            operation="refine_experience",
+            artifacts=artifacts[:10],
+            scoped=tuple(ScopedEvidence(scope_id=scope, artifact=item) for item in artifacts[10:]),
+            idempotency_key="over-local-and-scoped-artifacts",
+        )
 
     # A scoped Source is a reference: the published total still holds.
     with pytest.raises((ValidationError, DreamError)):
@@ -3753,3 +3757,152 @@ def test_scoped_selection_counts_against_the_published_budgets() -> None:
         idempotency_key="qualified-at-the-limit",
     )
     assert len(qualified.scoped) == 20
+
+
+def test_admitted_origins_survive_candidate_approval_and_restart(database: DatabaseConfig) -> None:
+    """Two Scopes' equal local IDs stay two exact recorded origins after commit.
+
+    This drives the public lower-level Candidate/Artifact persistence with a controlled
+    authorized fixture. It is not full Server Dream admission, which still refuses
+    external evidence until agreed use and origin recording are wired end to end.
+    """
+
+    from sqlalchemy import delete
+
+    from powercontext.artifacts import ArtifactRef, RecordedOrigin
+    from powercontext.builtin.evidence.models import content_digest
+    from powercontext.builtin.persistence.tables import SOURCES_TABLE
+    from powercontext.builtin.review.errors import InvalidCandidateError
+    from powercontext.builtin.runtime.relational import RelationalContexts
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            target = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="t"))
+            ).scope_id
+            alice = (
+                await runtime.scopes.create(ScopeDraft(title="Alice", summary="Origin", idempotency_key="a"))
+            ).scope_id
+            bob = (await runtime.scopes.create(ScopeDraft(title="Bob", summary="Origin", idempotency_key="b"))).scope_id
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+            )
+            from_alice = await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+            )
+            from_bob = await runtime.sources.for_scope(bob).capture(
+                CaptureSource(
+                    source_id="retry-trace", content="The duplicate callback came from the old channel.", metadata={}
+                )
+            )
+            artifact = await runtime.records.for_scope(target).create_artifact(
+                "experience",
+                ArtifactWrite(
+                    content={
+                        "situation": "A write timed out.",
+                        "action": "Replay with the same idempotency key.",
+                        "outcome": "No duplicate record was created.",
+                        "lesson": "Retry only with a deduplication contract.",
+                    }
+                ),
+            )
+            local_ref = ArtifactRef(family="experience", artifact_id=artifact.artifact_id, revision=artifact.revision)
+
+            # All three Sources have the same local id; only the owning Scope tells them apart.
+            origins = (
+                RecordedOrigin(scope_id=alice, source=from_alice.source_ref, digest=content_digest(b"alice")),
+                RecordedOrigin(scope_id=bob, source=from_bob.source_ref, digest=content_digest(b"bob")),
+            )
+            identities = {
+                item.reference.source_id
+                for item in (
+                    *origins,
+                    RecordedOrigin(scope_id=target, source=local.source_ref, digest=content_digest(b"l")),
+                )
+                if isinstance(item.reference, SourceRef)
+            }
+            assert identities == {"retry-trace"}
+
+            review = RelationalContexts(database=runtime._provider.database).review(target)
+            # A local reference is refused rather than recorded as an origin.
+            with pytest.raises(InvalidCandidateError):
+                await review.propose_experience_from_origins(
+                    experience(),
+                    sources=(local.source_ref,),
+                    artifacts=(local_ref,),
+                    origins=(RecordedOrigin(scope_id=target, source=local.source_ref, digest=content_digest(b"x")),),
+                    target=None,
+                    reason="A local reference is not an origin.",
+                )
+
+            candidate = await review.propose_experience_from_origins(
+                experience(),
+                # The author cites only local supporting evidence, so the recorded origins
+                # below must come from the admitted set rather than from the citations.
+                sources=(local.source_ref,),
+                artifacts=(local_ref,),
+                origins=origins,
+                target=None,
+                reason="Reconciled the two channels.",
+            )
+            assert candidate.sources == (local.source_ref,)
+            assert {
+                (item.scope_id, item.reference.source_id)
+                for item in candidate.origins
+                if isinstance(item.reference, SourceRef)
+            } == {(alice, "retry-trace"), (bob, "retry-trace")}
+
+            approved = await review.approve(candidate.candidate_id, candidate.version)
+            result = approved.result_artifact
+            assert result is not None
+
+            async with runtime._provider.database.transaction() as connection:
+                committed = await runtime._provider.repositories.artifacts.get(connection, target, result)
+            # The committed revision keeps both origins even though the author cited one.
+            assert {(item.scope_id, item.source.source_id) for item in committed.lineage.origins} == {
+                (alice, "retry-trace"),
+                (bob, "retry-trace"),
+            }
+            assert len({item.digest for item in committed.lineage.origins}) == 2
+            # Local supporting citations stay local and unqualified.
+            assert committed.lineage.sources == (local.source_ref,)
+
+            # Removing the origin Source leaves the independently retained conclusion and
+            # its exact recorded address intact: nothing cascades from the origin row.
+            async with runtime._provider.database.transaction() as connection:
+                await connection.execute(
+                    delete(SOURCES_TABLE).where(
+                        SOURCES_TABLE.c.scope_id == alice,
+                        SOURCES_TABLE.c.source_id == "retry-trace",
+                    )
+                )
+            async with runtime._provider.database.transaction() as connection:
+                survived = await runtime._provider.repositories.artifacts.get(connection, target, result)
+            assert {(item.scope_id, item.source.source_id, item.digest) for item in survived.lineage.origins} == {
+                (item.scope_id, item.source.source_id, item.digest) for item in committed.lineage.origins
+            }
+
+        # A fresh runtime over the same database reads the same exact origins.
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            async with runtime._provider.database.transaction() as connection:
+                restored = await runtime._provider.repositories.artifacts.get(connection, target, result)
+            assert [(item.scope_id, item.source.source_id, item.digest) for item in restored.lineage.origins] == [
+                (item.scope_id, item.source.source_id, item.digest) for item in committed.lineage.origins
+            ]
+            approved_again = (
+                await RelationalContexts(database=runtime._provider.database)
+                .review(target)
+                .get_candidate(candidate.candidate_id)
+            )
+            assert approved_again.status == "approved"
+            assert len(approved_again.origins) == 2
+
+    asyncio.run(scenario())

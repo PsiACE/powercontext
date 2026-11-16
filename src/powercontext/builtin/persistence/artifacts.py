@@ -23,7 +23,7 @@ from functools import lru_cache
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, JsonValue, RootModel, ValidationError
-from sqlalchemy import and_, bindparam, insert, literal, select, true, tuple_, union_all, update
+from sqlalchemy import and_, bindparam, insert, inspect, literal, select, true, tuple_, union_all, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncTransaction
 from sqlalchemy.sql import FromClause, Select
@@ -34,6 +34,7 @@ from powercontext.artifacts import (
     ArtifactDraft,
     ArtifactLineage,
     ArtifactRef,
+    RecordedOrigin,
 )
 from powercontext.builtin.persistence.artifact_governance import ArtifactGovernance, InvalidArtifactLifecycleError
 from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes, validate_json_model
@@ -54,6 +55,7 @@ from powercontext.builtin.persistence.sources import _SourceReadSet
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
+    ARTIFACT_LINEAGE_ORIGINS_TABLE,
     ARTIFACT_LINEAGE_SOURCES_TABLE,
     ARTIFACT_PUBLICATIONS_TABLE,
     ARTIFACT_REVISION_COLUMNS,
@@ -73,6 +75,55 @@ class _StoredSourceLocator(RootModel[SourceLocator]):
     pass
 
 
+def _origin_row(identity: Mapping[str, object], ordinal: int, origin: RecordedOrigin) -> dict[str, object]:
+    """Flatten one recorded origin; the reference keeps the locator's exact revision/position."""
+
+    reference = origin.reference
+    is_source = isinstance(reference, SourceRef)
+    locator = reference.locator if is_source else None
+    return {
+        **identity,
+        "ordinal": ordinal,
+        "origin_scope_id": origin.scope_id,
+        "origin_kind": "source" if is_source else "artifact",
+        "origin_family": reference.source_type if is_source else reference.family,
+        "origin_id": reference.source_id if is_source else reference.artifact_id,
+        "origin_revision": None if is_source else reference.revision,
+        "locator": None
+        if locator is None
+        else dump_model(_StoredSourceLocator(locator), kind="source", name="locator"),
+        "digest": origin.digest,
+    }
+
+
+def _recorded_origin(row: Mapping[Any, Any]) -> RecordedOrigin:
+    locator = (
+        None
+        if row["locator"] is None
+        else load_model(
+            _StoredSourceLocator,
+            stored_bytes(row["locator"], column="locator"),
+            kind="source",
+            name="locator",
+        ).root
+    )
+    revision = row["ref_revision"]
+    return RecordedOrigin(
+        scope_id=str(row["ref_scope"]),
+        source=(
+            None
+            if revision is not None
+            else SourceRef(source_type=str(row["ref_family"]), source_id=str(row["ref_id"]), locator=locator)
+        ),
+        artifact=(
+            None
+            if revision is None
+            else ArtifactRef(family=str(row["ref_family"]), artifact_id=str(row["ref_id"]), revision=int(revision))
+        ),
+        digest=str(row["digest"]),
+    )
+
+
 def with_artifact_content(statement: Select[Any], heads: FromClause = ARTIFACT_HEADS_TABLE) -> Select[Any]:
     """Join each selected head to its exact body, retaining dangling heads for validation."""
     return statement.add_columns(
@@ -86,8 +137,15 @@ def with_artifact_content(statement: Select[Any], heads: FromClause = ARTIFACT_H
     )
 
 
-@lru_cache(maxsize=1)
-def _lineage_query():
+async def _has_origin_relation(connection: AsyncConnection) -> bool:
+    """A database created before the relation existed still reads its own lineage."""
+
+    tables = await connection.run_sync(lambda sync: set(inspect(sync).get_table_names()))
+    return ARTIFACT_LINEAGE_ORIGINS_TABLE.name in tables
+
+
+@lru_cache(maxsize=2)
+def _lineage_query(*, with_origins: bool = True):
     """Reuse the bounded lineage query; every execution binds its own selection."""
     source, artifact, publication = (
         ARTIFACT_LINEAGE_SOURCES_TABLE.c,
@@ -133,6 +191,7 @@ def _lineage_query():
             ),
         )
 
+    origins = ARTIFACT_LINEAGE_ORIGINS_TABLE.c
     relations = union_all(
         project(
             "source",
@@ -162,6 +221,25 @@ def _lineage_query():
             ref_revision=publication.source_revision,
             digest=publication.content_digest,
         ),
+        # Recorded origins keep their own ordinals and exact reference identity. A
+        # database whose revision chain predates the relation reads without it.
+        *(
+            (
+                project(
+                    "origin",
+                    origins,
+                    ordinal=origins.ordinal,
+                    ref_scope=origins.origin_scope_id,
+                    ref_family=origins.origin_family,
+                    ref_id=origins.origin_id,
+                    ref_revision=origins.origin_revision,
+                    digest=origins.digest,
+                    locator=origins.locator,
+                ),
+            )
+            if with_origins
+            else ()
+        ),
     ).subquery("artifact_relations")
     return select(relations).order_by(
         relations.c.family,
@@ -181,6 +259,7 @@ class RepositoryArtifactDraft(BaseModel):
     content: BaseModel
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
+    origins: tuple[RecordedOrigin, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +382,7 @@ class ArtifactRepository:
                 artifact_type,
                 ref,
                 draft.content,
-                ArtifactLineage(sources=draft.sources, artifacts=draft.artifacts),
+                ArtifactLineage(sources=draft.sources, artifacts=draft.artifacts, origins=draft.origins),
             ))
         if not revisions:
             return ()
@@ -572,7 +651,7 @@ class ArtifactRepository:
                         artifact_type,
                         ref,
                         draft.content,
-                        ArtifactLineage(sources=draft.sources, artifacts=draft.artifacts),
+                        ArtifactLineage(sources=draft.sources, artifacts=draft.artifacts, origins=draft.origins),
                     ),
                 ),
             )
@@ -850,7 +929,7 @@ class ArtifactRepository:
         scope_id: str,
         revisions: Sequence[tuple[type[Artifact[Any]], ArtifactRef, object, ArtifactLineage]],
     ) -> tuple[Artifact[Any], ...]:
-        bodies, sources, source_locators, artifact_refs, artifacts = [], [], [], [], []
+        bodies, sources, source_locators, artifact_refs, origins, artifacts = [], [], [], [], [], []
         for artifact_type, ref, content, lineage in revisions:
             if not isinstance(content, BaseModel):
                 raise TypeError("artifact content must be a BaseModel")  # noqa: TRY003
@@ -891,6 +970,7 @@ class ArtifactRepository:
                 }
                 for ordinal, upstream in enumerate(lineage.artifacts)
             )
+            origins.extend(_origin_row(identity, ordinal, origin) for ordinal, origin in enumerate(lineage.origins))
             artifact = artifact_type(
                 artifact_id=ref.artifact_id, revision=ref.revision, content=content, lineage=lineage
             )
@@ -905,6 +985,8 @@ class ArtifactRepository:
             await connection.execute(insert(ARTIFACT_SOURCE_LOCATORS_TABLE), source_locators)
         if artifact_refs:
             await connection.execute(insert(ARTIFACT_LINEAGE_ARTIFACTS_TABLE), artifact_refs)
+        if origins:
+            await connection.execute(insert(ARTIFACT_LINEAGE_ORIGINS_TABLE), origins)
         return tuple(artifacts)
 
     def _decode_artifact(
@@ -950,16 +1032,25 @@ class ArtifactRepository:
     ) -> dict[tuple[str, str, int], ArtifactLineage]:
         rows = (
             await connection.execute(
-                _lineage_query(),
-                {"scope_id": scope_id, "source_keys": keys, "artifact_keys": keys, "publication_keys": keys},
+                _lineage_query(with_origins=await _has_origin_relation(connection)),
+                {
+                    "scope_id": scope_id,
+                    "source_keys": keys,
+                    "artifact_keys": keys,
+                    "publication_keys": keys,
+                    "origin_keys": keys,
+                },
             )
         ).mappings()
         sources: dict[tuple[str, str, int], list[SourceRef]] = {key: [] for key in keys}
         artifacts: dict[tuple[str, str, int], list[ArtifactRef]] = {key: [] for key in keys}
         publications = {}
+        origins: dict[tuple[str, str, int], list[RecordedOrigin]] = {key: [] for key in keys}
         for row in rows:
             key = (str(row["family"]), str(row["artifact_id"]), int(row["revision"]))
-            if row["relation"] == "source":
+            if row["relation"] == "origin":
+                origins[key].append(_recorded_origin(row))
+            elif row["relation"] == "source":
                 locator = (
                     None
                     if row["locator"] is None
@@ -995,6 +1086,7 @@ class ArtifactRepository:
             key: ArtifactLineage(
                 sources=tuple(sources[key]),
                 artifacts=tuple(artifacts[key]),
+                origins=tuple(origins[key]),
                 publication_source=provenance[key][0],
                 publication_digest=provenance[key][1],
             )
