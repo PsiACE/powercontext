@@ -364,3 +364,90 @@ def test_team_project_memory_runs_on_ordinary_scopes(tmp_path: Path) -> None:
                 assert personal_prepare.json()["status"] == "empty"
 
     asyncio.run(scenario())
+
+
+def test_shared_conclusion_has_one_owner_and_no_handover(tmp_path: Path) -> None:
+    """The documented ownership limit is the real behavior, and there is no supported workaround.
+
+    This protects the workflow claim a project depends on when planning maintainers. If ownership transfer or
+    reviewer-based write authority is implemented later, this test should change together with the documentation
+    rather than leaving the docs asserting a restriction that no longer holds.
+    """
+
+    database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'ownership.db'}")
+
+    async def scenario() -> None:
+        await asyncio.to_thread(prepare_server_database, ServerSettings(database=database))
+        async with open_builtin_access_control(
+            database, bootstrap_administrators=(ADMIN,), deployment_id=DEPLOYMENT_ID
+        ) as access:
+            harness = _Harness(database, access)
+            async with harness.client(ADMIN) as admin:
+                project_id = await _create_scope(admin, "Ownership project", "ownership-project")
+                for principal in (MAINTAINER, READER):
+                    # Every role a Scope can carry, to show none of them confers Profile write authority.
+                    for role in ("scope.contributor", "scope.reviewer", "scope.admin"):
+                        await _grant(admin, project_id, principal, role)
+                await _enable_reviewed_profile(admin, project_id)
+
+            # The creating Principal becomes the owner of record.
+            async with harness.client(MAINTAINER) as owner:
+                captured = await owner.post(
+                    f"/v1/scopes/{project_id}/sources",
+                    json={"content": "A callback retried on the new channel succeeded with an idempotency key."},
+                )
+                assert captured.status_code == 201, captured.text
+                pending = await owner.post("/v1/profile/flush", json={"scope_id": project_id})
+                assert pending.status_code == 200, pending.text
+                approved = await owner.post(
+                    "/v1/candidates/approve",
+                    json={
+                        "scope_id": project_id,
+                        "candidate_id": pending.json()["candidate_id"],
+                        "expected_version": 1,
+                    },
+                )
+                assert approved.status_code == 200, approved.text
+                head = await owner.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                etag = head.headers["ETag"]
+                assert head.json()["revision"] == 1
+
+                # The owner keeps working: replacement and further reviewed generation both succeed.
+                replaced = await owner.put(
+                    f"/v1/scopes/{project_id}/{PROFILE_PATH}",
+                    headers={"If-Match": etag},
+                    json={"content": {"content": "# Owner correction\n"}},
+                )
+                assert replaced.status_code == 200, replaced.text
+                assert replaced.json()["revision"] == 2
+
+            # A successor holding every Scope role cannot inherit it.
+            async with harness.client(READER) as successor:
+                latest = await successor.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                assert latest.status_code == 200, latest.text
+                assert latest.json()["revision"] == 2
+                refused = await successor.put(
+                    f"/v1/scopes/{project_id}/{PROFILE_PATH}",
+                    headers={"If-Match": latest.headers["ETag"]},
+                    json={"content": {"content": "# Successor rewrite\n"}},
+                )
+                assert refused.status_code == 403, refused.text
+
+                # Recreating the singleton is not a handover route: it is already taken.
+                recreating = await successor.post(
+                    f"/v1/scopes/{project_id}/artifacts",
+                    json={"family": "profile", "content": {"content": "# Successor recreate\n"}},
+                )
+                assert recreating.status_code == 409, recreating.text
+
+                # Reviewed generation against an existing Profile needs the same write authority.
+                flush = await successor.post("/v1/profile/flush", json={"scope_id": project_id})
+                assert flush.status_code == 403, flush.text
+
+            # The conclusion the owner wrote is unchanged by those attempts.
+            async with harness.client(MAINTAINER) as owner:
+                unchanged = await owner.get(f"/v1/scopes/{project_id}/{PROFILE_PATH}")
+                assert unchanged.json()["revision"] == 2
+                assert unchanged.json()["content"]["content"] == "# Owner correction\n"
+
+    asyncio.run(scenario())

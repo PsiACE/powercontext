@@ -7,8 +7,10 @@ description: Keep a shared conclusion in an ordinary Scope, let members read it,
 
 A team or a project does not need a new object type. It needs a Scope that the group agrees owns its
 collective record, a way for contributors to keep supplying material, one official conclusion that members can
-read, and a path to correct that conclusion when the facts change. PowerContext already provides all four, so an
-application maps its business team and project IDs onto ordinary Scopes and records the relationship itself.
+read, and a path to correct that conclusion when the facts change. Ordinary Scopes and their existing permissions
+provide each of these, so an application maps its business team and project IDs onto ordinary Scopes and records
+the relationship itself. One limitation is described below rather than hidden: a shared conclusion has a single
+owner, so correcting it is currently restricted to the Principal that created it.
 
 This page describes the composition that runs today. Where a step depends on a capability that is not available
 yet, the text says so instead of implying it works.
@@ -55,7 +57,11 @@ Reading a Scope and writing to a Scope are separate permissions. Give each membe
 | Contributes observations, reviews, incident reports | `scope.contributor` |
 | Decides whether a proposed conclusion becomes official | `scope.reviewer` |
 | Changes Scope configuration, including the Profile policy | `scope.admin` |
-| Only reads the conclusion and opens cited evidence | `scope.viewer` |
+| Only reads material in the Scope | `scope.viewer` |
+
+These roles govern the project Scope. None of them grants access to another Scope, so `scope.viewer` on the
+project lets a member read the project's own material and nothing else. Opening evidence that lives in a
+contributor's Scope needs a separate grant on that Scope.
 
 ```http
 POST /v1/access/bindings/create
@@ -157,9 +163,10 @@ deployment:
 - `artifact.owner` cannot be granted through the Access binding API.
 
 So a project must decide who creates the official Profile and treat that Principal as the maintainer of record.
-If the person who should maintain it changes, the supported route today is to produce the conclusion through
-Dream review or the Profile policy with the new maintainer's identity, or to recreate the Artifact, rather than to
-hand over an existing one. Handing a shared conclusion between maintainers is an open decision.
+That Principal can keep replacing the Profile and can keep driving reviewed generation against it. Nobody else
+can, and there is no ownership handover: `artifact.owner` is one Principal per Artifact and cannot be reassigned
+through the Access API, so a successor cannot inherit the authority. Handing a shared conclusion between
+maintainers is an open decision, and this document does not offer a workaround.
 
 ## Let members read it
 
@@ -198,9 +205,10 @@ under her own policy, and the project never gains access to it by sharing a Scop
 ## Open the evidence behind a conclusion
 
 Reading a conclusion and inspecting its evidence are different permissions. Reading the committed Profile needs
-`artifact.read` on it. Opening the exact Source or Artifact it cites needs authority at *that* origin, checked on
-the request that opens it. A member who may read the project conclusion may still be refused the private incident
-report behind it, and that refusal is the intended behavior rather than a defect.
+`artifact.read` on it, which a Scope role on the project supplies. Opening the exact Source or Artifact it cites
+needs authority at *that* origin, checked on the request that opens it, and no project role substitutes for it. A
+member who may read the project conclusion is therefore refused the private incident report behind it unless they
+separately hold a grant on the Scope that stores it. That refusal is the intended behavior rather than a defect.
 
 Evidence for a revision the project produced from its own Source Journal resolves inside the project Scope. Using
 external Sources or Artifacts as Dream evidence, and rechecking each origin's authority at approval, is part of
@@ -208,11 +216,12 @@ cross-Scope processing and is not available yet.
 
 ## Correct it, and revisit on new facts
 
-Three situations look similar and end differently:
+Correction is available to the Profile's owner, which today means the Principal that created it. Three situations
+look similar and end differently:
 
 | Situation | What the Server does |
 | --- | --- |
-| A maintainer writes a new revision while a proposal is pending | The pending Candidate's baseline is no longer the head. Approval is refused with `409`. |
+| The owner writes a new revision while a proposal is pending | The pending Candidate's baseline is no longer the head. Approval is refused with `409`. |
 | The refused proposal is no longer wanted | Reject it. A stale Candidate can still be rejected. |
 | New facts arrive | Capture them, then trigger a new evaluation against the current head. |
 
@@ -225,6 +234,11 @@ POST /v1/candidates/reject
 
 Do not try to approve the old proposal after the head moved. Reassessment is a new run against the current
 revision, which is why the notice the Server returns is a conflict rather than a silent overwrite.
+
+Because reviewed generation against an existing Profile requires the same `artifact.write` authority, a Principal
+that does not own the Profile cannot run `POST /v1/profile/flush` against it either. Correction and routine
+reassessment both follow the owner, so plan for one maintainer identity per project conclusion until ownership
+handover exists.
 
 ## Personal memory is unaffected
 
@@ -243,7 +257,8 @@ Stated plainly, so nothing here is mistaken for working behavior:
   write, or a reviewed proposal over that journal.
 - **Range queries across Scopes with exact readback and coverage.** `Prepare` covers the current Scope and its
   direct references; a member has to open a foreign origin under their own grant.
-- **Handing a shared conclusion to a different maintainer.** See the ownership note above.
+- **Handing a shared conclusion to a different maintainer.** There is no ownership transfer, and no supported
+  workaround. See the ownership note above.
 - **Archiving or deleting a whole team or project Scope.** Scope lifecycle operations are still being defined.
 
 When those arrive they extend this workflow rather than replace it: the Scope that owns the record, the roles,
