@@ -31,6 +31,14 @@ requires the principal the owning caller already authenticated for that act; a
 caller that passes a decoded request field instead would defeat it. Agreement that
 must outlive one boundary instance comes only from the caller's persisted record
 through :class:`SharedUseAcceptanceReader`. This module stores nothing.
+
+**What this code does not detect.** It cannot tell a crossed boundary from a
+legitimate one. An acceptance with no ``acceptance_id`` never reaches the reader,
+even after the object is rebuilt in a new instance, so nothing here proves the
+accepting actor was authenticated. The owning caller must therefore supply
+restored records from the authoritative store, each with a required
+``acceptance_id``, and must never pass an acceptance deserialized from client
+input. Enforcing that is the integration's obligation, not this helper's.
 """
 
 from __future__ import annotations
@@ -74,6 +82,19 @@ class SharedPermissionScope(StrEnum):
 
     LOGICAL = "logical"
     REVISION_ONLY = "revision_only"
+
+
+def _coverage(values: object) -> frozenset[str]:
+    """Normalize a decoded coverage container, refusing shapes we do not support."""
+
+    if isinstance(values, str) or not isinstance(values, list | tuple | set | frozenset):
+        raise AccessInvalidRequestError("shared_use_acceptance")
+    items: list[str] = []
+    for item in values:
+        if not isinstance(item, str) or not item:
+            raise AccessInvalidRequestError("shared_use_acceptance")
+        items.append(item)
+    return frozenset(items)
 
 
 def _enum_member(enum: type[_E], value: object, code: str) -> _E:
@@ -173,6 +194,11 @@ class SharedUseAcceptance:
     Coverage is per origin and per audience Scope, so independent contributors
     compose. The value records an act the owning caller performed; it is not an
     identity token and cannot authenticate anybody by itself.
+
+    Only ``acceptance_id`` makes a value durable. Without it the reader is not
+    consulted at all — not even when the value was rebuilt in another instance —
+    so an id-less acceptance asserts that its caller already authenticated the
+    actor and restored it from the authoritative record.
     """
 
     terms_digest: str
@@ -189,26 +215,32 @@ class SharedUseAcceptance:
             raise AccessInvalidRequestError("shared_use_acceptance")
         if not isinstance(self.accepted_at, datetime):
             raise AccessInvalidRequestError("shared_use_acceptance")
+        object.__setattr__(self, "origins", _coverage(self.origins))
+        object.__setattr__(self, "audience_scope_ids", _coverage(self.audience_scope_ids))
         if not self.origins and not self.audience_scope_ids:
             raise AccessInvalidRequestError("shared_use_acceptance")
-        for values in (self.origins, self.audience_scope_ids):
-            if not isinstance(values, frozenset) or any(not isinstance(item, str) or not item for item in values):
-                raise AccessInvalidRequestError("shared_use_acceptance")
 
     @property
     def durable(self) -> bool:
-        """Whether the caller's own record identifies this acceptance."""
+        """Whether a persisted record must still confirm this acceptance.
+
+        False means the reader is skipped entirely, so the caller asserts the
+        actor was authenticated and the record restored; this boundary cannot
+        check either.
+        """
 
         return self.acceptance_id is not None
 
 
 class SharedUseAcceptanceReader(Protocol):
-    """Confirm an acceptance the caller persisted for later runs.
+    """Confirm an acceptance the owning caller restored from the authoritative store.
 
-    The standing record belongs to the caller (a run manifest or rule). This
-    boundary only asks whether the given acceptance is that persisted one and
-    still applies; it keeps no copy. This is the only source of agreement that
-    outlives one boundary instance.
+    The standing record belongs to D (a run manifest or rule). This boundary only
+    asks whether the given acceptance is that persisted one and still applies; it
+    keeps no copy and cannot verify the actor. It is consulted only for acceptances
+    that carry an ``acceptance_id``, so callers must restore D's records with that
+    id present and must never hand over an acceptance deserialized from client
+    input. Until D's record is wired, no cross-call agreement is enforceable.
     """
 
     async def confirmed(self, acceptance: SharedUseAcceptance, /) -> bool: ...
@@ -235,10 +267,11 @@ class SharedUseTerms:
             raise AccessInvalidRequestError("shared_use_origin")
         if not self.uses:
             raise AccessInvalidRequestError("shared_use_not_agreed")
+        object.__setattr__(self, "audience_scope_ids", _coverage(self.audience_scope_ids))
+        if any(not scope_id.strip() for scope_id in self.audience_scope_ids):
+            raise AccessInvalidRequestError("shared_use_audience")
         if self.target_scope_id not in self.audience_scope_ids:
             # The target always sees its own conclusion.
-            raise AccessInvalidRequestError("shared_use_audience")
-        if any(not isinstance(scope_id, str) or not scope_id.strip() for scope_id in self.audience_scope_ids):
             raise AccessInvalidRequestError("shared_use_audience")
         object.__setattr__(
             self,
