@@ -90,6 +90,7 @@ from powercontext.http._generated.operations import (
     REVISE_CANDIDATE,
     SCAN_EXTERNAL_SKILLS,
     SEARCH_ARTIFACTS,
+    SEARCH_CROSS_SCOPE_ARTIFACTS,
     SEARCH_MEMORY,
     SEARCH_TOPIC_MEMORY,
     SET_SCOPE_BINDING,
@@ -123,8 +124,11 @@ Use list_atomic_memories for explicit state filters and pagination. get_memory_e
 target; it returns current Atomic Memory and does not follow merged_into_id automatically. Historical citations are
 unsupported.
 search_artifacts queries one Artifact Family in one explicitly named Scope and returns complete exact revisions; it
-searches only that Scope and never its structural children or Context References. Open a hit with get_artifact_revision
-at the returned revision, which rechecks current access. Use resolve_scope_selection only to inspect which Scopes an
+searches only that Scope and never its structural children or Context References. search_cross_scope_artifacts queries
+one Family across an explicit list of origins you declare; the same local ID in two Scopes is two different results, and
+each origin is authorized separately. Its hits are ordered by each origin's own rank, so retrieval scores are not
+comparable across origins, and its coverage says whether every origin answered. Open any hit, including one from an
+origin whose head has since moved, with get_artifact_revision at the returned revision, which rechecks current access. Use resolve_scope_selection only to inspect which Scopes an
 all, exact, or subtree selection currently resolves to; it performs no retrieval, and a resolved descriptor is not
 authority to read that Scope's contents.
 For new identities use get_artifact for the current content and get_artifact_revision for exact historical content.
@@ -230,6 +234,7 @@ _MCP_OPERATION_IDS = frozenset({
     CLEAR_SCOPE_BINDING.operation_id,
     PUBLISH_ARTIFACT.operation_id,
     SEARCH_ARTIFACTS.operation_id,
+    SEARCH_CROSS_SCOPE_ARTIFACTS.operation_id,
 })
 _MCP_READ_ONLY_OPERATION_IDS = frozenset({
     "pc_source_capabilities",
@@ -266,6 +271,7 @@ _MCP_READ_ONLY_OPERATION_IDS = frozenset({
     RESOLVE_SCOPE_BINDING.operation_id,
     RESOLVE_SCOPE_SELECTION.operation_id,
     SEARCH_ARTIFACTS.operation_id,
+    SEARCH_CROSS_SCOPE_ARTIFACTS.operation_id,
 })
 _MCP_CANDIDATE_WRITE_OPERATION_IDS = frozenset({
     GENERATE_EXPERIENCE.operation_id,

@@ -222,6 +222,51 @@ Scope 树或引用而获得它。
 项目用自己的 Source Journal 产出的 Revision，其证据在项目 Scope 内解析。把外部 Source 或 Artifact 用作 Dream 证据，
 并在批准时重新校验每个来源的权限，属于跨 Scope 处理，目前尚不可用。
 
+## 一次查询多个成员 Scope
+
+项目常常需要从多个已获授权的成员 Scope 汇总一个答案，而不是逐个读取。请显式声明来源：
+
+```http
+POST /v1/scopes/S_PROJECT/artifacts/search:cross-scope
+
+{"family":"experience",
+ "payload":{"query":"retry trace idempotency"},
+ "scopes":["S_ALICE_WORK","S_BOB_WORK"],
+ "limit":4,
+ "coverage":"partial"}
+```
+
+每个来源都按其实际 Scope 单独授权，顺序按你声明的顺序，该顺序也是合并时的并列裁决顺序。声明来源不等于授权：Scope
+关系、Context Reference 与 Artifact 血缘都不授予权限，因此你无法读取的来源会被拒绝，而不是被静默跳过。
+
+响应会如实报告实际发生的情况。`coverage.complete` 表示是否所有声明来源都给出了结果，`coverage.failed_origins` 指出没有
+给出结果的来源；因此 `"partial"` 只返回已授权的命中，绝不会把不完整的检索呈现为完整。使用 `"complete"` 时，任一必需来源
+失败都会使查询失败。每条命中都带有其来源地址和在该来源内的排名：
+
+```json
+{"hits":[{"origin":{"scope_id":"S_ALICE_WORK",
+                    "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}},
+          "origin_rank":1,
+          "retrieval_score":2.37e-06}],
+ "coverage":{"complete":true,
+             "reason":"complete",
+             "searched_origins":["S_ALICE_WORK"],
+             "failed_origins":[],
+             "bounded_origins":[]}}
+```
+
+分数在不同来源之间不可比较，因此合并使用各来源自身的排名与稳定的并列顺序。同一个本地 Artifact ID 出现在两个 Scope 中仍然是
+两个不同输入，因为身份是完整的来源地址。命中请用既有的确切 Revision 读取打开，它会在该地址上重新校验权限，且不会回落到
+当前头：
+
+```http
+GET /v1/scopes/S_ALICE_WORK/artifacts/experience/retry-trace/revisions/3
+```
+
+查询是有边界的。`max_scopes` 限制检索的来源数量，`max_candidates` 作为该 Family 有效窗口的上限限定每个来源的候选工作量
+——它绝不会放宽已声明或默认的 limit。无法在预算内检索已声明窗口时会直接拒绝，而不是静默截断结果，因此你会知道范围过宽，
+而不会收到一个悄悄不完整的答案。把查询限制到单个 Artifact 或 Revision 会被拒绝，因为可检索投影只索引当前头。
+
 ## 修正它，并在新事实出现时重新评估
 
 修正操作对该 Profile 的所有者、以及每个在其上持有 `artifact.maintainer` 绑定的 Principal 可用。三种情形看起来相似，但结果
@@ -242,9 +287,10 @@ POST /v1/candidates/reject
 
 头已移动后不要再尝试批准旧候选。重新评估是针对当前 Revision 的一次新运行，这也是服务端返回冲突而不是静默覆盖的原因。
 
-由于针对已有 Profile 的需审核生成需要同一份 `artifact.write` 权限，能够修正结论的人同样可以对该 Profile 执行
-`POST /v1/profile/flush`。缺少该权限时两者都无法进行，因此希望多人维护的项目应为每位维护者绑定 `artifact.maintainer`，而不是
-共用一个身份。
+针对已有 Profile 的需审核生成需要同一份 `artifact.write` 权限。缺少当前写入权限时，Principal 无法修改结论、无法启动新的
+评估、也无法批准变更。需要注意一点：`POST /v1/profile/flush` 仍可能返回已经存在的待审 Candidate，因为报告该状态属于读取，
+而不是新的写入。该响应绝不会恢复提交权限——在重新获得写入权限之前，批准会一直被拒绝。因此希望多人维护的项目应为每位维护者绑定
+`artifact.maintainer`，而不是共用一个身份。
 
 ## 个人记忆不受影响
 
@@ -259,7 +305,8 @@ POST /v1/candidates/reject
   Scope。
 - **直接从外部贡献者 Scope 产出项目结论。** 跨 Scope Dream 准入尚不可用，因此正式结论目前来自项目 Scope 自己的
   Journal、人工写入，或针对该 Journal 的已审候选。
-- **跨 Scope 的范围查询与确切回读、覆盖度。** `Prepare` 覆盖当前 Scope 及其直接引用；成员需以自己的授权打开外部来源。
+- **自动发现应当查询哪些 Scope。** 查询使用调用方声明的来源清单；不会有任何机制扩展它，结构子节点、Context Reference
+  与 Artifact 血缘都不授予权限。
 - **转移共享结论的所有权。** 通过 `artifact.maintainer` 共享维护权限，但 `artifact.owner` 关系不可重新指派。见上文维护说明。
 - **归档或删除整个团队或项目 Scope。** Scope 生命周期操作仍在定义中。
 

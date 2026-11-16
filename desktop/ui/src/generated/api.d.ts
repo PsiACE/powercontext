@@ -1035,6 +1035,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/scopes/{scope_id}/artifacts/search:cross-scope": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query several explicitly declared Scopes for one Artifact Family
+         * @description Aggregate one registered Family's own search over an explicit origin list. The caller declares every origin, in its own order, and that order is the merge tie break. Each origin is authorized separately against its actual Scope; Scope relationships, Context References and Artifact lineage grant no authority here. Results are merged by each origin's internal rank, so retrieval scores are returned per hit and are never comparable across origins. Identity is the complete origin address: the same local Artifact ID in two Scopes is two distinct inputs. A caller-native budget bounds the merged result count, the origin count and per-origin candidate work. The candidate budget is only a ceiling on the Family's own effective window, so it never widens a declared or default limit and never replaces an invalid original value with a valid one; a budget that cannot search the declared window is refused instead of silently truncating. With coverage complete, failure of a required origin fails the query. With coverage partial, only authorized hits are returned and the uncovered origins are reported, so an incomplete search is never presented as complete. A restriction to one Artifact or revision is refused because the searchable projection indexes current heads only; candidates cannot be restricted before scoring. Opening a hit is the existing exact-revision read, which rechecks access at that address and never falls back to the current head.
+         */
+        post: operations["search_cross_scope_artifacts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/topic-memory/processing/status": {
         parameters: {
             query?: never;
@@ -5512,6 +5532,59 @@ export interface components {
             metric: string;
             higher_is_better: boolean;
         };
+        CrossScopeArtifactQueryRequest: {
+            family: string;
+            /**
+             * @description The registered Family's own search request fields, forwarded unchanged. This operation does not interpret them; the Family validates them and owns defaults and errors.
+             * @default {}
+             */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** @description Explicit origins in the caller's own order. It is the merge tie break and is never reordered. Each origin is authorized separately; membership grants nothing. */
+            scopes: string[];
+            /**
+             * @description Maximum merged results across all origins.
+             * @default 10
+             */
+            limit: number;
+            /**
+             * @description Largest declared origin list this request will accept.
+             * @default 8
+             */
+            max_scopes: number;
+            /**
+             * @description Per-origin candidate work, divided across the declared origins. It is a ceiling on the Family's effective window and never widens a declared or default limit.
+             * @default 64
+             */
+            max_candidates: number;
+            /**
+             * @description Complete fails the whole query when a required origin fails. Partial returns only authorized hits and reports the origins it could not cover.
+             * @default complete
+             * @enum {string}
+             */
+            coverage: "complete" | "partial";
+            restrict_to?: components["schemas"]["ArtifactReference"];
+        };
+        CrossScopeArtifactQueryResponse: {
+            hits: components["schemas"]["CrossScopeArtifactHit"][];
+            coverage: components["schemas"]["CrossScopeArtifactCoverage"];
+        };
+        CrossScopeArtifactHit: {
+            origin: components["schemas"]["ArtifactAddress"];
+            /** @description This hit's rank inside its own origin. Cross-origin ranks are not comparable. */
+            origin_rank: number;
+            /** @description The origin's own normalized retrieval score, when reported. Scales differ between origins and between indexes, so it must not be compared across origins. */
+            retrieval_score?: number;
+        };
+        CrossScopeArtifactCoverage: {
+            complete: boolean;
+            /** @enum {string} */
+            reason: "complete" | "origin_failure" | "candidate_budget";
+            searched_origins?: string[];
+            failed_origins?: string[];
+            bounded_origins?: string[];
+        };
         ArtifactSearchScores: {
             retrieval: number;
             channels: {
@@ -8408,6 +8481,39 @@ export interface operations {
                     "application/json": components["schemas"]["SearchArtifactsResponse"];
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    search_cross_scope_artifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CrossScopeArtifactQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description Authorized hits in per-origin rank order with their coverage statement. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrossScopeArtifactQueryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

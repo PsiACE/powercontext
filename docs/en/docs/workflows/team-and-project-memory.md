@@ -245,6 +245,57 @@ Evidence for a revision the project produced from its own Source Journal resolve
 external Sources or Artifacts as Dream evidence, and rechecking each origin's authority at approval, is part of
 cross-Scope processing and is not available yet.
 
+## Query several member Scopes at once
+
+A project often needs one answer assembled from several authorized member Scopes rather than one Scope at a time.
+Declare the origins explicitly:
+
+```http
+POST /v1/scopes/S_PROJECT/artifacts/search:cross-scope
+
+{"family":"experience",
+ "payload":{"query":"retry trace idempotency"},
+ "scopes":["S_ALICE_WORK","S_BOB_WORK"],
+ "limit":4,
+ "coverage":"partial"}
+```
+
+Each origin is authorized on its own against its actual Scope, in your declared order, and that order is the merge
+tie break. Declaring an origin is not a grant: Scope relationships, Context References, and Artifact lineage confer
+no authority, so an origin you may not read is refused rather than silently skipped.
+
+The response reports what actually happened. `coverage.complete` says whether every declared origin answered, and
+`coverage.failed_origins` names the ones that did not, so `"partial"` returns only authorized hits and never
+presents an incomplete search as complete. With `"complete"`, a required origin that fails fails the query. Each
+hit carries its origin address and its rank within that origin:
+
+```json
+{"hits":[{"origin":{"scope_id":"S_ALICE_WORK",
+                    "artifact":{"family":"experience","artifact_id":"art_1f0c","revision":3}},
+          "origin_rank":1,
+          "retrieval_score":2.37e-06}],
+ "coverage":{"complete":true,
+             "reason":"complete",
+             "searched_origins":["S_ALICE_WORK"],
+             "failed_origins":[],
+             "bounded_origins":[]}}
+```
+
+Scores are not comparable across origins, so merge uses each origin's own rank and a stable tie order. The same
+local Artifact ID in two Scopes stays two distinct inputs, because identity is the complete origin address. Open a
+hit through the existing exact-revision read, which rechecks access at that address and never falls back to the
+current head:
+
+```http
+GET /v1/scopes/S_ALICE_WORK/artifacts/experience/retry-trace/revisions/3
+```
+
+A query is bounded. `max_scopes` limits how many origins are searched, and `max_candidates` bounds per-origin
+candidate work as a ceiling on the Family's own effective window — it never widens a declared or default limit.
+A budget that cannot search the declared window is refused instead of silently truncating the result, so you learn
+the range is too wide rather than receiving a quietly partial answer. Restricting a query to one Artifact or
+revision is refused, because the searchable projection indexes current heads only.
+
 ## Correct it, and revisit on new facts
 
 Correction is available to the Profile's owner and to every Principal holding an `artifact.maintainer` binding on
@@ -266,10 +317,12 @@ POST /v1/candidates/reject
 Do not try to approve the old proposal after the head moved. Reassessment is a new run against the current
 revision, which is why the notice the Server returns is a conflict rather than a silent overwrite.
 
-Because reviewed generation against an existing Profile requires the same `artifact.write` authority, whoever
-corrects the conclusion can also run `POST /v1/profile/flush` against it. Without that authority neither is
-possible, so a Project that wants several maintainers binds `artifact.maintainer` for each of them rather than
-sharing one identity.
+Reviewed generation against an existing Profile needs the same `artifact.write` authority. Without current write
+authority, a Principal cannot modify the conclusion, cannot start a new evaluation, and cannot approve a change.
+One caveat: `POST /v1/profile/flush` may still return an already-pending Candidate, because reporting that state is
+a read and not a new write. That response never restores commit authority — approval remains refused until write
+authority is granted again. A project that wants several maintainers therefore binds `artifact.maintainer` for
+each of them rather than sharing one identity.
 
 ## Personal memory is unaffected
 
@@ -286,8 +339,8 @@ Stated plainly, so nothing here is mistaken for working behavior:
 - **Producing the project conclusion directly from external contributor Scopes.** Cross-Scope Dream admission is
   not available, so an official conclusion is currently produced from the project Scope's own Journal, a manual
   write, or a reviewed proposal over that journal.
-- **Range queries across Scopes with exact readback and coverage.** `Prepare` covers the current Scope and its
-  direct references; a member has to open a foreign origin under their own grant.
+- **Automatic discovery of which Scopes to query.** A query takes an explicit origin list; nothing expands it,
+  and structural children, Context References, and Artifact lineage grant no authority.
 - **Transferring ownership of a shared conclusion.** Maintenance is shared through `artifact.maintainer`, but the
   `artifact.owner` relation is not reassignable. See the maintenance note above.
 - **Archiving or deleting a whole team or project Scope.** Scope lifecycle operations are still being defined.

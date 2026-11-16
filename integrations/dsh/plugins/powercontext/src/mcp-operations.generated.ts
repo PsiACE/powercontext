@@ -203,6 +203,9 @@ export const MCP_OPERATIONS = {
   "search_atomic_memory": {
     "readOnly": true
   },
+  "search_cross_scope_artifacts": {
+    "readOnly": true
+  },
   "search_memory": {
     "readOnly": true
   },

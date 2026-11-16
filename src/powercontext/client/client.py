@@ -80,6 +80,8 @@ from powercontext.http import (
     CreateSubjectSourceRequest,
     CreateSubjectSourceResponse,
     CreateWorkContractRequest,
+    CrossScopeArtifactQueryRequest,
+    CrossScopeArtifactQueryResponse,
     DownloadRemoteSkillPackageRequest,
     DreamRun,
     DreamRunPage,
@@ -339,6 +341,7 @@ from powercontext.http._generated.operations import (
     REVOKE_REMOTE_SKILL_TARGET,
     SCAN_EXTERNAL_SKILLS,
     SEARCH_ARTIFACTS,
+    SEARCH_CROSS_SCOPE_ARTIFACTS,
     SEARCH_MEMORY,
     SEARCH_TOPIC_MEMORY,
     SET_DEFAULT_SCOPE,
@@ -1058,6 +1061,19 @@ class PowerContextClient:
         """Search current Topic Memory heads with Server-owned retrieval mode."""
 
         return await self._request(SEARCH_TOPIC_MEMORY, request)
+
+    async def search_cross_scope_artifacts(
+        self,
+        scope_id: str,
+        request: CrossScopeArtifactQueryRequest,
+    ) -> CrossScopeArtifactQueryResponse:
+        """Query several explicitly declared Scopes for one Artifact Family."""
+
+        return await self._request(
+            SEARCH_CROSS_SCOPE_ARTIFACTS,
+            request,
+            path_parameters={"scope_id": scope_id},
+        )
 
     async def search_artifacts(
         self, scope_id: str, family: str, request: SearchArtifactsRequest

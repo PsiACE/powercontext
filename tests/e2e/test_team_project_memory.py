@@ -506,3 +506,92 @@ def test_project_conclusion_is_maintained_by_owner_and_explicit_maintainers(tmp_
                 assert final.json()["content"]["content"] == "# Maintainer correction\n"
 
     asyncio.run(scenario())
+
+
+def test_project_member_queries_two_work_scopes_with_exact_readback(tmp_path: Path) -> None:
+    """A project reads across two member Scopes through the public query route.
+
+    The point is the documented workflow: explicit origins, per-origin authorization, a coverage statement that
+    tells the truth when an origin is unreadable, origin addresses on every hit, and an exact revision opened
+    afterwards. Nothing here asserts internal call counts or invents a second query path.
+    """
+
+    database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'cross-scope-workflow.db'}")
+
+    async def scenario() -> None:
+        await asyncio.to_thread(prepare_server_database, ServerSettings(database=database))
+        async with open_builtin_access_control(
+            database, bootstrap_administrators=(ADMIN,), deployment_id=DEPLOYMENT_ID
+        ) as access:
+            harness = _Harness(database, access)
+            async with harness.client(ADMIN) as admin:
+                project_id = await _create_scope(admin, "Orders project", "cross-scope-project")
+                alice_work = await _create_scope(admin, "Alice work", "cross-scope-alice")
+                bob_work = await _create_scope(admin, "Bob work", "cross-scope-bob")
+
+                await _grant(admin, project_id, READER, "scope.viewer")
+                # The reader may query Alice's work Scope but is intentionally not granted Bob's.
+                await _grant(admin, alice_work, READER, "scope.viewer")
+
+                lesson = "Bound the retry trace to one idempotency key."
+                alice_experience: dict[str, Any] = {}
+                for scope_id, situation in (
+                    (alice_work, "A retry trace shows a duplicate callback on the old channel."),
+                    (bob_work, "A retry trace charged the customer twice on the old channel."),
+                ):
+                    created = await admin.post(
+                        f"/v1/scopes/{scope_id}/artifacts",
+                        json={
+                            "family": "experience",
+                            "content": {
+                                "situation": situation,
+                                "action": "Retry with an idempotency key.",
+                                "outcome": "The callback runs once.",
+                                "lesson": lesson,
+                            },
+                        },
+                    )
+                    assert created.status_code == 201, created.text
+                    if scope_id == alice_work:
+                        alice_experience = created.json()
+
+            query = {
+                "family": "experience",
+                "payload": {"query": "retry trace idempotency"},
+                "scopes": [alice_work, bob_work],
+                "limit": 4,
+                "coverage": "partial",
+            }
+
+            async with harness.client(READER) as member:
+                partial = await member.post(f"/v1/scopes/{project_id}/artifacts/search:cross-scope", json=query)
+                assert partial.status_code == 200, partial.text
+                body = partial.json()
+
+                # Only the authorized origin contributed, and the uncovered one is reported rather than hidden.
+                assert body["coverage"]["complete"] is False
+                assert {hit["origin"]["scope_id"] for hit in body["hits"]} == {alice_work}
+
+                # Declaring an origin grants nothing: Bob's work Scope stays unreadable to this member.
+                refused = await member.get(
+                    f"/v1/scopes/{bob_work}/artifacts/experience/{body['hits'][0]['origin'] and alice_experience['artifact_id']}"
+                )
+                assert refused.status_code in {403, 404}, refused.text
+
+                # Every hit carries its complete origin address, and that exact revision opens.
+                assert body["hits"], "the authorized origin must contribute at least one hit"
+                origin = body["hits"][0]["origin"]
+                assert origin["scope_id"] == alice_work
+                opened = await member.get(
+                    f"/v1/scopes/{origin['scope_id']}/artifacts/experience/"
+                    f"{origin['artifact']['artifact_id']}/revisions/{origin['artifact']['revision']}"
+                )
+                assert opened.status_code == 200, opened.text
+
+                strict = await member.post(
+                    f"/v1/scopes/{project_id}/artifacts/search:cross-scope",
+                    json={**query, "coverage": "complete"},
+                )
+                assert strict.status_code >= 400, strict.text
+
+    asyncio.run(scenario())

@@ -203,6 +203,13 @@ await Promise.all([
 ]);
 
 const pythonPackage = path.join(websiteDir, 'node_modules', 'fumadocs-python');
+// fumapy requires `griffe >=1.13,<2` and `griffe_typingdoc >=0.2.8,<1`. griffe_typingdoc 0.3.1 switched from
+// requiring `griffe` to requiring `griffelib`, a separate project that installs its own top-level `griffe` package
+// for griffe 2.x. Resolving the newest allowed 0.3.2 therefore installs `griffelib` beside `griffe` 1.x, overwrites
+// part of griffe's `griffe/` tree, and breaks `fumapy` with `ImportError: cannot import name 'ExportedName'` because
+// griffe 2.x removed that symbol. Gate both so this doc build resolves one consistent griffe distribution:
+// griffe_typingdoc 0.3.0 is the newest release still depending on `griffe`, and griffe 1.15.0 is the newest 1.x.
+const pythonApiConstraints = ['griffe==1.15.0', 'griffe-typingdoc==0.3.0'];
 const pythonModules = [
   'powercontext.context',
   'powercontext.sources',
@@ -222,6 +229,7 @@ for (const moduleName of pythonModules) {
       repositoryDir,
       '--with',
       pythonPackage,
+      ...pythonApiConstraints.flatMap((constraint) => ['--with', constraint]),
       'fumapy-generate',
       moduleName,
       '--dir',

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import SecretStr
 
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
@@ -33,6 +34,7 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
 from powercontext.builtin.artifacts.handoff import HandoffDraft, HandoffGenerationRequest, HandoffStatement
 from powercontext.builtin.authz import AccessControlService, PrincipalRef, ResourceRef
 from powercontext.builtin.authz.composition import open_builtin_access_control, open_casbin_access_control
+from powercontext.builtin.authz.models import AccessAction as DomainAccessAction
 from powercontext.builtin.authz.service import AccessAuditContext
 from powercontext.builtin.inference import GenerationResult
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
@@ -1325,7 +1327,7 @@ def test_profile_candidate_approval_requires_target_write_from_the_approver(tmp_
                 from powercontext.server.authentication import StaticBearerAuthenticationProvider
                 from powercontext.server.middleware import AuthenticationMiddleware
 
-                def app_for(principal) -> tuple:
+                def app_for(principal: PrincipalRef) -> tuple[FastAPI, str]:
                     token = f"{principal.type}-{principal.id}-token"
                     provider = StaticBearerAuthenticationProvider(token, principal)
                     app = create_app(
@@ -1448,7 +1450,7 @@ def test_profile_candidate_approval_requires_target_write_from_the_approver(tmp_
                 )
                 denied = await access.check(
                     reviewer,
-                    AccessAction.ARTIFACT_WRITE,
+                    DomainAccessAction.ARTIFACT_WRITE,
                     profile_resource,
                     context=audit,
                 )
