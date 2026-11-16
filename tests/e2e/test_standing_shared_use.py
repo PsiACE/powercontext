@@ -34,6 +34,7 @@ from powercontext.builtin.authz import (
     AccessBinding,
     AccessControlService,
     AccessDeniedError,
+    AccessIdentityRequiredError,
     AccessInvalidRequestError,
     AccessRole,
     CreateBinding,
@@ -86,6 +87,7 @@ async def composed(database: Path) -> AsyncIterator[tuple[BuiltinRuntime, Access
             config(database),
             share_rule_authorizer=adapter.authorize_origin,
             share_rule_target_check=adapter.authorize_target,
+            share_rule_acceptance_validator=adapter.validate_acceptance,
         ) as runtime:
             adapter.attach(runtime)
             yield runtime, access, adapter
@@ -515,6 +517,90 @@ def test_unused_contributor_withdrawal_does_not_veto_the_pinned_run(tmp_path: Pa
             assert sorted(both.origin_scopes()) == sorted([alice, bob])
             with pytest.raises(AccessDeniedError):
                 await _use(standing, runtime, rule, both.run_id)
+
+    asyncio.run(scenario())
+
+
+def test_public_accept_path_refuses_impersonation_and_unknown_actor_forms(tmp_path: Path) -> None:
+    """Every supported acceptance write is bound to the authenticated caller.
+
+    The public ScopedShareApplication path -- not only the hand-held helper -- must
+    refuse a caller who names somebody else, and must refuse an identity form it
+    cannot vouch for before any durable row exists.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "accept_paths.db"
+        async with composed(database) as (runtime, access, standing):
+            alice, bob, orders = await _three_scopes(runtime)
+            await _seed(access, alice, bob, orders)
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+
+            # RUNNER may write the target but administers neither origin, so naming
+            # Alice or Carol through the public path must record nothing.
+            with run_as(RUNNER):
+                with pytest.raises(AccessDeniedError):
+                    await sharing.accept(rule.rule_id, rule.version, "origin", actor="user:alice")
+                with pytest.raises(AccessDeniedError):
+                    await sharing.accept(rule.rule_id, rule.version, "target", actor="user:carol")
+            assert await sharing.agree(rule.rule_id, rule.version) == ()
+
+            # An identity form this boundary cannot read is refused before writing,
+            # not persisted as an unreadable enforced record.
+            with run_as(ALICE):
+                with pytest.raises(AccessDeniedError):
+                    await sharing.accept(rule.rule_id, rule.version, "origin", actor="alice")
+                # The canonical spelling is the authenticated caller and is recorded,
+                # covering only the origin this actor really administers.
+                recorded = await sharing.accept(
+                    rule.rule_id,
+                    rule.version,
+                    "origin",
+                    actor=principal_key(ALICE),
+                    covered_scope_ids=(alice,),
+                )
+            assert recorded.actor == principal_key(ALICE)
+            assert [item.actor for item in await sharing.agree(rule.rule_id, rule.version)] == [principal_key(ALICE)]
+
+            # The legitimate separate approvers still work through the public path.
+            with run_as(BOB):
+                await sharing.accept(
+                    rule.rule_id,
+                    rule.version,
+                    "origin",
+                    actor=principal_key(BOB),
+                    covered_scope_ids=(bob,),
+                )
+            with run_as(CAROL):
+                await sharing.accept(
+                    rule.rule_id,
+                    rule.version,
+                    "target",
+                    actor=principal_key(CAROL),
+                    covered_scope_ids=(orders,),
+                )
+            await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+            await _use(standing, runtime, rule, run.run_id)
+
+            # Missing identity still fails closed on the public path.
+            with pytest.raises(AccessIdentityRequiredError):
+                await sharing.accept(rule.rule_id, rule.version, "origin", actor=principal_key(BOB))
 
     asyncio.run(scenario())
 

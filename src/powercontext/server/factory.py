@@ -321,6 +321,9 @@ def create_server_app(  # noqa: C901
                     ),
                     share_rule_authorizer=None if standing_access is None else standing_access.authorize_origin,
                     share_rule_target_check=None if standing_access is None else standing_access.authorize_target,
+                    share_rule_acceptance_validator=(
+                        None if standing_access is None else standing_access.validate_acceptance
+                    ),
                     cursor_secret=cursor_secret,
                     handoff_verification_keys=tuple(
                         secret.get_secret_value().encode()

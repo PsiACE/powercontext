@@ -26,9 +26,14 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from powercontext.artifacts import ArtifactAddress
-from powercontext.builtin.authz.errors import AccessIdentityRequiredError, AccessUnavailableError
+from powercontext.builtin.authz.errors import (
+    AccessDeniedError,
+    AccessIdentityRequiredError,
+    AccessInvalidRequestError,
+    AccessUnavailableError,
+)
 from powercontext.builtin.authz.service import AccessControlService
-from powercontext.builtin.authz.standing_use import StandingUseAuthorization, StandingUseGrant
+from powercontext.builtin.authz.standing_use import StandingUseAuthorization, StandingUseGrant, principal_key
 from powercontext.server.context import current_principal, current_request_id
 
 if TYPE_CHECKING:
@@ -101,6 +106,45 @@ class StandingAccess:
         if _ACCEPTING.get():
             return
         await self.standing.require_target(self._principal(), scope_id, context=self._context("share_run_target"))
+
+    async def validate_acceptance(
+        self,
+        rule: ShareRule,
+        side: ShareAcceptanceSide,
+        actor: str,
+        covered_scope_ids: tuple[str, ...],
+    ) -> str:
+        """Decide the durable actor for one acceptance, before D writes a row.
+
+        This is D's injected acceptance validator, so every supported write path --
+        the public ``ScopedShareApplication`` and the service itself -- is bound to the
+        authenticated caller, not only the hand-held helper. The caller's claim is
+        never trusted: the recorded identity is the authenticated principal, and that
+        principal must currently hold the authority its claimed coverage needs.
+
+        An ``actor`` naming somebody else is refused rather than reinterpreted, so an
+        alternate raw path cannot impersonate; a form this boundary cannot read is
+        refused before any row exists instead of leaving an unreadable enforced record.
+        """
+
+        principal = self._principal()
+        canonical = principal_key(principal)
+        if actor and actor != canonical:
+            raise AccessDeniedError
+        binding = rule.terms_binding()
+        claimed = covered_scope_ids or tuple(
+            binding.declared_scope_ids if side == "origin" else binding.audience_scope_ids
+        )
+        if not claimed:
+            raise AccessInvalidRequestError("shared_use_audience")
+        await self.standing.require_acceptance_authority(
+            principal,
+            rule,
+            side,
+            covered_scope_ids=tuple(claimed),
+            context=self._context("share_rule_accept"),
+        )
+        return canonical
 
     async def accept(
         self,

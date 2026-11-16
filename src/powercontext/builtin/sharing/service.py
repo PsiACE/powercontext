@@ -90,6 +90,15 @@ can pass an existing check rather than a new policy surface.
 ShareOriginCheck = Callable[[str], Awaitable[None]]
 """Check that the target Scope may still start or continue this rule's work."""
 
+ShareAcceptanceValidator = Callable[[ShareRule, ShareAcceptanceSide, str, tuple[str, ...]], Awaitable[str]]
+"""Decide the identity to record for one acceptance, before any row is written.
+
+The owning authorization boundary implements this: it binds the authenticated actor,
+rejects identity it cannot vouch for, and confirms the actor currently holds the
+authority its claimed coverage needs. The returned string is the canonical actor the
+row records. Left unset, the service keeps its historical free-form contract, which
+only a trusted embedding caller may rely on. This module stores no policy."""
+
 
 class ShareRuleService:
     def __init__(
@@ -101,6 +110,7 @@ class ShareRuleService:
         *,
         authorize_origin: ShareAuthorizer | None = None,
         authorize_target: ShareOriginCheck | None = None,
+        authorize_acceptance: ShareAcceptanceValidator | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[str], str] | None = None,
     ) -> None:
@@ -111,6 +121,7 @@ class ShareRuleService:
         self._artifacts = artifacts
         self._authorize_origin = authorize_origin
         self._authorize_target = authorize_target
+        self._authorize_acceptance = authorize_acceptance
         self._clock = (lambda: datetime.now(UTC)) if clock is None else clock
         self._id_factory = (lambda prefix: f"{prefix}_{uuid4().hex}") if id_factory is None else id_factory
         self.rules = ShareRuleRepository()
@@ -122,6 +133,7 @@ class ShareRuleService:
         *,
         authorize_origin: ShareAuthorizer | None = None,
         authorize_target: ShareOriginCheck | None = None,
+        authorize_acceptance: ShareAcceptanceValidator | None = None,
     ) -> None:
         """Bind the owning Access adapter after construction.
 
@@ -133,6 +145,8 @@ class ShareRuleService:
 
         self._authorize_origin = authorize_origin
         self._authorize_target = authorize_target
+        if authorize_acceptance is not None:
+            self._authorize_acceptance = authorize_acceptance
 
     # -- rules ---------------------------------------------------------------
 
@@ -243,12 +257,20 @@ class ShareRuleService:
         so accepting does not depend on which inputs a future run will discover.
         """
 
-        await self._require_target(scope_id)
         async with self._database.transaction() as connection:
             rule = await self.rules.version(connection, scope_id, rule_id, version)
             if rule is None:
                 raise ShareRuleNotFoundError(scope_id, rule_id, version)
             binding = rule.terms_binding()
+            accepted = self._coverage(binding, rule, side, covered_scope_ids)
+            if self._authorize_acceptance is not None:
+                # The claimed identity and coverage are decided before any row exists,
+                # so an unacceptable caller can never leave a durable acceptance behind.
+                # This replaces the target check for acceptance: an acceptor needs
+                # authority over the part it claims, not over the target as well.
+                actor = await self._authorize_acceptance(rule, side, actor, accepted)
+            else:
+                await self._require_target(scope_id)
             acceptance = ShareAcceptance(
                 scope_id=scope_id,
                 rule_id=rule_id,
@@ -256,7 +278,7 @@ class ShareRuleService:
                 side=side,
                 actor=actor,
                 terms_digest=binding.digest(),
-                covered_scope_ids=self._coverage(binding, rule, side, covered_scope_ids),
+                covered_scope_ids=accepted,
                 acceptance_id=self._id_factory("accept"),
                 accepted_at=self._now(),
             )
