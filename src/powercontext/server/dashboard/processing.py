@@ -45,12 +45,18 @@ def manifest_sources(run):
     manifest = run.get("input_manifest")
     if manifest is None:
         return []
-    sources = {(item["source_type"], item["source_id"]): item for item in manifest["sources"]}
+    sources = {_source_key(None, item): item for item in manifest["sources"]}
     for node in manifest["nodes"]:
         source = node.get("source")
         if source is not None:
-            sources.setdefault((source["source_type"], source["source_id"]), source)
+            # The owning Scope keeps equal local identities from merging.
+            sources.setdefault(_source_key(node.get("origin_scope_id"), source), source)
     return list(sources.values())
+
+
+def _source_key(origin_scope_id, source):
+    identity = (source["source_type"], source["source_id"])
+    return identity if origin_scope_id is None else (*identity, origin_scope_id)
 
 
 async def _load_memory_preview(api, ctx, ref) -> None:

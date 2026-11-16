@@ -59,7 +59,7 @@ from powercontext.builtin.artifacts.topic_memory import (
 )
 from powercontext.builtin.dream.generation import DreamGenerationInput
 from powercontext.builtin.dream.models import DreamError, DreamOperation, DreamPlan
-from powercontext.builtin.evidence.models import EvidenceResolutionError
+from powercontext.builtin.evidence.models import EvidenceResolutionError, ScopedEvidence
 from powercontext.builtin.inference.models import GenerationResult, InferenceUsage
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
@@ -3461,5 +3461,99 @@ def test_source_positions_share_one_root_without_losing_their_locations(database
             assert len(run.input_manifest.root_groups) == 1
             assert all(ref in run.input_manifest.root_groups[0].sources for ref in refs)
             assert run.input_manifest.root_groups[0].independence == "unknown"
+
+    asyncio.run(scenario())
+
+
+def test_scoped_evidence_keeps_each_origin_scope(database: DatabaseConfig) -> None:
+    """The same local Source ID in two Scopes stays two inputs with two origins."""
+
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.records import ArtifactWrite
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            target = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="Target", idempotency_key="target"))
+            ).scope_id
+            partner = (
+                await runtime.scopes.create(ScopeDraft(title="Alice", summary="Origin", idempotency_key="origin"))
+            ).scope_id
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+            )
+            external = await runtime.sources.for_scope(partner).capture(
+                CaptureSource(source_id="retry-trace", content="The old channel can charge twice.", metadata={})
+            )
+            # Same local identity, different owning Scope.
+            assert local.source_ref.source_id == external.source_ref.source_id
+
+            run = await runtime.dream.for_scope(target).create(
+                CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(),
+                    scoped=(
+                        ScopedEvidence(scope_id=target, source=local.source_ref),
+                        ScopedEvidence(scope_id=partner, source=external.source_ref),
+                    ),
+                    idempotency_key="two-origins",
+                )
+            )
+            await process_pending(runtime)
+            completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=run.run_id))
+            assert completed.outcome == "no_change", completed.error
+            manifest = completed.input_manifest
+            assert manifest is not None
+
+            nodes = tuple(node for node in manifest.nodes if node.kind == "source")
+            assert len(nodes) == 2
+            # Equal local IDs stay two inputs with two identities and two digests. The
+            # run Scope stays unqualified because the run already names it.
+            assert len({node.evidence_id for node in nodes}) == 2
+            assert {node.origin_scope_id for node in nodes} == {None, partner}
+            assert len({node.digest for node in nodes}) == 2
+            assert [node.source.source_id for node in nodes] == ["retry-trace", "retry-trace"]
+            # Equal local IDs never coalesce into one root group.
+            assert len(manifest.root_groups) == 2
+            assert {group.scope_id for group in manifest.root_groups} == {None, partner}
+            assert {(selection.scope_id, selection.source.source_id) for selection in manifest.scoped} == {
+                (target, "retry-trace"),
+                (partner, "retry-trace"),
+            }
+
+            # A local run is unchanged: no origin is recorded and it still resolves.
+            local_artifact = await runtime.records.for_scope(target).create_artifact(
+                "experience",
+                ArtifactWrite(
+                    content={
+                        "situation": "A write timed out.",
+                        "action": "Replay with the same idempotency key.",
+                        "outcome": "No duplicate record was created.",
+                        "lesson": "Retry only with a deduplication contract.",
+                    }
+                ),
+            )
+            local_ref = ArtifactRef(
+                family="experience", artifact_id=local_artifact.artifact_id, revision=local_artifact.revision
+            )
+            local_run = await runtime.dream.for_scope(target).create(
+                CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(local_ref,),
+                    sources=(local.source_ref,),
+                    idempotency_key="local-only",
+                )
+            )
+            await process_pending(runtime)
+            local_completed = await runtime.dream.for_scope(target).get(GetDreamRunRequest(run_id=local_run.run_id))
+            assert local_completed.outcome == "no_change", local_completed.error
+            assert local_completed.input_manifest is not None
+            assert local_completed.input_manifest.scoped == ()
+            assert {node.origin_scope_id for node in local_completed.input_manifest.nodes} == {None}
+            assert {group.scope_id for group in local_completed.input_manifest.root_groups} == {None}
 
     asyncio.run(scenario())
