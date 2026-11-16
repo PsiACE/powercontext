@@ -4353,3 +4353,157 @@ def kind_as_object(record) -> None:
     payload = _origin_payload(record)
     if payload is not None and record["identity"]["ordinal"] == 0:
         payload["origin_kind"] = {"kind": "source"}
+
+
+def test_first_profile_initialization_is_explicit_and_idempotent(database: DatabaseConfig) -> None:
+    """A Scope with no Profile gets one only through the explicit init operation.
+
+    The proposal is reviewed like any other, the committed revision is the ordinary
+    Profile identity, and repeating the request neither creates a second Profile nor
+    applies again. Generator output here is a deterministic local fixture, not a
+    real-provider acceptance claim.
+    """
+
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.artifacts.profile.models import PROFILE_ARTIFACT_ID, ProfileContent
+    from powercontext.builtin.dream.models import GetDreamRunRequest
+    from powercontext.builtin.runtime import ApproveCandidateRequest
+
+    class FirstProfileGenerator:
+        config_id = "first-profile-init"
+
+        def __init__(self) -> None:
+            self.inputs: list[DreamGenerationInput] = []
+
+        async def generate(self, value: DreamGenerationInput):
+            self.inputs.append(value)
+            used = next(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="The first Profile comes from this Scope's own evidence.",
+                    intent="create",
+                    proposal=ProfileWriteContent(content="# Profile\n\nBased in Shenzhen."),
+                    evidence_ids=(used,),
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    async def scenario() -> None:
+        generator = FirstProfileGenerator()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=generator,
+        ) as runtime:
+            scope_id = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="init"))
+            ).scope_id
+            await runtime.profiles.put_policy(scope_id, generation_enabled=True, expected_version=0)
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+            )
+            request = CreateDreamRunRequest(
+                operation="initialize_profile",
+                artifacts=(),
+                sources=(source.source_ref,),
+                idempotency_key="first-profile",
+            )
+            dream = runtime.dream.for_scope(scope_id)
+            accepted = await dream.create(request)
+            assert accepted.operation == "initialize_profile"
+            assert accepted.target is None
+
+            # The same key replays the accepted run instead of queueing another.
+            assert await dream.create(request) == accepted
+            await process_pending(runtime)
+            completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+            assert completed.outcome == "proposed", completed.error
+            assert completed.candidate is not None
+
+            review = runtime.review.for_scope(scope_id)
+            approved = await review.approve(
+                ApproveCandidateRequest(
+                    candidate_id=completed.candidate.candidate_id, expected_version=completed.candidate.version
+                )
+            )
+            reference = ArtifactRef(family="profile", artifact_id=PROFILE_ARTIFACT_ID, revision=1)
+            assert approved.result_artifact == reference
+
+            async with runtime.profiles.database.transaction() as connection:
+                committed = await runtime.profiles.artifacts.get(connection, scope_id, reference)
+            assert isinstance(committed.content, ProfileContent)
+            # The history records an explicit initialization, not a revision of a baseline.
+            assert committed.content.generation.mode == "initialize_review_approved"
+            assert committed.content.generation.dream_run_id == accepted.run_id
+            assert committed.lineage.sources == (source.source_ref,)
+            assert committed.lineage.artifacts == ()
+
+            # A retry after commit cannot create another Profile or apply again.
+            with pytest.raises(DreamError) as refused:
+                await dream.create(request.model_copy(update={"idempotency_key": "second-profile"}))
+            assert refused.value.code == "profile_exists"
+            async with runtime.profiles.database.transaction() as connection:
+                head = await runtime.profiles.artifacts.latest(connection, scope_id, "profile", PROFILE_ARTIFACT_ID)
+            assert head.as_ref() == reference
+
+    asyncio.run(scenario())
+
+
+def test_first_profile_initialization_refuses_an_existing_baseline(database: DatabaseConfig) -> None:
+    """Initialization is only for a Scope with no Profile; an existing one is untouched."""
+
+    from pydantic import ValidationError
+
+    from powercontext.artifacts import ArtifactRef
+    from powercontext.builtin.artifacts.profile.models import PROFILE_ARTIFACT_ID, ProfileContent
+    from powercontext.builtin.records import ArtifactWrite
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            dream_generator=NoChangeGenerator(),
+        ) as runtime:
+            scope_id = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="existing"))
+            ).scope_id
+            await runtime.profiles.put_policy(scope_id, generation_enabled=True, expected_version=0)
+            source = await runtime.sources.for_scope(scope_id).capture(
+                CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+            )
+            await runtime.records.for_scope(scope_id).create_artifact(
+                "profile", ArtifactWrite(content={"content": "# Profile\n\nBased in Shanghai."})
+            )
+
+            with pytest.raises(DreamError) as refused:
+                await runtime.dream.for_scope(scope_id).create(
+                    CreateDreamRunRequest(
+                        operation="initialize_profile",
+                        artifacts=(),
+                        sources=(source.source_ref,),
+                        idempotency_key="init-existing",
+                    )
+                )
+            assert refused.value.code == "profile_exists"
+
+            # The existing Profile head is exactly the one that was already committed.
+            reference = ArtifactRef(family="profile", artifact_id=PROFILE_ARTIFACT_ID, revision=1)
+            async with runtime.profiles.database.transaction() as connection:
+                head = await runtime.profiles.artifacts.latest(connection, scope_id, "profile", PROFILE_ARTIFACT_ID)
+            assert head.as_ref() == reference
+            assert isinstance(head.content, ProfileContent)
+            assert head.content.generation.mode == "manual_create"
+            assert head.content.content.strip() == "# Profile\n\nBased in Shanghai."
+
+            # Initialization with a target is not a revision path either: naming a Profile
+            # as input is refused, so the request cannot become a rewritten baseline.
+            with pytest.raises(ValidationError):
+                CreateDreamRunRequest(
+                    operation="initialize_profile",
+                    artifacts=(reference,),
+                    target=reference,
+                    idempotency_key="init-with-target",
+                )
+
+    asyncio.run(scenario())

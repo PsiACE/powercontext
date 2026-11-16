@@ -280,7 +280,7 @@ class ReviewService:
         *,
         sources: tuple[SourceRef, ...],
         artifacts: tuple[ArtifactRef, ...],
-        target: ArtifactRef,
+        target: ArtifactRef | None,
         reason: str,
         candidate_id: str,
     ) -> Candidate[ProfileCandidateProposal]:

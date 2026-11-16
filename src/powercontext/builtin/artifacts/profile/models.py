@@ -33,7 +33,14 @@ PROFILE_ARTIFACT_ID = "profile"
 PROFILE_SOURCE_WINDOW_BINDING = "profile-source-window"
 ProfileActivationMode = Literal["automatic", "review_required"]
 ProfileGenerationMode = Literal[
-    "automatic", "manual_create", "manual_replace", "review_approved", "dream_review_approved", "rollback"
+    "automatic",
+    "manual_create",
+    "manual_replace",
+    "review_approved",
+    "dream_review_approved",
+    # An explicit first-Profile initialization reviewed by a Dream run.
+    "initialize_review_approved",
+    "rollback",
 ]
 
 
@@ -93,9 +100,11 @@ class ProfileGeneration(_ProfileValue):
         windowed = self.mode in {"automatic", "review_approved"}
         if windowed != (self.source_window is not None):
             raise ValueError("only Source-window profiles require a Source window")  # noqa: TRY003
-        if (self.mode == "dream_review_approved") != (self.dream_run_id is not None):
+        # Both Dream-reviewed modes name their run: a revision and an initialization.
+        dream_reviewed = self.mode in {"dream_review_approved", "initialize_review_approved"}
+        if dream_reviewed != (self.dream_run_id is not None):
             raise ValueError("only Dream-approved profiles name a Dream run")  # noqa: TRY003
-        generated = windowed or self.mode == "dream_review_approved"
+        generated = windowed or dream_reviewed
         if generated and (not self.generator_id or not self.generator_version):
             raise ValueError("generated profiles require generator identity")  # noqa: TRY003
         if not generated and (self.generator_id is not None or self.generator_version is not None):
