@@ -106,7 +106,11 @@ class AccessInvalidRequestError(AccessControlError, ValueError):
             "receiver-principal": "an accepted Handoff receiver must match the authenticated Principal",
             "reason": "the Access Binding reason exceeds its limit",
             "shared_use_audience": "shared use must include the target Scope in its audience",
+            "shared_use_acceptance": "the shared use acceptance is invalid",
             "shared_use_not_agreed": "the requested shared use is not among the agreed uses",
+            "shared_use_permission_scope": "the shared use permission scope is not a supported value",
+            "shared_use_retention": "the shared use retention is not a supported value",
+            "shared_use_use": "the shared use purpose is not a supported value",
             "shared_use_origin": "shared use requires exact, distinct Artifact or Source origins",
             "shared_use_revision_only_unsupported": (
                 "revision-only shared use cannot be enforced by logical Artifact grants"
