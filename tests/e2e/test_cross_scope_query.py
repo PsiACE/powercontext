@@ -24,8 +24,13 @@ import pytest
 from pydantic import ValidationError
 
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
-from powercontext.artifacts.search import ArtifactSearchExecutionContext
-from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceDraft
+from powercontext.artifacts.search import ArtifactSearchExecutionContext, ArtifactSearchUnavailable
+from powercontext.builtin.artifacts.experience import (
+    Experience,
+    ExperienceContent,
+    ExperienceDraft,
+    ExperienceSearchRequest,
+)
 from powercontext.builtin.authz import (
     AccessAuditContext,
     AccessDeniedError,
@@ -134,7 +139,8 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
             ]
             assert [(hit.origin_rank, hit.origin.scope_id) for hit in complete.hits] == [(1, interface), (1, helpdesk)]
 
-            # A budget that narrows the caller's declared window is never a complete search.
+            # A budget that narrows the Family's *effective* window is never a complete search, and
+            # "effective" includes the Family default when the caller omitted the field.
             declared = {"query": QUERY, "limit": 10}
             with pytest.raises(CrossScopeQueryBoundsError):
                 await query.search(request(limit=4, max_candidates=6, payload=declared), execution_context=context)
@@ -145,6 +151,15 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
             assert narrowed.coverage.complete is False
             assert narrowed.coverage.reason == "candidate_budget"
             assert narrowed.coverage.bounded_origins == (interface, helpdesk)
+            # The omitted field takes the Family default (10), so the same allocation must not be
+            # treated as unbounded: one candidate per origin is still a partial search.
+            with pytest.raises(CrossScopeQueryBoundsError):
+                await query.search(request(limit=1, max_candidates=2), execution_context=context)
+            default_narrowed = await query.search(
+                request(limit=1, max_candidates=2, coverage="partial"), execution_context=context
+            )
+            assert default_narrowed.coverage.complete is False
+            assert default_narrowed.coverage.reason == "candidate_budget"
 
             # The source publishes a new revision; the earlier hit still names revision one.
             published = await runtime.records.for_scope(interface).replace_artifact(
@@ -235,17 +250,81 @@ def test_cross_scope_query_keeps_origin_identity_coverage_and_exact_revision(tmp
             # A larger allocation returns the same single declared top hit, not more of them.
             assert top_one_runs[0] == top_one_runs[1]
             # The Family still owns its own limit contract: an invalid declared window is reported
-            # as such, and the allocation never rewrites a valid declared window.
-            with pytest.raises(ValidationError):
-                await query.search(
-                    CrossScopeQueryRequest(
-                        family="experience",
-                        payload={"query": QUERY, "limit": 201},
-                        scopes=(interface,),
-                        limit=10,
-                        max_candidates=256,
-                    ),
-                    execution_context=context,
+            # as such, and no allocation quietly rewrites it into an admissible one — even in
+            # partial mode, where clamping would otherwise erase the invalid original.
+            for coverage in ("complete", "partial"):
+                with pytest.raises(ValidationError):
+                    await query.search(
+                        CrossScopeQueryRequest(
+                            family="experience",
+                            payload={"query": QUERY, "limit": 201},
+                            scopes=(interface,),
+                            limit=10,
+                            max_candidates=64,
+                            coverage=coverage,
+                        ),
+                        execution_context=context,
+                    )
+
+    asyncio.run(scenario())
+
+
+def test_cross_scope_query_reports_an_unavailable_origin_as_a_coverage_gap(tmp_path: Path) -> None:
+    """A backend that cannot serve one origin degrades partial coverage instead of failing all of it.
+
+    The unavailable outcome is a fixture at the registered Family searcher boundary, not evidence
+    that a real backend reports this code in production.
+    """
+
+    async def scenario() -> None:
+        config = BuiltinConfig(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'unavailable.db'}"),
+            runtime=RuntimeConfig(artifact_processing_families=()),
+        )
+        policy = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'unavailable-policy.db'}")
+        interface, helpdesk, orders = await _seed(config)
+        async with (
+            open_builtin_access_control(
+                policy, bootstrap_administrators=(ADMIN,), deployment_id="cross-scope"
+            ) as access,
+            open_builtin_runtime(config) as runtime,
+        ):
+            await access.create_binding(ADMIN, _grant_request(interface, "viewer"), context=AUDIT)
+            await access.create_binding(ADMIN, _grant_request(helpdesk, "viewer"), context=AUDIT)
+            service = runtime._artifact_search
+            assert service is not None
+            unavailability = ArtifactSearchUnavailable("experience", "fixture backend declined the projection")
+            binding = service._bindings["experience"]
+            serving = binding.searcher
+
+            class Unavailable:
+                family = "experience"
+                request_type = ExperienceSearchRequest
+
+                async def search(self, scope_id, request, /, *, execution_context=None):
+                    if scope_id == helpdesk:
+                        raise unavailability
+                    return await serving.search(scope_id, request, execution_context=execution_context)
+
+            binding.searcher = Unavailable()
+            context = ArtifactSearchExecutionContext(VIEWER, access, AUDIT)
+            query = runtime.cross_scope.for_scope(orders)
+
+            def request(**overrides) -> CrossScopeQueryRequest:
+                return CrossScopeQueryRequest(
+                    family="experience",
+                    payload={"query": QUERY},
+                    scopes=(interface, helpdesk),
+                    limit=4,
+                    **overrides,
                 )
+
+            with pytest.raises(ArtifactSearchUnavailable):
+                await query.search(request(), execution_context=context)
+            partial = await query.search(request(coverage="partial"), execution_context=context)
+            assert partial.coverage.complete is False
+            assert partial.coverage.reason == "origin_failure"
+            assert partial.coverage.failed_origins == (helpdesk,)
+            assert {hit.origin.scope_id for hit in partial.hits} == {interface}
 
     asyncio.run(scenario())
