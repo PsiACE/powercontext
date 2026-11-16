@@ -19,7 +19,12 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.evidence.models import EvidenceManifest, EvidenceResolutionError, unique_references
+from powercontext.builtin.evidence.models import (
+    EvidenceManifest,
+    EvidenceNode,
+    EvidenceResolutionError,
+    unique_references,
+)
 from powercontext.builtin.evidence.resolver import evidence_id
 from powercontext.sources import SourceRef
 
@@ -40,8 +45,7 @@ def select_evidence(
     nodes = {node.evidence_id: node for node in manifest.nodes}
     for node_id in used:
         node = nodes.get(node_id)
-        if node is None or node.role in {"unresolved", "lineage_only"} or (skill and node.kind == "memory"):
-            raise EvidenceResolutionError("invalid_generation_output")
+        _require_citable(node, skill=skill)
     # Targets may be named as comparison context, but cannot support their own revision.
     chosen = {node_id for node_id in used if nodes[node_id].role != "target"}
     if not chosen:
@@ -76,6 +80,16 @@ def select_evidence(
     if len(sources) + len(artifacts) > 32:
         raise EvidenceResolutionError("evidence_limit_exceeded")
     return SelectedEvidence(sources=sources, artifacts=artifacts)
+
+
+def _require_citable(node: EvidenceNode | None, *, skill: bool) -> None:
+    if node is None or node.role in {"unresolved", "lineage_only"} or (skill and node.kind == "memory"):
+        raise EvidenceResolutionError("invalid_generation_output")
+    if node.origin_scope_id is not None:
+        # Candidate evidence and committed lineage hold Scope-local references, so
+        # citing another Scope's node would misattribute its origin. The manifest keeps
+        # the exact origin; the claim is refused instead of rewritten.
+        raise EvidenceResolutionError("unsupported_origin")
 
 
 def _reachable(start: str, manifest: EvidenceManifest) -> set[str]:

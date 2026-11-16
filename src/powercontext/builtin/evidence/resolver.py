@@ -46,6 +46,7 @@ from powercontext.builtin.evidence.models import (
     ProjectedEvidence,
     ResolvedEvidence,
     RootEvidenceGroup,
+    ScopedEvidence,
     content_digest,
     reference_key,
 )
@@ -76,7 +77,7 @@ class _Traversal:
     nodes: dict[str, EvidenceNode] = field(default_factory=dict)
     bodies: dict[str, str] = field(default_factory=dict)
     edges: set[tuple[str, str]] = field(default_factory=set)
-    groups: dict[str, tuple[str, bool]] = field(default_factory=dict)
+    groups: dict[str, tuple[str, bool, str | None]] = field(default_factory=dict)
 
 
 class EvidenceResolver:
@@ -87,6 +88,7 @@ class EvidenceResolver:
         sources: SourceRepository,
         artifacts: ArtifactRepository,
         authorize: EvidenceAuthorizer | None = None,
+        authorize_origin: ScopedEvidenceAuthorizer | None = None,
         root_identity: RootIdentityResolver | None = None,
         source_projector: Callable[[Source], str] | None = None,
         limits: EvidenceLimits | None = None,
@@ -96,6 +98,9 @@ class EvidenceResolver:
         self.generation_sources = GenerationSourceAccess(sources)
         self.artifacts = artifacts
         self.authorize = authorize
+        # Evidence owned by another Scope is authorized there; without a hook it is
+        # refused rather than read under the run Scope's authority.
+        self.authorize_origin = authorize_origin
         self.root_identity = root_identity
         self.source_projector = source_projector
         self.limits = EvidenceLimits() if limits is None else limits
@@ -106,10 +111,13 @@ class EvidenceResolver:
         *,
         sources: tuple[SourceRef, ...] = (),
         artifacts: tuple[ArtifactRef, ...] = (),
+        scoped: tuple[ScopedEvidence, ...] = (),
     ) -> tuple[SourceRef, ...]:
         """Validate lineage and return eligible Source roots of directly selected Memory evidence."""
 
         refs: tuple[EvidenceReference, ...] = (*sources, *artifacts)
+        for selection in scoped:
+            await self._validate_scoped_origin(connection, selection)
         state = await self._validate_lineage(connection, refs)
         atomic_refs = tuple(
             node.artifact
@@ -132,32 +140,58 @@ class EvidenceResolver:
         refs: tuple[EvidenceReference, ...],
         *,
         locked: bool = False,
+        origin_scope_id: str | None = None,
     ) -> _Traversal:
         state = _Traversal(project=False)
-        pending: deque[tuple[EvidenceReference, bool, str | None]] = deque((ref, True, None) for ref in refs)
-        visited: set[tuple[str, str | None]] = set()
+        pending: deque[tuple[EvidenceReference, bool, str | None, str | None]] = deque(
+            (ref, True, None, origin_scope_id) for ref in refs
+        )
+        visited: set[tuple[str, str | None, str | None]] = set()
         while pending:
-            ref, direct, history_owner = pending.popleft()
-            key = (reference_key(ref), history_owner)
+            ref, direct, history_owner, origin_scope_id = pending.popleft()
+            key = (reference_key(ref), history_owner, origin_scope_id)
             if key in visited:
                 continue
             visited.add(key)
-            await self._authorize_reference(connection, ref)
+            await self._authorize_reference(connection, ref, origin_scope_id)
             try:
                 if isinstance(ref, ArtifactRef):
                     node, children = await self._read_review_artifact(
-                        connection, ref, direct=direct, locked=locked, history_owner=history_owner
+                        connection,
+                        ref,
+                        direct=direct,
+                        locked=locked,
+                        history_owner=history_owner,
+                        origin_scope_id=origin_scope_id,
                     )
                 else:
                     node, _, children = await self._read(
-                        connection, ref, state, direct=direct, locked=locked, history_owner=history_owner
+                        connection,
+                        ref,
+                        state,
+                        direct=direct,
+                        locked=locked,
+                        history_owner=history_owner,
+                        origin_scope_id=origin_scope_id,
                     )
             except RepositoryNotFoundError as error:
                 raise EvidenceResolutionError("reference_not_found" if direct else "evidence_unavailable") from error
             state.nodes.setdefault(node.evidence_id, node)
-            state.edges.update((node.evidence_id, evidence_id(child)) for child, _ in children)
-            pending.extend((child, False, owner) for child, owner in children)
+            state.edges.update((node.evidence_id, evidence_id(child, origin_scope_id)) for child, _ in children)
+            pending.extend((child, False, owner, origin_scope_id) for child, owner in children)
         return state
+
+    async def _validate_scoped_origin(self, connection: AsyncConnection, selection: ScopedEvidence) -> None:
+        """Authorize and read one external selection inside the Scope that owns it."""
+
+        reference = selection.reference
+        if selection.scope_id == self.scope_id:
+            return
+        if isinstance(reference, ArtifactRef) and reference.family == "atomic-memory":
+            # Run-Scope memory state and merge targets are not readable across Scopes.
+            raise EvidenceResolutionError("unsupported_origin")
+        await self._authorize_reference(connection, reference, selection.scope_id)
+        await self._validate_lineage(connection, (reference,), origin_scope_id=selection.scope_id)
 
     async def _read_review_artifact(
         self,
@@ -167,10 +201,12 @@ class EvidenceResolver:
         direct: bool = True,
         locked: bool = False,
         history_owner: str | None = None,
+        origin_scope_id: str | None = None,
     ) -> tuple[EvidenceNode, tuple[EvidenceChild, ...]]:
         """Follow local Review lineage independently of Dream's supported input Families."""
 
-        artifact = await self.artifacts.get(connection, self.scope_id, ref)
+        scope_id = self.scope_id if origin_scope_id is None else origin_scope_id
+        artifact = await self.artifacts.get(connection, scope_id, ref)
         if isinstance(artifact, AtomicMemory):
             node, _, children = await self._read_atomic(
                 connection, ref, artifact, locked=locked, history_owner=history_owner
@@ -181,10 +217,11 @@ class EvidenceResolver:
             children = _artifact_children(artifact, ref, _Traversal(project=False))
         return (
             EvidenceNode(
-                evidence_id=evidence_id(ref),
+                evidence_id=evidence_id(ref, origin_scope_id),
                 kind="unresolved",
                 artifact=ref,
                 digest=content_digest(artifact.model_dump_json().encode()),
+                origin_scope_id=origin_scope_id,
                 role="lineage_only",
             ),
             children,
@@ -196,6 +233,7 @@ class EvidenceResolver:
         *,
         sources: tuple[SourceRef, ...] = (),
         artifacts: tuple[ArtifactRef, ...] = (),
+        scoped: tuple[ScopedEvidence, ...] = (),
         target: ArtifactRef | None = None,
         include_memory_text: bool = True,
         lock_memory: bool = False,
@@ -218,6 +256,7 @@ class EvidenceResolver:
                 connection,
                 sources=sources,
                 artifacts=artifacts,
+                scoped=scoped,
                 target=target,
                 project=False,
                 expose_prompt_target=expose_prompt_target,
@@ -231,12 +270,13 @@ class EvidenceResolver:
             await self.artifacts.lock_heads(connection, self.scope_id, atomic_refs)
         for ref in refs:
             await self._visit(connection, ref, traversal, depth=0, direct=True, lock_memory=lock_memory)
+        await self._visit_scoped(connection, scoped, traversal, lock_memory=lock_memory)
         if target is not None and (target_id := evidence_id(target)) in traversal.nodes:
             traversal.nodes[target_id] = traversal.nodes[target_id].model_copy(update={"role": "target"})
         if pinned is not None:
             self._restore_snapshot(traversal, pinned)
         groups = self._groups(traversal)
-        grouped_ids = {source_id: group_id for source_id, (group_id, _) in traversal.groups.items()}
+        grouped_ids = {node_id: group[0] for node_id, group in traversal.groups.items()}
         projected: list[ProjectedEvidence] = []
         for node_id, node in sorted(traversal.nodes.items()):
             if node.kind == "unresolved" or node.role in {"unresolved", "lineage_only"}:
@@ -261,6 +301,7 @@ class EvidenceResolver:
         manifest = EvidenceManifest(
             artifacts=artifacts,
             sources=sources,
+            scoped=scoped,
             nodes=tuple(traversal.nodes[key] for key in sorted(traversal.nodes)),
             edges=tuple(EvidenceEdge(derived_id=left, upstream_id=right) for left, right in sorted(traversal.edges)),
             root_groups=groups,
@@ -272,6 +313,29 @@ class EvidenceResolver:
             raise EvidenceResolutionError("evidence_unavailable")
         return ResolvedEvidence(manifest=manifest, projection=projection)
 
+    async def _visit_scoped(
+        self,
+        connection: AsyncConnection,
+        scoped: tuple[ScopedEvidence, ...],
+        state: _Traversal,
+        *,
+        lock_memory: bool,
+    ) -> None:
+        """Resolve each explicit selection inside the Scope that owns it."""
+
+        for selection in scoped:
+            await self._visit(
+                connection,
+                selection.reference,
+                state,
+                depth=0,
+                direct=True,
+                lock_memory=lock_memory,
+                # Naming the run Scope is the same selection as a local one, so it keeps
+                # the local identity instead of becoming a second copy of itself.
+                origin_scope_id=None if selection.scope_id == self.scope_id else selection.scope_id,
+            )
+
     async def _visit(
         self,
         connection: AsyncConnection,
@@ -282,14 +346,21 @@ class EvidenceResolver:
         direct: bool = False,
         lock_memory: bool = False,
         history_owner: str | None = None,
+        origin_scope_id: str | None = None,
     ) -> str:
         if depth > self.limits.max_depth:
             raise EvidenceResolutionError("evidence_limit_exceeded")
-        await self._authorize_reference(connection, ref)
-        identity = evidence_id(ref)
+        await self._authorize_reference(connection, ref, origin_scope_id)
+        identity = evidence_id(ref, origin_scope_id)
         try:
             node, body, children = await self._read(
-                connection, ref, state, direct=direct, locked=lock_memory, history_owner=history_owner
+                connection,
+                ref,
+                state,
+                direct=direct,
+                locked=lock_memory,
+                history_owner=history_owner,
+                origin_scope_id=origin_scope_id,
             )
         except RepositoryNotFoundError as error:
             raise EvidenceResolutionError("reference_not_found" if direct else "evidence_unavailable") from error
@@ -301,16 +372,28 @@ class EvidenceResolver:
             raise EvidenceResolutionError("evidence_limit_exceeded")
         for child, owner in children:
             child_id = await self._visit(
-                connection, child, state, depth=depth + 1, lock_memory=lock_memory, history_owner=owner
+                connection,
+                child,
+                state,
+                depth=depth + 1,
+                lock_memory=lock_memory,
+                history_owner=owner,
+                # An external Artifact's own lineage is local to its Scope.
+                origin_scope_id=origin_scope_id,
             )
             state.edges.add((identity, child_id))
             if len(state.edges) > self.limits.max_edges:
                 raise EvidenceResolutionError("evidence_limit_exceeded")
         return identity
 
-    async def _authorize_reference(self, connection, ref):
-        if self.authorize is not None:
-            await self.authorize(ref)
+    async def _authorize_reference(self, connection, ref, origin_scope_id: str | None = None) -> None:
+        if origin_scope_id is None:
+            if self.authorize is not None:
+                await self.authorize(ref)
+            return
+        if self.authorize_origin is None:
+            raise EvidenceResolutionError("access_unavailable")
+        await self.authorize_origin(origin_scope_id, ref)
 
     async def _read(  # noqa: C901 - explicit projection contracts for each Family
         self,
@@ -321,14 +404,16 @@ class EvidenceResolver:
         direct: bool,
         locked: bool,
         history_owner: str | None = None,
+        origin_scope_id: str | None = None,
     ) -> tuple[EvidenceNode, str, tuple[EvidenceChild, ...]]:
+        scope_id = self.scope_id if origin_scope_id is None else origin_scope_id
         if isinstance(ref, SourceRef):
-            return await self._read_source(connection, ref, state, direct=direct)
-        artifact = await self.artifacts.get(connection, self.scope_id, ref)
+            return await self._read_source(connection, ref, state, direct=direct, origin_scope_id=origin_scope_id)
+        artifact = await self.artifacts.get(connection, scope_id, ref)
         digest = content_digest(artifact.model_dump_json().encode())
         if isinstance(artifact, AtomicMemory):
             node, body, children = await self._read_atomic(
-                connection, ref, artifact, locked=locked, history_owner=history_owner
+                connection, ref, artifact, locked=locked, history_owner=history_owner, origin_scope_id=origin_scope_id
             )
             if ref == state.target_ref:
                 return node.model_copy(update={"role": "target"}), body, ()
@@ -336,34 +421,65 @@ class EvidenceResolver:
         if ref == state.catalog_target:
             return (
                 EvidenceNode(
-                    evidence_id=evidence_id(ref), kind="catalog_target", artifact=ref, digest=digest, role="target"
+                    evidence_id=evidence_id(ref),
+                    kind="catalog_target",
+                    artifact=ref,
+                    digest=digest,
+                    origin_scope_id=origin_scope_id,
+                    role="target",
                 ),
                 artifact.content.model_dump_json(),
                 (),
             )
         if isinstance(artifact, Skill):
             return (
-                EvidenceNode(evidence_id=evidence_id(ref), kind="skill", artifact=ref, digest=digest, role="derived"),
+                EvidenceNode(
+                    evidence_id=evidence_id(ref, origin_scope_id),
+                    kind="skill",
+                    artifact=ref,
+                    digest=digest,
+                    origin_scope_id=origin_scope_id,
+                    role="derived",
+                ),
                 artifact.content.model_dump_json(),
                 _artifact_children(artifact, ref, state),
             )
         if isinstance(artifact, Profile):
             return (
-                EvidenceNode(evidence_id=evidence_id(ref), kind="profile", artifact=ref, digest=digest, role="derived"),
+                EvidenceNode(
+                    evidence_id=evidence_id(ref, origin_scope_id),
+                    kind="profile",
+                    artifact=ref,
+                    digest=digest,
+                    origin_scope_id=origin_scope_id,
+                    role="derived",
+                ),
                 artifact.content.content,
                 _artifact_children(artifact, ref, state),
             )
         if isinstance(artifact, TopicMemory):
             return (
                 EvidenceNode(
-                    evidence_id=evidence_id(ref), kind="topic_memory", artifact=ref, digest=digest, role="derived"
+                    evidence_id=evidence_id(ref, origin_scope_id),
+                    kind="topic_memory",
+                    artifact=ref,
+                    digest=digest,
+                    origin_scope_id=origin_scope_id,
+                    role="derived",
                 ),
                 artifact.content.model_dump_json(),
                 _artifact_children(artifact, ref, state),
             )
         if isinstance(artifact, Handoff):
             return (
-                EvidenceNode(evidence_id=evidence_id(ref), kind="handoff", artifact=ref, digest=digest, role="derived"),
+                EvidenceNode(
+                    evidence_id=evidence_id(ref, origin_scope_id),
+                    kind="handoff",
+                    artifact=ref,
+                    digest=digest,
+                    origin_scope_id=origin_scope_id,
+                    role="derived",
+                ),
                 artifact.content.model_dump_json(),
                 _artifact_children(artifact, ref, state),
             )
@@ -371,41 +487,51 @@ class EvidenceResolver:
             if isinstance(artifact, Prompt) and ref == state.prompt_target:
                 return (
                     EvidenceNode(
-                        evidence_id=evidence_id(ref), kind="prompt", artifact=ref, digest=digest, role="target"
+                        evidence_id=evidence_id(ref, origin_scope_id),
+                        kind="prompt",
+                        artifact=ref,
+                        digest=digest,
+                        origin_scope_id=origin_scope_id,
+                        role="target",
                     ),
                     artifact.content.model_dump_json(),
                     (),
                 )
             return (
                 EvidenceNode(
-                    evidence_id=evidence_id(ref),
+                    evidence_id=evidence_id(ref, origin_scope_id),
                     kind="unresolved",
                     artifact=ref,
                     digest=digest,
+                    origin_scope_id=origin_scope_id,
                     role="lineage_only",
                 ),
                 "",
                 _artifact_children(artifact, ref, state),
             )
         if not isinstance(artifact, Experience) or artifact.lineage.publication_source is not None:
+            # A published copy is delivered material, not an independent observation,
+            # in whichever Scope it is stored.
             return (
                 EvidenceNode(
-                    evidence_id=evidence_id(ref),
+                    evidence_id=evidence_id(ref, origin_scope_id),
                     kind="unresolved",
                     artifact=ref,
                     digest=digest,
+                    origin_scope_id=origin_scope_id,
                     role="unresolved",
                 ),
                 "",
                 (),
             )
-        current = await self.artifacts.latest(connection, self.scope_id, ref.family, ref.artifact_id)
+        current = await self.artifacts.latest(connection, scope_id, ref.family, ref.artifact_id)
         return (
             EvidenceNode(
-                evidence_id=evidence_id(ref),
+                evidence_id=evidence_id(ref, origin_scope_id),
                 kind="experience",
                 artifact=ref,
                 digest=digest,
+                origin_scope_id=origin_scope_id,
                 role="derived",
                 historical=current.as_ref() != ref,
             ),
@@ -413,7 +539,9 @@ class EvidenceResolver:
             _artifact_children(artifact, ref, state),
         )
 
-    async def _read_atomic(self, connection, ref, artifact, *, locked, history_owner):
+    async def _read_atomic(self, connection, ref, artifact, *, locked, history_owner, origin_scope_id=None):
+        if origin_scope_id is not None:
+            raise EvidenceResolutionError("unsupported_origin")
         current = await self.artifacts.latest(
             connection,
             self.scope_id,
@@ -455,16 +583,18 @@ class EvidenceResolver:
         state: _Traversal,
         *,
         direct: bool,
+        origin_scope_id: str | None = None,
     ) -> tuple[EvidenceNode, str, tuple[EvidenceChild, ...]]:
+        scope_id = self.scope_id if origin_scope_id is None else origin_scope_id
         try:
-            stored = await self.generation_sources.require_for_generation(connection, self.scope_id, (ref,))
+            stored = await self.generation_sources.require_for_generation(connection, scope_id, (ref,))
             source = stored[0].value
             eligible = True
         except SourceNotEligibleError as error:
             if direct:
                 raise EvidenceResolutionError("source_not_eligible") from error
             # Internal Sources remain provenance without entering the model projection.
-            source = (await self.sources.get(connection, self.scope_id, ref)).value
+            source = (await self.sources.get(connection, scope_id, ref)).value
             eligible = False
         body = source.model_dump_json()
         digest = content_digest(body.encode())
@@ -473,17 +603,28 @@ class EvidenceResolver:
                 body = self.source_projector(source)
             except (InvalidSourceProjectionError, SourceProjectionNotFoundError) as error:
                 raise EvidenceResolutionError("evidence_unavailable") from error
-        identity = evidence_id(ref)
+        identity = evidence_id(ref, origin_scope_id)
         if eligible:
             attested = None if self.root_identity is None else self.root_identity(ref, source)
-            group_key = ref.model_dump_json(exclude={"locator"}) if attested is None else attested
-            state.groups[identity] = ("root_" + content_digest(group_key.encode())[7:31], attested is not None)
+            # The group key includes the owning Scope, so equal local IDs in different
+            # Scopes never become one root. Equality of IDs or digests is not provenance.
+            group_key = (
+                (ref.model_dump_json(exclude={"locator"}) if attested is None else attested)
+                if origin_scope_id is None
+                else content_digest((origin_scope_id + "\x00" + ref.model_dump_json(exclude={"locator"})).encode())
+            )
+            state.groups[identity] = (
+                "root_" + content_digest(group_key.encode())[7:31],
+                attested is not None,
+                origin_scope_id,
+            )
         return (
             EvidenceNode(
                 evidence_id=identity,
                 kind="source",
                 source=ref,
                 digest=digest,
+                origin_scope_id=origin_scope_id,
                 role="root" if eligible else "lineage_only",
             ),
             body,
@@ -494,15 +635,18 @@ class EvidenceResolver:
     def _groups(state: _Traversal) -> tuple[RootEvidenceGroup, ...]:
         groups: dict[str, list[SourceRef]] = {}
         attested: dict[str, bool] = {}
-        for node_id, (group_id, verified) in state.groups.items():
+        scopes: dict[str, str | None] = {}
+        for node_id, (group_id, verified, origin_scope_id) in state.groups.items():
             ref = state.nodes[node_id].source
             if ref is not None:
                 groups.setdefault(group_id, []).append(ref)
                 attested[group_id] = verified
+                scopes[group_id] = origin_scope_id
         return tuple(
             RootEvidenceGroup(
                 group_id=key,
                 sources=tuple(sorted(groups[key], key=reference_key)),
+                scope_id=scopes[key],
                 independence="attested" if attested[key] else "unknown",
             )
             for key in sorted(groups)
@@ -543,8 +687,15 @@ def _lineage_children(artifact) -> tuple[EvidenceChild, ...]:
     )
 
 
-def evidence_id(ref: EvidenceReference) -> str:
-    return "e_" + content_digest(reference_key(ref).encode())[7:39]
+def evidence_id(ref: EvidenceReference, origin_scope_id: str | None = None) -> str:
+    """Return one node identity, qualified by the owning Scope only when it differs.
+
+    An unqualified reference keeps the identity it has always had, so persisted
+    local manifests, Candidate evidence and lineage read back unchanged.
+    """
+
+    key = reference_key(ref) if origin_scope_id is None else origin_scope_id + "\x00" + reference_key(ref)
+    return "e_" + content_digest(key.encode())[7:39]
 
 
 def root_ids(node_id: str, nodes: dict[str, EvidenceNode], edges: set[tuple[str, str]]) -> set[str]:
