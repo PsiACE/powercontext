@@ -25,6 +25,7 @@ import json
 from datetime import UTC, datetime
 
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes
@@ -320,19 +321,38 @@ class ShareAcceptanceRepository:
                     acceptance.rule_id, acceptance.version, acceptance.actor, acceptance.side
                 )
             return existing
-        await connection.execute(
-            insert(SHARE_ACCEPTANCES_TABLE).values(
-                scope_id=acceptance.scope_id,
-                rule_id=acceptance.rule_id,
-                version=acceptance.version,
-                actor=acceptance.actor,
-                side=acceptance.side,
-                terms_digest=acceptance.terms_digest,
-                covered_scope_ids=json.dumps(list(acceptance.covered_scope_ids)).encode(),
-                acceptance_id=acceptance.acceptance_id,
-                accepted_at=ticks(acceptance.accepted_at),
+        try:
+            await connection.execute(
+                insert(SHARE_ACCEPTANCES_TABLE).values(
+                    scope_id=acceptance.scope_id,
+                    rule_id=acceptance.rule_id,
+                    version=acceptance.version,
+                    actor=acceptance.actor,
+                    side=acceptance.side,
+                    terms_digest=acceptance.terms_digest,
+                    covered_scope_ids=json.dumps(list(acceptance.covered_scope_ids)).encode(),
+                    acceptance_id=acceptance.acceptance_id,
+                    accepted_at=ticks(acceptance.accepted_at),
+                )
             )
-        )
+        except IntegrityError:
+            # A concurrent identical acceptance won the unique key. Read it back so the
+            # caller still receives the durable record rather than a fabricated id.
+            stored = await self.find(
+                connection,
+                acceptance.scope_id,
+                acceptance.rule_id,
+                acceptance.version,
+                acceptance.actor,
+                acceptance.side,
+            )
+            if stored is None:
+                raise
+            if stored.covered_scope_ids != acceptance.covered_scope_ids:
+                raise ShareAcceptanceConflictError(
+                    acceptance.rule_id, acceptance.version, acceptance.actor, acceptance.side
+                ) from None
+            return stored
         return acceptance
 
     async def find(

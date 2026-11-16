@@ -335,18 +335,22 @@ class ShareRuleService:
             original = await self._require_run(connection, scope_id, run_id)
         await self._authorize_origins(original.inputs)
         async with self._database.transaction() as connection:
-            # Recheck the recorded version's status and coverage inside the inserting
-            # transaction: a rule invalidated while authority was being checked must
-            # not gain a new live pending run.
+            # The rule head is locked first, then the recorded run: that order matches
+            # `invalidate` (head, then its pending runs) and matches `resolve`, so a
+            # retry cannot interleave with invalidation or a concurrent publication.
+            head = await self._require_rule(connection, scope_id, original.rule_id, for_update=True)
             original = await self._require_run(connection, scope_id, run_id)
             if original.state == "invalidated":
                 raise ShareRuleInvalidatedError(original.rule_id)
             rule = await self.rules.version(connection, scope_id, original.rule_id, original.rule_version)
             if rule is None:
                 raise ShareRuleInvalidatedError(original.rule_id)
-            head = await self._require_rule(connection, scope_id, original.rule_id)
             if head.status == "invalidated":
                 raise ShareRuleInvalidatedError(original.rule_id)
+            if head.version != original.rule_version:
+                # A newer accepted version must not silently adopt this manifest's
+                # inputs; the old manifest stays readable for its original version.
+                raise ShareRuleVersionConflictError(original.rule_id, original.rule_version, head.version)
             await self._require_accepted(rule, original.origin_scopes(), connection=connection)
             await self._require_scope(connection, scope_id)
             return await self.runs.create(
@@ -391,41 +395,51 @@ class ShareRuleService:
     ) -> ShareRun:
         """Record what an evaluation concluded, using the record that proves it.
 
-        `no_change` and `needs_evidence` are evaluation results; a pending or
-        rejected Candidate and an approved commit stay distinguishable because each
-        points at the existing record that establishes it. No second conclusion
-        store is created here.
+        A conclusion is one-way: the same result replayed returns the stored record,
+        while a different result on an already concluded evaluation raises, because a
+        reassessment is a new run. A committed conclusion keeps its address and links
+        when an optional argument is omitted, so history is never rewritten and never
+        loses the revision it established.
         """
 
         await self._require_target(scope_id)
         async with self._database.transaction() as connection:
             run = await self._require_run(connection, scope_id, run_id)
+            # Head first, then the run, matching `invalidate` and `retry`.
+            head = await self._require_rule(connection, scope_id, run.rule_id, for_update=True)
+            run = await self._require_run(connection, scope_id, run_id)
             if run.state == "invalidated":
                 raise ShareRuleInvalidatedError(run.rule_id)
             # A pending evaluation whose rule is no longer active must not be completed
             # as if the rule still governed it.
-            head = await self._require_rule(connection, scope_id, run.rule_id)
             if head.status == "invalidated" and run.outcome == "pending":
                 raise ShareRuleInvalidatedError(run.rule_id)
             resolved = run.outcome if outcome is None else outcome
+            address = None
             if committed is not None:
                 await self._artifacts.get(connection, scope_id, committed)
                 resolved = "committed"
+                address = ArtifactAddress(scope_id=scope_id, artifact=committed)
             elif resolved == "committed":
-                raise ShareRunStateError(run_id, run.state)
-            return await self.runs.replace(
-                connection,
-                run.model_copy(
-                    update={
-                        "outcome": resolved,
-                        "dream_run_id": dream_run_id if dream_run_id is not None else run.dream_run_id,
-                        "candidate_id": candidate_id if candidate_id is not None else run.candidate_id,
-                        "committed": None
-                        if committed is None
-                        else ArtifactAddress(scope_id=scope_id, artifact=committed),
-                    }
-                ),
+                # Completion without an address cannot establish a revision; only a
+                # replay of an already committed run may omit it.
+                if run.outcome != "committed" or run.committed is None:
+                    raise ShareRunStateError(run_id, run.state)
+            updated = run.model_copy(
+                update={
+                    "outcome": resolved,
+                    "dream_run_id": dream_run_id if dream_run_id is not None else run.dream_run_id,
+                    "candidate_id": candidate_id if candidate_id is not None else run.candidate_id,
+                    "committed": run.committed if address is None else address,
+                }
             )
+            if run.outcome != "pending":
+                # One-way: an identical replay is idempotent, anything else is a
+                # different conclusion and needs its own run.
+                if not _same_conclusion(run, updated):
+                    raise ShareRunStateError(run_id, run.state)
+                return run
+            return await self.runs.replace(connection, updated)
 
     # -- discovery -----------------------------------------------------------
 
@@ -555,11 +569,14 @@ class ShareRuleService:
     async def _scope_range(self, rule: ShareRule) -> tuple[str, ...]:
         """Resolve the rule's structural membership with A's bounded resolver."""
 
-        resolved = await self._scopes.resolve_range(
-            rule.selection,
-            limits=ScopeRangeLimits(max_nodes=rule.limits.max_origins, max_depth=_MAX_SCOPE_DEPTH),
-        )
+        resolved = await self._scopes.resolve_range(rule.selection, limits=self._range_limits(rule))
         return resolved.scope_ids
+
+    @staticmethod
+    def _range_limits(rule: ShareRule) -> ScopeRangeLimits:
+        """Bound structural resolution by the rule's own declared limits."""
+
+        return ScopeRangeLimits(max_nodes=rule.limits.max_origins, max_depth=_MAX_SCOPE_DEPTH)
 
     async def _baseline(self, connection: AsyncConnection, scope_id: str, rule: ShareRule) -> ArtifactAddress | None:
         """Pin the target's current maintained conclusion, not an origin revision."""
@@ -680,8 +697,14 @@ class ShareRuleService:
         covered = set(accepted)
         root_scope_id = rule.selection.root_scope_id
         if root_scope_id is not None and root_scope_id in accepted:
-            subtree = await self._scopes.resolve_selection(ShareSelection(mode="subtree", root_scope_id=root_scope_id))
-            covered.update(scope.scope_id for scope in subtree)
+            # An accepted subtree root covers the descendants that root qualifies. This
+            # uses the same bounded resolver and declared limits as discovery, so an
+            # agreement check never loads an unrelated Scope collection.
+            subtree = await self._scopes.resolve_range(
+                ShareSelection(mode="subtree", root_scope_id=root_scope_id),
+                limits=self._range_limits(rule),
+            )
+            covered.update(subtree.scope_ids)
         return covered
 
     async def _require_scope(self, connection: AsyncConnection, scope_id: str) -> None:
@@ -716,6 +739,17 @@ class ShareRuleService:
 
     def _now(self) -> datetime:
         return self._clock()
+
+
+def _same_conclusion(recorded: ShareRun, proposed: ShareRun) -> bool:
+    """Compare the conclusion a caller proposes with the one already recorded."""
+
+    return (
+        recorded.outcome == proposed.outcome
+        and recorded.committed == proposed.committed
+        and recorded.dream_run_id == proposed.dream_run_id
+        and recorded.candidate_id == proposed.candidate_id
+    )
 
 
 def _merge(inputs: dict[str, ShareInput], item: ShareInput) -> None:

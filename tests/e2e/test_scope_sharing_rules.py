@@ -49,6 +49,7 @@ from powercontext.builtin.sharing import (
     ShareRuleServiceUnavailable,
     ShareRuleTerms,
     ShareRunLimits,
+    ShareRunStateError,
 )
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY
 
@@ -725,6 +726,119 @@ def test_managed_database_does_not_advertise_standing_rules_it_cannot_serve(tmp_
             with pytest.raises(ShareRuleServiceUnavailable):
                 # The capability is absent, so no Scope existence is probed either.
                 await runtime.sharing.for_scope("scope").resolve("rule")
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_a_concluded_run_is_one_way_and_keeps_its_committed_revision(tmp_path: Path) -> None:
+    """Rewriting a concluded evaluation back to pending would rewrite its history."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "one-way.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            # The maintained conclusion belongs to the target Scope, and an approved
+            # Experience there needs local evidence.
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="local-note", content="A local review note.", metadata={})
+            )
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="note", content="A note.", metadata={})
+            )
+            candidate = await runtime.experience.for_scope(target).propose(
+                ProposeExperienceRequest(proposal=experience("Bounded lesson."), sources=(local.source_ref,))
+            )
+            approved = await runtime.review.for_scope(target).approve(
+                ApproveCandidateRequest(candidate_id=candidate.candidate_id, expected_version=candidate.version)
+            )
+            committed = approved.result_artifact
+            assert committed is not None
+
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+
+            # A first conclusion is recorded, and replaying it is idempotent.
+            concluded = await sharing.record_outcome(run.run_id, outcome="no_change")
+            assert concluded.outcome == "no_change"
+            replay = await sharing.record_outcome(run.run_id, outcome="no_change")
+            assert replay.outcome == "no_change" and replay.run_id == run.run_id
+
+            # A different conclusion on the same run is refused; it needs a new run.
+            with pytest.raises(ShareRunStateError):
+                await sharing.record_outcome(run.run_id, outcome="pending")
+            with pytest.raises(ShareRunStateError):
+                await sharing.record_outcome(run.run_id, outcome="needs_evidence")
+            assert (await sharing.get_run(run.run_id)).outcome == "no_change"
+
+            # A commit keeps its address and links even when optional args are omitted.
+            second = await sharing.resolve(rule.rule_id)
+            recorded = await sharing.record_outcome(
+                second.run_id, committed=committed, dream_run_id="dr_1", candidate_id="cand_1"
+            )
+            assert recorded.outcome == "committed" and recorded.committed.artifact == committed
+            kept = await sharing.record_outcome(second.run_id)
+            assert kept.outcome == "committed"
+            assert kept.committed == recorded.committed
+            assert (kept.dream_run_id, kept.candidate_id) == ("dr_1", "cand_1")
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_retry_does_not_adopt_a_newer_accepted_version(tmp_path: Path) -> None:
+    """A retry of an old manifest under a newer head must conflict, not reroute."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.sharing import ShareRuleVersionConflictError
+
+        async with sharing_runtime(tmp_path / "retry-version.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+
+            updated = await sharing.update(
+                rule.rule_id,
+                1,
+                exact_rule(origin, terms=ShareRuleTerms(use="project-conclusion", audience="narrower")),
+            )
+            await agree(sharing, rule.rule_id, updated.version)
+
+            with pytest.raises(ShareRuleVersionConflictError):
+                await sharing.retry(run.run_id)
+
+            # The original v1 manifest stays readable at its own version.
+            original = await sharing.get_run(run.run_id)
+            assert original.rule_version == 1
+            assert [item.source_ref.source_id for item in original.inputs] == ["fact"]
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_identical_acceptance_returns_the_single_stored_record(tmp_path: Path) -> None:
+    """Duplicate acceptance must converge on one durable row, not two ids."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "accept-race.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            rule = await sharing.create(exact_rule(origin))
+
+            results = await asyncio.gather(
+                *(sharing.accept(rule.rule_id, 1, "origin", actor="origin-admin") for _ in range(4))
+            )
+
+            assert len({item.acceptance_id for item in results}) == 1
+            stored = await sharing.agree(rule.rule_id, 1)
+            assert len(stored) == 1
+            assert stored[0].acceptance_id == results[0].acceptance_id
 
     import asyncio
 
