@@ -816,33 +816,33 @@ class ShareRuleService:
     async def _descendants_among(self, root_scope_id: str, candidates: tuple[str, ...], rule: ShareRule) -> set[str]:
         """Report which of the original candidates are structural descendants of the root.
 
-        Each candidate walks its own parent chain, so a candidate at any depth is
-        reported as itself once the walk reaches the accepted root. Walking to a parent
-        never substitutes that parent for the candidate: an intermediate Scope a run did
-        not record cannot become covered material.
+        Every candidate walks its own parent chain, so each is reported as itself once
+        its walk reaches the accepted root. Distinct candidates are tracked separately
+        even when their chains converge on a shared intermediate Scope, and a candidate
+        that is an ancestor of another is still judged only by whether its own chain
+        reaches the root. Parent reads are cached per scope, so converging paths cost
+        one read each and the work stays bounded by the candidates and declared depth.
         """
 
-        pending = {candidate for candidate in candidates if candidate != root_scope_id}
+        pending = tuple(candidate for candidate in candidates if candidate != root_scope_id)
         if not pending:
             return set()
-        # Map each walk position back to the original pinned candidate it belongs to.
-        walks = {candidate: candidate for candidate in pending}
+        parents: dict[str, str | None] = {}
         covered: set[str] = set()
         async with self._database.transaction() as connection:
-            for _ in range(_MAX_SCOPE_DEPTH):
-                if not walks:
-                    break
-                advanced: dict[str, str] = {}
-                for position, candidate in walks.items():
-                    descriptor = await self._scope_repository.get(connection, position)
-                    parent = None if descriptor is None else descriptor.parent_scope_id
+            for candidate in pending:
+                position = candidate
+                for _ in range(_MAX_SCOPE_DEPTH):
+                    if position not in parents:
+                        descriptor = await self._scope_repository.get(connection, position)
+                        parents[position] = None if descriptor is None else descriptor.parent_scope_id
+                    parent = parents[position]
                     if parent is None:
-                        continue
+                        break
                     if parent == root_scope_id:
                         covered.add(candidate)
-                    elif parent not in walks.values():
-                        advanced[parent] = candidate
-                walks = advanced
+                        break
+                    position = parent
         return covered
 
     async def _require_scope(self, connection: AsyncConnection, scope_id: str) -> None:
