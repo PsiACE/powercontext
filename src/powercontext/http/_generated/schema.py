@@ -8473,7 +8473,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["projection_digest", "projection_bytes"],
-                "x-powercontext-omit-if-empty": ["scoped"],
+                "x-powercontext-omit-when": {"scoped": "empty"},
             },
             "DreamScopedEvidence": {
                 "properties": {
@@ -8582,6 +8582,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["evidence_id", "kind", "digest", "role"],
                 "description": "An immutable content digest and its exact provenance, never its body.",
+                "x-powercontext-omit-when": {"origin_scope_id": "none"},
             },
             "DreamRootEvidenceGroup": {
                 "properties": {
@@ -8621,6 +8622,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["group_id", "sources"],
+                "x-powercontext-omit-when": {"scope_id": "none"},
             },
             "DreamRun": {
                 "properties": {

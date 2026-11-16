@@ -7947,7 +7947,7 @@ components:
       type: object
     DreamInputManifest:
       additionalProperties: false
-      x-powercontext-omit-if-empty: [scoped]
+      x-powercontext-omit-when: {scoped: empty}
       properties:
         transform_version:
           default: powercontext.dream.evidence.v1
@@ -8027,6 +8027,7 @@ components:
       type: object
     DreamEvidenceNode:
       additionalProperties: false
+      x-powercontext-omit-when: {origin_scope_id: none}
       description: An immutable content digest and its exact provenance, never its body.
       properties:
         evidence_id:
@@ -8063,6 +8064,7 @@ components:
       type: object
     DreamRootEvidenceGroup:
       additionalProperties: false
+      x-powercontext-omit-when: {scope_id: none}
       properties:
         group_id:
           type: string
