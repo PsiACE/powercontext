@@ -394,12 +394,13 @@ def test_run_use_checks_head_acceptors_and_current_authority_together(tmp_path: 
             with pytest.raises(AccessInvalidRequestError):
                 await _use(standing, runtime, rule, run.run_id, use="anything-else")
 
-            # A withdrawn contributor blocks the same single call.
+            # Withdrawing the authority that admitted a *required* origin blocks the
+            # same single call. Alice is the one this run actually reached.
             await access.revoke_binding(
                 ADMIN,
-                bindings["bob"].binding_id,
-                expected_version=bindings["bob"].version,
-                idempotency_key="revoke-bob",
+                bindings["alice"].binding_id,
+                expected_version=bindings["alice"].version,
+                idempotency_key="revoke-alice",
                 context=AUDIT,
             )
             with pytest.raises(AccessDeniedError):
@@ -452,6 +453,68 @@ def test_later_fact_needs_no_reacceptance_and_invalidation_closes_the_rule(tmp_p
                 await sharing.invalidate(rule.rule_id, rule.version)
             with pytest.raises(ShareRuleInvalidatedError):
                 await _use(standing, runtime, rule, later.run_id)
+
+    asyncio.run(scenario())
+
+
+def test_unused_contributor_withdrawal_does_not_veto_the_pinned_run(tmp_path: Path) -> None:
+    """Only the acceptors whose coverage this run needed are re-checked.
+
+    A run that reached only Alice must keep working after Bob's unused origin
+    authority is withdrawn; the same withdrawal blocks a run that really reached him.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "unused.db"
+        async with composed(database) as (runtime, access, standing):
+            alice, bob, orders = await _three_scopes(runtime)
+            bindings = await _seed(access, alice, bob, orders)
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            await _accept(standing, runtime, rule, "origin", (alice,), ALICE)
+            await _accept(standing, runtime, rule, "origin", (bob,), BOB)
+            await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+
+            # Only Alice has captured anything, so the pinned run reaches her alone.
+            await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="alice-only", content="Alice's fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                alice_only = await sharing.resolve(rule.rule_id)
+            assert alice_only.origin_scopes() == (alice,)
+            await _use(standing, runtime, rule, alice_only.run_id)
+
+            await access.revoke_binding(
+                ADMIN,
+                bindings["bob"].binding_id,
+                expected_version=bindings["bob"].version,
+                idempotency_key="revoke-unused-bob",
+                context=AUDIT,
+            )
+
+            # Bob never contributed an origin this run used, so it stays admissible.
+            await _use(standing, runtime, rule, alice_only.run_id)
+
+            # A run that really reached Bob is blocked by the same withdrawal.
+            await runtime.sources.for_scope(bob).capture(
+                CaptureSource(source_id="bob-fact", content="Bob's counterexample.", metadata={})
+            )
+            with run_as(RUNNER):
+                both = await sharing.resolve(rule.rule_id)
+            assert sorted(both.origin_scopes()) == sorted([alice, bob])
+            with pytest.raises(AccessDeniedError):
+                await _use(standing, runtime, rule, both.run_id)
 
     asyncio.run(scenario())
 

@@ -39,6 +39,7 @@ that passes a decoded request field instead.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -139,8 +140,8 @@ class StandingUseAuthorization:
         if claimed is None:
             claimed = tuple(binding.declared_scope_ids if side == "origin" else binding.audience_scope_ids)
         if not claimed:
-            # D's default target side is empty when no audience Scope was declared,
-            # which is a Scope-local conclusion rather than an empty agreement.
+            # D normalizes an empty raw audience to the target Scope, so a declared
+            # side is only empty when the version itself declares nothing to cover.
             raise AccessInvalidRequestError("shared_use_audience")
         accepted = await self.require_acceptance_authority(
             principal, rule, side, covered_scope_ids=claimed, context=context
@@ -190,7 +191,10 @@ class StandingUseAuthorization:
         await self._require_coverage(rule, run, coverage)
         await self._require_audience_member(principal, coverage, context)
         await self.require_acceptors_current(
-            await service.acceptances_for(rule.scope_id, rule_id, version), rule, context=context
+            await service.acceptances_for(rule.scope_id, rule_id, version),
+            rule,
+            required_origin_scope_ids=tuple(sorted(run.origin_scopes())),
+            context=context,
         )
         await self._require_checks(principal, self._execution_checks(rule, run), context)
         return StandingUseGrant(
@@ -213,22 +217,35 @@ class StandingUseAuthorization:
         acceptances: tuple[ShareAcceptance, ...],
         rule: ShareRule,
         *,
+        required_origin_scope_ids: Collection[str],
         context: AccessAuditContext,
     ) -> None:
-        """Recheck each accepting actor only for the coverage that actor recorded.
+        """Recheck the acceptors whose recorded coverage this run actually needs.
 
-        One withdrawn contributor therefore blocks a run without needing anyone to
-        stand in for the Scopes that contributor never covered. An acceptance that
-        covers nothing this run needs is not re-read, so an unrelated withdrawal
-        cannot block a genuinely covered contributor.
+        Only a Scope this pinned run required, and only a declared audience, can make
+        an acceptance necessary. A contributor who agreed to a Scope the run never
+        reached is not re-read, so losing authority nobody used cannot veto a
+        genuinely covered run -- while losing the authority that admitted a required
+        origin still blocks it.
         """
 
+        required = set(required_origin_scope_ids)
+        audiences = set(rule.terms_binding().audience_scope_ids)
+        # A declared range root covers the material its subtree qualifies, which is
+        # D's own expansion rule; reuse it instead of walking the Scope tree here.
+        root = rule.selection.root_scope_id
         for acceptance in acceptances:
-            if not acceptance.covered_scope_ids:
-                raise AccessDeniedError
-            checks = tuple(
-                item for _, item in self._coverage_checks(rule, acceptance.side, acceptance.covered_scope_ids)
-            )
+            recorded = set(acceptance.covered_scope_ids)
+            if acceptance.side == "origin":
+                # Needed when it names a required origin it recorded, or when it is the
+                # range acceptance whose subtree produced those origins.
+                relevant = recorded & (required | ({root} if root is not None and required else set()))
+            else:
+                relevant = audiences & recorded
+            if not relevant:
+                # This actor's agreement is not part of what admitted the run.
+                continue
+            checks = tuple(item for _, item in self._coverage_checks(rule, acceptance.side, tuple(sorted(relevant))))
             await self._require_checks(principal_ref(acceptance.actor), checks, context)
 
     # -- origin checks D calls during discovery ------------------------------
