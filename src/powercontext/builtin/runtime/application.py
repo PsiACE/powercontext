@@ -312,6 +312,7 @@ from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sharing.application import ShareApplication
+from powercontext.builtin.sharing.service import ShareAcceptanceValidator as StandingAcceptanceValidator
 from powercontext.builtin.sharing.service import ShareAuthorizer as StandingOriginAuthorizer
 from powercontext.builtin.sharing.service import ShareOriginCheck as StandingTargetAuthorizer
 from powercontext.builtin.sources import (
@@ -4503,19 +4504,28 @@ class BuiltinRuntime:
         authorize_origin: StandingOriginAuthorizer,
         *,
         authorize_target: StandingTargetAuthorizer | None = None,
+        validate_acceptance: StandingAcceptanceValidator | None = None,
     ) -> None:
         """Bind the trusted Access checks that own standing-agreement decisions.
 
         Only a Server adapter that can name the authenticated principal may bind
-        these, because a recorded rule term is an agreement, not a grant. Discovery
-        then rechecks every origin it reaches through ``authorize_origin``, and a run
-        start through ``authorize_target``.
+        these, because a recorded rule term is an agreement, not a grant. The three
+        checks are one contract, not alternatives: discovery rechecks every origin it
+        reaches through ``authorize_origin``, a rule action or run start through
+        ``authorize_target``, and every acceptance through ``validate_acceptance``
+        before its row is written. Binding here is the same seam composition uses, so
+        a Runtime configured after construction is bound as completely as one built
+        with the checks passed to ``open_builtin_runtime``.
         """
 
         self._standing_use_origin_authorizer = authorize_origin
         service = self.share_rules
         if service is not None:
-            service.configure_authorization(authorize_origin=authorize_origin, authorize_target=authorize_target)
+            service.configure_authorization(
+                authorize_origin=authorize_origin,
+                authorize_target=authorize_target,
+                authorize_acceptance=validate_acceptance,
+            )
 
     def configure_evidence_authorization(
         self,

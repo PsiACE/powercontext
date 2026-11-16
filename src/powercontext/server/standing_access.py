@@ -66,13 +66,19 @@ class StandingAccess:
         self.access = access
 
     def bind(self, runtime: BuiltinRuntime) -> None:
-        """Bind after construction, for callers that build the Runtime themselves.
+        """Bind the complete contract after construction.
 
-        Composition passes both checks to ``open_builtin_runtime`` directly; this
-        remains for embedding code that already holds a Runtime.
+        Composition passes the same three checks to ``open_builtin_runtime``; this is
+        the documented path for embedding code that already holds a Runtime. It binds
+        every check, including the acceptance validator, so a post-construction bind
+        is exactly as enforcing as factory construction.
         """
 
-        runtime.configure_standing_use_authorization(self.authorize_origin, authorize_target=self.authorize_target)
+        runtime.configure_standing_use_authorization(
+            self.authorize_origin,
+            authorize_target=self.authorize_target,
+            validate_acceptance=self.validate_acceptance,
+        )
 
     def attach(self, runtime: BuiltinRuntime) -> None:
         """Retain the Runtime the checks were composed with, for run-use entrypoints."""

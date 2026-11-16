@@ -94,6 +94,20 @@ async def composed(database: Path) -> AsyncIterator[tuple[BuiltinRuntime, Access
 
 
 @asynccontextmanager
+async def bound_after_construction(
+    database: Path,
+) -> AsyncIterator[tuple[BuiltinRuntime, AccessControlService, StandingAccess]]:
+    """The documented embedding path: build the Runtime, then bind the adapter."""
+
+    async with access_only(database) as access:
+        adapter = StandingAccess(access)
+        async with open_builtin_runtime(config(database)) as runtime:
+            adapter.bind(runtime)
+            adapter.attach(runtime)
+            yield runtime, access, adapter
+
+
+@asynccontextmanager
 async def access_only(database: Path) -> AsyncIterator[AccessControlService]:
     async with open_builtin_access_control(
         SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"), bootstrap_administrators=(ADMIN,)
@@ -517,6 +531,83 @@ def test_unused_contributor_withdrawal_does_not_veto_the_pinned_run(tmp_path: Pa
             assert sorted(both.origin_scopes()) == sorted([alice, bob])
             with pytest.raises(AccessDeniedError):
                 await _use(standing, runtime, rule, both.run_id)
+
+    asyncio.run(scenario())
+
+
+def test_post_construction_bind_enforces_the_same_acceptance_contract(tmp_path: Path) -> None:
+    """Binding after construction must enforce acceptance exactly like the factory.
+
+    This is the documented embedding path, not an unconfigured local SDK: the
+    Runtime is built plainly and the adapter is bound afterwards. A target
+    contributor naming the origin admin and the target owner must record nothing.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "post_bind.db"
+        async with bound_after_construction(database) as (runtime, access, standing):
+            alice, bob, orders = await _three_scopes(runtime)
+            await _seed(access, alice, bob, orders)
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    _rule(
+                        alice,
+                        bob,
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+
+            # FORGED: a target contributor naming other principals writes nothing.
+            with run_as(RUNNER):
+                with pytest.raises(AccessDeniedError):
+                    await sharing.accept(rule.rule_id, rule.version, "origin", actor="user:alice")
+                with pytest.raises(AccessDeniedError):
+                    await sharing.accept(rule.rule_id, rule.version, "target", actor="user:carol")
+            assert await sharing.agree(rule.rule_id, rule.version) == ()
+
+            # LEGITIMATE: each authenticated approver records its own part.
+            with run_as(ALICE):
+                await sharing.accept(
+                    rule.rule_id,
+                    rule.version,
+                    "origin",
+                    actor=principal_key(ALICE),
+                    covered_scope_ids=(alice,),
+                )
+            with run_as(BOB):
+                await sharing.accept(
+                    rule.rule_id,
+                    rule.version,
+                    "origin",
+                    actor=principal_key(BOB),
+                    covered_scope_ids=(bob,),
+                )
+            with run_as(CAROL):
+                await sharing.accept(
+                    rule.rule_id,
+                    rule.version,
+                    "target",
+                    actor=principal_key(CAROL),
+                    covered_scope_ids=(orders,),
+                )
+            recorded = await sharing.agree(rule.rule_id, rule.version)
+            assert {item.actor for item in recorded} == {principal_key(ALICE), principal_key(BOB), principal_key(CAROL)}
+
+            # MISSING PRINCIPAL: fails closed on the same public path.
+            with pytest.raises(AccessIdentityRequiredError):
+                await sharing.accept(rule.rule_id, rule.version, "origin", actor=principal_key(ALICE))
+
+            await runtime.sources.for_scope(alice).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                run = await sharing.resolve(rule.rule_id)
+            await _use(standing, runtime, rule, run.run_id)
 
     asyncio.run(scenario())
 
