@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
@@ -33,22 +35,24 @@ from powercontext.builtin.authz import (
 )
 from powercontext.builtin.authz.composition import open_builtin_access_control
 from powercontext.builtin.authz.shared_use import (
+    AcceptanceSide,
     SharedOrigin,
     SharedPermissionScope,
     SharedRetention,
     SharedUse,
+    SharedUseAcceptance,
     SharedUseAuthorization,
     SharedUseTerms,
 )
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.sources import SourceRef
+from powercontext.sources import SourceRef, SourceSequenceLocator
 
 DEPLOYMENT_ADMIN = PrincipalRef(type="service", id="deployment-admin")
-ORIGIN_AUTHOR = PrincipalRef(type="user", id="origin-author")
-ORIGIN_SCOPE_ADMIN = PrincipalRef(type="user", id="origin-scope-admin")
+ORIGIN_ADMIN = PrincipalRef(type="user", id="origin-admin")
 TARGET_ADMIN = PrincipalRef(type="user", id="target-admin")
 RUNNER = PrincipalRef(type="service", id="dream-runner")
 REVIEWER = PrincipalRef(type="user", id="reviewer")
+MEMBER = PrincipalRef(type="user", id="member")
 
 ORIGIN_SCOPE = "alice-work"
 TARGET_SCOPE = "orders"
@@ -74,22 +78,15 @@ async def _bind(service: AccessControlService, subject: PrincipalRef, scope_id: 
 
 
 async def _seed(service: AccessControlService, *, runner_reads_origin: bool = False):
-    """One origin author, one target project, one disclosure audience."""
+    """An origin admin, a target admin, and a runner with only execution rights."""
 
-    await service.establish_artifact_owner(
-        ResourceRef.artifact(ORIGIN_SCOPE, family=RETRY_TRACE.family, artifact_id=RETRY_TRACE.artifact_id),
-        ORIGIN_AUTHOR,
-        idempotency_key="owner-retry-trace",
-        context=AUDIT,
-    )
-    origin_approval = await _bind(
-        service, ORIGIN_SCOPE_ADMIN, ORIGIN_SCOPE, AccessRole.SCOPE_ADMIN, "origin-scope-admin"
-    )
+    origin_approval = await _bind(service, ORIGIN_ADMIN, ORIGIN_SCOPE, AccessRole.SCOPE_ADMIN, "origin-admin")
     await _bind(service, TARGET_ADMIN, TARGET_SCOPE, AccessRole.SCOPE_ADMIN, "target-admin")
     await _bind(service, TARGET_ADMIN, AUDIENCE_SCOPE, AccessRole.SCOPE_ADMIN, "audience-admin")
     await _bind(service, RUNNER, TARGET_SCOPE, AccessRole.SCOPE_CONTRIBUTOR, "runner-contributor")
     await _bind(service, REVIEWER, TARGET_SCOPE, AccessRole.SCOPE_REVIEWER, "reviewer")
     await _bind(service, REVIEWER, ORIGIN_SCOPE, AccessRole.SCOPE_VIEWER, "reviewer-origin-reader")
+    await _bind(service, MEMBER, TARGET_SCOPE, AccessRole.SCOPE_VIEWER, "member")
     if runner_reads_origin:
         await _bind(service, RUNNER, ORIGIN_SCOPE, AccessRole.SCOPE_VIEWER, "runner-origin-reader")
     return origin_approval
@@ -98,54 +95,62 @@ async def _seed(service: AccessControlService, *, runner_reads_origin: bool = Fa
 def _terms(
     *,
     audience_scope_ids: frozenset[str] = frozenset({TARGET_SCOPE, AUDIENCE_SCOPE}),
-    origin_approved_by: PrincipalRef = ORIGIN_SCOPE_ADMIN,
+    origins: tuple[SharedOrigin, ...] | None = None,
     retention: SharedRetention = SharedRetention.INDEPENDENT,
     permission_scope: SharedPermissionScope = SharedPermissionScope.LOGICAL,
 ) -> SharedUseTerms:
     return SharedUseTerms(
         target_scope_id=TARGET_SCOPE,
-        origins=(
+        origins=origins
+        or (
             SharedOrigin.of_artifact(ORIGIN_SCOPE, RETRY_TRACE),
             SharedOrigin.of_source(ORIGIN_SCOPE, INCIDENT),
         ),
         uses=frozenset({SharedUse.EVIDENCE}),
         audience_scope_ids=audience_scope_ids,
-        origin_approved_by=origin_approved_by,
-        target_approved_by=TARGET_ADMIN,
         retention=retention,
         permission_scope=permission_scope,
     )
 
 
-def test_agreed_use_admits_the_run_and_binds_its_terms() -> None:
+async def _accepted(shared: SharedUseAuthorization, terms: SharedUseTerms):
+    """The genuine path: each authority accepts its own half."""
+
+    return (
+        await shared.accept(ORIGIN_ADMIN, terms, context=AUDIT),
+        await shared.accept(TARGET_ADMIN, terms, context=AUDIT),
+    )
+
+
+def test_authenticated_acceptance_admits_the_run_and_binds_its_terms() -> None:
     async def scenario() -> None:
         async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
             await _seed(access, runner_reads_origin=True)
             shared = SharedUseAuthorization(access)
             terms = _terms()
+            acceptances = await _accepted(shared, terms)
+            assert {item.accepted_by for item in acceptances} == {ORIGIN_ADMIN, TARGET_ADMIN}
 
-            grant = await shared.require(RUNNER, terms, use=SharedUse.EVIDENCE, context=AUDIT)
+            grant = await shared.require(RUNNER, terms, acceptances=acceptances, use=SharedUse.EVIDENCE, context=AUDIT)
             assert grant.terms_digest == terms.digest
-            assert grant.audience_scope_ids == {TARGET_SCOPE, AUDIENCE_SCOPE}
-            assert grant.origins == terms.origins
-
-            # A retry against the same pinned terms still passes.
             assert (
                 await shared.recheck(
                     RUNNER,
                     terms,
+                    acceptances=acceptances,
                     use=SharedUse.EVIDENCE,
                     expected_digest=grant.terms_digest,
                     context=AUDIT,
                 )
             ).terms_digest == terms.digest
 
-            # Narrowing the audience changes the terms and is refused, not widened.
+            # Terms changed after acceptance are refused, not re-interpreted.
             narrowed = _terms(audience_scope_ids=frozenset({TARGET_SCOPE}))
             with pytest.raises(AccessConflictError):
                 await shared.recheck(
                     RUNNER,
                     narrowed,
+                    acceptances=acceptances,
                     use=SharedUse.EVIDENCE,
                     expected_digest=grant.terms_digest,
                     context=AUDIT,
@@ -154,93 +159,162 @@ def test_agreed_use_admits_the_run_and_binds_its_terms() -> None:
     asyncio.run(scenario())
 
 
-def test_reading_the_origin_and_writing_the_target_do_not_authorize_disclosure() -> None:
+def test_named_third_party_acceptance_without_an_act_is_denied() -> None:
     async def scenario() -> None:
         async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
-            await _seed(access)
-            await _bind(access, RUNNER, ORIGIN_SCOPE, AccessRole.SCOPE_VIEWER, "runner-origin-reader")
+            await _seed(access, runner_reads_origin=True)
             shared = SharedUseAuthorization(access)
+            terms = _terms()
+
+            # Naming a privileged principal is not that principal's agreement...
+            with pytest.raises(AccessDeniedError):
+                await shared.require(RUNNER, terms, acceptances=(), use=SharedUse.EVIDENCE, context=AUDIT)
+            # ...and neither is a hand-built acceptance claiming to be one.
+            forged = SharedUseAcceptance(
+                terms_digest=terms.digest,
+                accepted_by=ORIGIN_ADMIN,
+                sides=frozenset(AcceptanceSide),
+                accepted_at=datetime.now(UTC),
+                proof="0" * 64,
+            )
+            with pytest.raises(AccessDeniedError):
+                await shared.require(RUNNER, terms, acceptances=(forged,), use=SharedUse.EVIDENCE, context=AUDIT)
+
+    asyncio.run(scenario())
+
+
+def test_read_and_write_without_agreement_does_not_authorize_disclosure() -> None:
+    async def scenario() -> None:
+        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
+            await _seed(access, runner_reads_origin=True)
+            shared = SharedUseAuthorization(access)
+            terms = _terms()
 
             # The runner can read the origin and write the target...
             await access.require(RUNNER, AccessAction.SCOPE_READ, ResourceRef.scope(ORIGIN_SCOPE), context=AUDIT)
             await access.require(RUNNER, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(TARGET_SCOPE), context=AUDIT)
-            # ...but nobody with origin authority agreed to this use.
+            # ...but no agreement exists, so disclosure stays closed.
             with pytest.raises(AccessDeniedError):
-                await shared.require(
-                    RUNNER,
-                    _terms(origin_approved_by=ORIGIN_AUTHOR),
-                    use=SharedUse.EVIDENCE,
-                    context=AUDIT,
-                )
+                await shared.require(RUNNER, terms, acceptances=(), use=SharedUse.EVIDENCE, context=AUDIT)
 
     asyncio.run(scenario())
 
 
-def test_unauthorized_audience_and_use_are_refused() -> None:
+def test_acceptance_requires_authority_and_revocation_blocks_commit() -> None:
     async def scenario() -> None:
         async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
-            await _seed(access)
-            shared = SharedUseAuthorization(access)
-
-            # A Scope nobody administers on the target's behalf is not an audience.
-            with pytest.raises(AccessDeniedError):
-                await shared.require(
-                    RUNNER,
-                    _terms(audience_scope_ids=frozenset({TARGET_SCOPE, OTHER_SCOPE})),
-                    use=SharedUse.EVIDENCE,
-                    context=AUDIT,
-                )
-            # The target itself must always be able to read its conclusion.
-            with pytest.raises(AccessInvalidRequestError):
-                _terms(audience_scope_ids=frozenset({AUDIENCE_SCOPE}))
-
-    asyncio.run(scenario())
-
-
-def test_unsupported_restrictions_fail_closed() -> None:
-    async def scenario() -> None:
-        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
-            await _seed(access)
-            shared = SharedUseAuthorization(access)
-
-            unsupported = (
-                _terms(permission_scope=SharedPermissionScope.REVISION_ONLY),
-                _terms(retention=SharedRetention.WITHHOLD_ON_REVOCATION),
-            )
-            for terms in unsupported:
-                with pytest.raises(AccessInvalidRequestError):
-                    await shared.require(RUNNER, terms, use=SharedUse.EVIDENCE, context=AUDIT)
-
-    asyncio.run(scenario())
-
-
-def test_revoked_origin_approval_blocks_commit_and_evidence_inspection() -> None:
-    async def scenario() -> None:
-        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
-            origin_approval = await _seed(access, runner_reads_origin=True)
+            origin_binding = await _seed(access, runner_reads_origin=True)
             shared = SharedUseAuthorization(access)
             terms = _terms()
-            grant = await shared.require(RUNNER, terms, use=SharedUse.EVIDENCE, context=AUDIT)
 
-            # Reviewers can open the original evidence under their own origin grant.
+            # An actor without either authority cannot accept on anyone's behalf.
+            with pytest.raises(AccessDeniedError):
+                await shared.accept(RUNNER, terms, context=AUDIT)
+
+            acceptances = await _accepted(shared, terms)
+            grant = await shared.require(RUNNER, terms, acceptances=acceptances, use=SharedUse.EVIDENCE, context=AUDIT)
             await shared.require_evidence(REVIEWER, terms.origins[0], context=AUDIT)
 
             await access.revoke_binding(
                 DEPLOYMENT_ADMIN,
-                origin_approval.binding_id,
-                expected_version=origin_approval.version,
-                idempotency_key="withdraw-origin-approval",
+                origin_binding.binding_id,
+                expected_version=origin_binding.version,
+                idempotency_key="withdraw-origin-authority",
                 context=AUDIT,
             )
 
-            # The pending commit is blocked even though the recorded terms are unchanged.
+            # The recorded acceptance is unchanged; the authority behind it is gone.
             with pytest.raises(AccessDeniedError):
                 await shared.recheck(
                     RUNNER,
                     terms,
+                    acceptances=acceptances,
                     use=SharedUse.EVIDENCE,
                     expected_digest=grant.terms_digest,
                     context=AUDIT,
+                )
+
+    asyncio.run(scenario())
+
+
+def test_origins_differing_only_in_a_component_stay_distinct() -> None:
+    async def scenario() -> None:
+        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
+            await _seed(access, runner_reads_origin=True)
+            shared = SharedUseAuthorization(access)
+
+            split = SharedOrigin.of_source(ORIGIN_SCOPE, SourceRef(source_type="incident/x", source_id="y"))
+            joined = SharedOrigin.of_source(ORIGIN_SCOPE, SourceRef(source_type="incident", source_id="x/y"))
+            assert split.key != joined.key
+
+            # Distinct origins coexist in one run instead of colliding as duplicates.
+            terms = _terms(origins=(split, joined))
+            acceptances = await _accepted(shared, terms)
+            grant = await shared.require(RUNNER, terms, acceptances=acceptances, use=SharedUse.EVIDENCE, context=AUDIT)
+            assert grant.terms_digest == terms.digest
+
+            # A substituted origin is a different agreement, never admitted.
+            substituted = _terms(origins=(split,))
+            with pytest.raises(AccessConflictError):
+                await shared.recheck(
+                    RUNNER,
+                    substituted,
+                    acceptances=acceptances,
+                    use=SharedUse.EVIDENCE,
+                    expected_digest=grant.terms_digest,
+                    context=AUDIT,
+                )
+
+            # The pinned locator is part of the identity too.
+            first = SharedOrigin.of_source(
+                ORIGIN_SCOPE,
+                SourceRef(source_type="incident", source_id="i", locator=SourceSequenceLocator(sequence=1)),
+            )
+            second = SharedOrigin.of_source(
+                ORIGIN_SCOPE,
+                SourceRef(source_type="incident", source_id="i", locator=SourceSequenceLocator(sequence=2)),
+            )
+            assert first.key != second.key
+
+    asyncio.run(scenario())
+
+
+def test_unsupported_modes_are_refused_by_name_not_by_crash() -> None:
+    async def scenario() -> None:
+        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
+            await _seed(access, runner_reads_origin=True)
+            shared = SharedUseAuthorization(access)
+
+            restored = SharedUseTerms(
+                target_scope_id=TARGET_SCOPE,
+                origins=(SharedOrigin.of_artifact(ORIGIN_SCOPE, RETRY_TRACE),),
+                # Stored rules decode to plain strings; supported values are accepted.
+                uses=cast("frozenset[SharedUse]", frozenset({"evidence"})),
+                audience_scope_ids=frozenset({TARGET_SCOPE}),
+                retention=cast(SharedRetention, "independent"),
+                permission_scope=cast(SharedPermissionScope, "logical"),
+            )
+            assert restored.retention is SharedRetention.INDEPENDENT
+
+            for unsupported in (
+                _terms(permission_scope=SharedPermissionScope.REVISION_ONLY),
+                _terms(retention=SharedRetention.WITHHOLD_ON_REVOCATION),
+            ):
+                with pytest.raises(AccessInvalidRequestError):
+                    await shared.require(
+                        RUNNER,
+                        unsupported,
+                        acceptances=await _accepted(shared, unsupported),
+                        use=SharedUse.EVIDENCE,
+                        context=AUDIT,
+                    )
+            with pytest.raises(AccessInvalidRequestError):
+                SharedUseTerms(
+                    target_scope_id=TARGET_SCOPE,
+                    origins=(SharedOrigin.of_artifact(ORIGIN_SCOPE, RETRY_TRACE),),
+                    uses=frozenset({SharedUse.EVIDENCE}),
+                    audience_scope_ids=frozenset({TARGET_SCOPE}),
+                    retention=cast(SharedRetention, "erase_everything"),
                 )
 
     asyncio.run(scenario())
@@ -251,15 +325,11 @@ def test_retained_target_conclusion_is_readable_without_origin_evidence_access()
         async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(DEPLOYMENT_ADMIN,)) as access:
             await _seed(access)
             shared = SharedUseAuthorization(access)
-            member = PrincipalRef(type="user", id="member")
-            await _bind(access, member, TARGET_SCOPE, AccessRole.SCOPE_VIEWER, "member")
 
-            # The committed project conclusion is readable to the audience...
-            await access.require(member, AccessAction.SCOPE_READ, ResourceRef.scope(TARGET_SCOPE), context=AUDIT)
-            # ...while the private origin stays closed to that member.
+            await access.require(MEMBER, AccessAction.SCOPE_READ, ResourceRef.scope(TARGET_SCOPE), context=AUDIT)
             with pytest.raises(AccessDeniedError):
                 await shared.require_evidence(
-                    member, SharedOrigin.of_artifact(ORIGIN_SCOPE, RETRY_TRACE), context=AUDIT
+                    MEMBER, SharedOrigin.of_artifact(ORIGIN_SCOPE, RETRY_TRACE), context=AUDIT
                 )
 
     asyncio.run(scenario())
