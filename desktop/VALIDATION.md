@@ -3524,3 +3524,61 @@ record was not yet committed. Historical profiles retain their original evidence
 These results qualify the observed local SQLite protocol, not installed WebView
 behavior, native credential persistence, other platforms, external providers,
 native database upgrades or the formal release acceptance matrix.
+
+## Server 76711ccf artifact maintainer protocol qualification
+
+`sqlite-maintainer-76711ccf-v1` qualifies all thirteen bundled Desktop protocol
+operations against Server source `76711ccf3263551991ab4c217896b83e5301e0bc`, which adds
+`artifact.maintainer` to the `AccessRole` enum and grants it to shared Profiles.
+
+- Normalized OpenAPI SHA-256: `b4729b7690806ce60cba99e5b305792294b6b4d017a4dbf51079c724e7fcb4c4`.
+- Wheel: `powercontext-1.5.2.dev184+g76711ccf3-py3-none-any.whl`.
+- Wheel SHA-256: `3d6a1b3ee48e7d0f9cf8f2d70836550ef2096d88ac2e83c1fccc4d96db624d36`.
+- Native debug probe SHA-256: `b36c9970ab26192b1cc79ac91489b58613acc355910dd1142a67b55f793c44ea`.
+
+All 803 packaged Server and service-bootstrap runtime files match the clean Git source
+archive at that commit after CRLF normalization; no runtime file is missing, added or
+changed. The sorted runtime manifest digest is
+`5bf256dd45d67ec74cda3b237f507a5a0e8dc8b7e97dd32028a6bef5f5c7ab78`
+(one `wheel/path sha256` line per file, with a final newline). The wheel was built from
+that clean commit before this record was added.
+
+On 2026-11-16, Linux 7.1.13 x86_64 with glibc 2.43, Python 3.14.5 and Rust 1.96.0 passed
+all four modes of the unchanged `desktop/tests/real_server.py`: anonymous loopback, static
+Bearer, HTTPS with an explicit CA/base path, and enforced Provider access. The ordinary
+product `ConnectionManager` reported `bundled product records` and this exact record for
+all four modes. Checks cover discovery, connection identity, exact Scope selection,
+statistics, Memory save/search/exact revision reads, committed writes with lost responses
+without replay, and independent Server survival after client exit. Provider mode also
+checks Principal changes, same-identity revocation, scoped native authorization without
+Server observation permission, and 51 same-title Scopes. Statistics usage is controlled
+fixture input, not an external model-provider execution claim.
+
+This host lacks the WebKitGTK, `dbus-1` and OpenSSL development libraries, so the native
+probe could not be built from the full product manifest. It was compiled instead in an
+isolated protocol-only Cargo crate importing the unchanged product `connections`,
+`credentials`, `error`, Ops bridge, session-observation and `transport` modules through
+symlinks, plus the unchanged `server_probe.rs`. Every registry dependency version and
+checksum in that crate's lock file matches the product `desktop/src-tauri/Cargo.lock`; the
+only additional package is the disposable crate itself. The crate omits the Tauri/WebView
+shell and uses no `ci-fixtures`. This is not a full Desktop application build.
+
+The wheel and four-mode report are retained under ignored
+`desktop/.artifacts/server-wheel/` and `desktop/.artifacts/real-server.json`. The report
+marks the Desktop working tree dirty because this record was not yet committed when the run
+executed. Historical profiles retain their original source, contract, artifact and evidence
+identities. This qualifies the observed local SQLite protocol; it does not establish
+installed WebView behaviour, native credential persistence, other operating systems,
+external providers, OceanBase, native database upgrades or release acceptance.
+
+Reproduce against the recorded artifact:
+
+```sh
+uv build --wheel --out-dir desktop/.artifacts/server-wheel
+cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml --example server_probe
+uv run --no-sync python desktop/tests/real_server.py \
+  --product-qualification sqlite-maintainer-76711ccf-v1
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml \
+  --test session bundled_product_qualification_covers_every_desktop_operation
+make contract-test
+```
