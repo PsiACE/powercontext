@@ -260,6 +260,11 @@ def test_deletion_cuts_off_ordinary_runtime_reads_and_writes(tmp_path) -> None:
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
         async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            # These capabilities are optional in composition; the runtime under
+            # test is expected to provide them, so narrow once and use the typed
+            # references rather than suppressing the attribute access.
+            assert runtime.scopes is not None
+            assert runtime.scope_deletions is not None
             scope = await runtime.scopes.create(
                 ScopeDraft(title="Orders", summary="Project", idempotency_key="runtime")
             )
@@ -427,9 +432,7 @@ def test_deletion_preview_refuses_an_over_budget_range_instead_of_truncating(tmp
             # A one-node budget refuses rather than returning just the root.
             from powercontext.builtin.scope.models import ScopeRangeLimits
 
-            bounded = ScopeDeletionApplication(
-                scopes._database, scopes, limits=ScopeRangeLimits(max_nodes=1)
-            )
+            bounded = ScopeDeletionApplication(scopes._database, scopes, limits=ScopeRangeLimits(max_nodes=1))
             with pytest.raises(ScopeRangeLimitError):
                 await bounded.preview(selection)
             # Refusing the preview left every member writable.

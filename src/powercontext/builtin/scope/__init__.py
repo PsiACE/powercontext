@@ -58,6 +58,8 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str) -> Any:
     if name == "ScopeDeletionApplication":
+        # Imported lazily: `scope.deletion` reaches `persistence.scope_lifecycle`
+        # which imports `scope.errors`, so an eager import here would cycle.
         from powercontext.builtin.scope import deletion
 
         return deletion.ScopeDeletionApplication

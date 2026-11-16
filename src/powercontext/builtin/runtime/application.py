@@ -311,10 +311,10 @@ from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecove
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import (
     ScopeApplication,
-    ScopeDeletionApplication,
     ScopeDescriptor,
     ScopeSelection,
 )
+from powercontext.builtin.scope.deletion import ScopeDeletionApplication
 from powercontext.builtin.scope.errors import ScopeNotWritableError
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sources import (
@@ -4368,7 +4368,7 @@ class BuiltinRuntime:
         # Lifecycle deletion is a separate capability because it needs the Scope
         # application's structural resolution and its write lock, not a second
         # authority over Scope identity.
-        self.scope_deletions = (
+        self.scope_deletions: ScopeDeletionApplication | None = (
             None
             if scope_application is None or primary_database is None
             else ScopeDeletionApplication(primary_database, scope_application)

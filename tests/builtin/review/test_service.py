@@ -1073,9 +1073,12 @@ def test_archived_scope_refuses_a_candidate_that_was_queued_before_the_cutoff() 
                 ProposeExperienceRequest(proposal=_proposal(), sources=(source.source_ref,))
             )
 
-            # The owner stops ordinary writes in the named Scope.
-            scope = await runtime.scopes.get(scope_id)  # type: ignore[union-attr]
-            await runtime.scopes.archive(scope_id, scope.version)  # type: ignore[union-attr]
+            # The owner stops ordinary writes in the named Scope. Scope
+            # management is an optional capability in composition, so narrow it
+            # once here instead of suppressing each attribute access.
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.get(scope_id)
+            await runtime.scopes.archive(scope_id, scope.version)
 
             with pytest.raises(ScopeNotWritableError):
                 await runtime.review.for_scope(scope_id).approve(
