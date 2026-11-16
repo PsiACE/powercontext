@@ -14,27 +14,27 @@
 
 """B's authority on D's standing-rule record.
 
-D records which standing selector and terms an actor accepted; it deliberately
-does not check `artifact.share`, `scope.admin`, an audience or a retention. This
-module is the owning boundary that does, at the moments that matter:
+D records which standing selector and terms an actor accepted and deliberately
+checks no authority. This module is the owning boundary that does, at the moments
+that matter:
 
-* before an acceptance is written, that the *authenticated* actor really holds
-  the authority the coverage it claims needs,
+* before an acceptance is written, that the *authenticated* actor really holds the
+  authority the coverage it claims needs,
 * at discovery, that every origin a run reaches is still authorized for the
   execution principal,
-* when a pinned run is used, that the accepted coverage still holds and that the
-  accepting actors' authority has not been withdrawn.
+* when a pinned run is used, that the accepted coverage and the accepting actors'
+  authority both still hold.
 
 Two identities stay distinct on purpose. ``ShareTermsBinding.digest()`` binds the
-standing selector and terms, so an acceptance survives facts discovered later.
+standing selector and terms, so an agreement survives facts discovered later.
 ``SharedUseTerms.digest`` binds one run's exact origins, so a run cannot silently
-adopt a different input. This module never compares the two digests, never
-rewrites a standing acceptance as today's exact inputs, and never fabricates an
-acceptance id: durable coverage is read back from D's rows.
+adopt different inputs. This module never compares the two digests, never rewrites
+a standing acceptance as today's exact inputs, and never fabricates an acceptance
+id: durable coverage is read back from D's rows.
 
-**Trusted caller.** ``accept`` and the per-use rechecks take the principal the
-owning caller already authenticated. This boundary never resolves identity and
-cannot detect a caller that passes a decoded request field instead.
+**Trusted caller.** Every entry point takes the principal the owning caller already
+authenticated. This boundary never resolves identity and cannot detect a caller
+that passes a decoded request field instead.
 """
 
 from __future__ import annotations
@@ -51,6 +51,7 @@ from powercontext.builtin.sharing.models import (
     ShareAcceptanceSide,
     ShareRule,
     ShareRuleAcceptanceError,
+    ShareRuleInvalidatedError,
     ShareRun,
     ShareRunCoverage,
 )
@@ -59,21 +60,24 @@ from powercontext.sources import SourceRef
 if TYPE_CHECKING:
     from powercontext.builtin.sharing.service import ShareRuleService
 
-# D's retention labels and B's SharedRetention are different vocabularies; map the
-# one supported pair and refuse anything this boundary cannot enforce.
-_SUPPORTED_RETENTION = {"reference": "reference", "independent": "independent"}
+# D's retention labels. Only these two are meaningful; anything else is refused
+# rather than treated as an ignorable label.
+_SUPPORTED_RETENTION = frozenset({"reference", "independent"})
 
 
 @dataclass(frozen=True, slots=True)
 class StandingUseGrant:
-    """Content-free result of rechecking one pinned run against current authority."""
+    """Content-free result of admitting one pinned run for one requested use."""
 
     rule_id: str
     rule_version: int
     terms_digest: str
+    use: str
+    audience: str
     accepted_origin_scope_ids: tuple[str, ...]
     accepted_audience_scope_ids: tuple[str, ...]
     run_origin_scope_ids: tuple[str, ...]
+    acceptance_ids: tuple[str, ...]
 
 
 class StandingUseAuthorization:
@@ -86,7 +90,7 @@ class StandingUseAuthorization:
     def context(self, operation: str, request_id: str | None = None) -> AccessAuditContext:
         return AccessAuditContext(transport=self._transport, operation=operation, request_id=request_id)
 
-    # -- authority the acceptance itself needs --------------------------------
+    # -- acceptance -----------------------------------------------------------
 
     async def require_acceptance_authority(
         self,
@@ -99,26 +103,20 @@ class StandingUseAuthorization:
     ) -> tuple[str, ...]:
         """Return the coverage this acting principal may really accept, or refuse.
 
-        The caller passes what it claims to cover; anything outside the version's
-        declared range is refused by D. This narrows it further to Scopes where the
-        actor actually holds the authority for that side, so a verified identity
-        cannot sign for someone else's origin.
+        A Scope-wide agreement needs authority over that Scope for the material the
+        rule selects. An exact Artifact origin needs authority over that Artifact.
+        Partial authority is refused instead of silently recording coverage the
+        actor cannot back.
         """
 
         if principal is None:
             raise AccessDeniedError
-        self._require_supported_retention(rule)
-        targets = self._side_resources(rule, side, covered_scope_ids)
-        allowed: list[str] = []
-        for scope_id, resource, action in targets:
-            if await self._allowed(principal, action, resource, context):
-                allowed.append(scope_id)
-        if not allowed:
-            raise AccessDeniedError
-        if len(allowed) != len(targets):
-            # Partial authority would silently record coverage the actor cannot back.
-            raise AccessDeniedError
-        return tuple(allowed)
+        self._require_supported_terms(rule)
+        checks = self._coverage_checks(rule, side, covered_scope_ids)
+        for _, item in checks:
+            if not await self._allowed(principal, *item, context):
+                raise AccessDeniedError
+        return tuple(scope_id for scope_id, _ in checks)
 
     async def accept(
         self,
@@ -130,61 +128,84 @@ class StandingUseAuthorization:
         covered_scope_ids: tuple[str, ...] | None,
         context: AccessAuditContext,
     ) -> ShareAcceptance:
-        """Check this actor's authority, then record the durable acceptance in D."""
+        """Check this actor's authority, then record the durable acceptance in D.
 
+        ``covered_scope_ids=None`` means "the whole declared side", matching D's
+        own default. D reserves the row and its id; B never mints one.
+        """
+
+        binding = rule.terms_binding()
         claimed = covered_scope_ids
         if claimed is None:
-            claimed = tuple(
-                rule.terms_binding().declared_scope_ids if side == "origin" else rule.terms_binding().audience_scope_ids
-            )
+            claimed = tuple(binding.declared_scope_ids if side == "origin" else binding.audience_scope_ids)
+        if not claimed:
+            # D's default target side is empty when no audience Scope was declared,
+            # which is a Scope-local conclusion rather than an empty agreement.
+            raise AccessInvalidRequestError("shared_use_audience")
         accepted = await self.require_acceptance_authority(
             principal, rule, side, covered_scope_ids=claimed, context=context
         )
-        # D reserves the row and returns its durable id; B never mints one.
         return await service.accept(
             rule.scope_id, rule.rule_id, rule.version, side, actor=principal_key(principal), covered_scope_ids=accepted
         )
 
-    # -- current authority at discovery and use ------------------------------
+    # -- run use --------------------------------------------------------------
 
     async def require_run_use(
         self,
         principal: PrincipalRef | None,
-        rule: ShareRule,
-        run: ShareRun,
-        coverage: ShareRunCoverage,
+        service: ShareRuleService,
         *,
+        scope_id: str,
+        rule_id: str,
+        version: int,
+        run_id: str,
+        use: str,
         context: AccessAuditContext,
     ) -> StandingUseGrant:
-        """Recheck a pinned run before its evidence is used or its result approved.
+        """Admit one pinned run from authoritative ids, checking everything once.
 
-        Covers the execution principal's origin read and target write authority, the
-        recorded audience coverage, and each accepting actor's still-current
-        authority over exactly the coverage that actor recorded.
+        Loads the rule version, run, recorded agreement and coverage from D, then
+        checks the current head status and selector binding, the requested use and
+        declared audience against the accepted terms, the accepting actors, and the
+        execution principal's origin read and target write authority together. A
+        caller cannot pass a coverage, digest or acceptance of its own.
         """
 
         if principal is None:
             raise AccessDeniedError
-        self._require_supported_retention(rule)
-        if run.rule_id != rule.rule_id or run.rule_version != rule.version:
+        rule = await _rule(service, scope_id, rule_id, version)
+        self._require_supported_terms(rule)
+        if use != rule.terms.use:
+            # Requested use must be the accepted one, not any non-empty label.
+            raise AccessInvalidRequestError("shared_use_not_agreed")
+        run = await service.get_run(rule.scope_id, run_id)
+        if run.rule_id != rule_id or run.rule_version != version:
             raise AccessInvalidRequestError("shared_use_terms")
-        if not coverage.audiences_covered:
-            # A declared audience nobody accepted is not a suppressed audience.
-            raise AccessDeniedError
-        if not set(run.origin_scopes()) <= set(coverage.accepted_origin_scope_ids):
-            raise AccessDeniedError
-        for scope_id in sorted(coverage.declared_audience_scope_ids):
-            if not await self._allowed(principal, AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id), context):
-                # The reading principal must actually belong to the accepted audience.
-                raise AccessDeniedError
+        coverage = await service.coverage(rule.scope_id, rule_id, version)
+        if coverage.terms_digest != rule.terms_binding().digest():
+            # The accepting actors agreed to a different standing selector.
+            raise AccessInvalidRequestError("shared_use_terms")
+        await self._require_head_status(service, rule)
+        await self._require_coverage(rule, run, coverage)
+        await self._require_audience_member(principal, coverage, context)
+        await self.require_acceptors_current(
+            await service.acceptances_for(rule.scope_id, rule_id, version), rule, context=context
+        )
         await self._require_checks(principal, self._execution_checks(rule, run), context)
         return StandingUseGrant(
-            rule_id=rule.rule_id,
-            rule_version=rule.version,
+            rule_id=rule_id,
+            rule_version=version,
             terms_digest=coverage.terms_digest,
+            use=rule.terms.use,
+            audience=rule.terms.audience,
             accepted_origin_scope_ids=coverage.accepted_origin_scope_ids,
             accepted_audience_scope_ids=coverage.accepted_audience_scope_ids,
             run_origin_scope_ids=coverage.run_origin_scope_ids,
+            acceptance_ids=tuple(
+                acceptance.acceptance_id
+                for acceptance in await service.acceptances_for(rule.scope_id, rule_id, version)
+            ),
         )
 
     async def require_acceptors_current(
@@ -197,31 +218,20 @@ class StandingUseAuthorization:
         """Recheck each accepting actor only for the coverage that actor recorded.
 
         One withdrawn contributor therefore blocks a run without needing anyone to
-        stand in for the Scopes that contributor never covered.
+        stand in for the Scopes that contributor never covered. An acceptance that
+        covers nothing this run needs is not re-read, so an unrelated withdrawal
+        cannot block a genuinely covered contributor.
         """
 
         for acceptance in acceptances:
             if not acceptance.covered_scope_ids:
                 raise AccessDeniedError
-            # Only the Scopes this actor recorded, never the run's whole origin set.
             checks = tuple(
-                (action, resource)
-                for _, resource, action in self._side_resources(rule, acceptance.side, acceptance.covered_scope_ids)
+                item for _, item in self._coverage_checks(rule, acceptance.side, acceptance.covered_scope_ids)
             )
             await self._require_checks(principal_ref(acceptance.actor), checks, context)
 
     # -- origin checks D calls during discovery ------------------------------
-
-    async def require_target(
-        self,
-        principal: PrincipalRef | None,
-        scope_id: str,
-        *,
-        context: AccessAuditContext,
-    ) -> None:
-        """Require current write authority in the target before a run starts."""
-
-        await self._require_checks(principal, ((AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(scope_id)),), context)
 
     async def require_origin(
         self,
@@ -253,26 +263,92 @@ class StandingUseAuthorization:
             return
         await self._require_checks(principal, ((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)),), context)
 
+    async def require_target(
+        self,
+        principal: PrincipalRef | None,
+        scope_id: str,
+        *,
+        context: AccessAuditContext,
+    ) -> None:
+        """Require current authority in the target before a rule action or run starts.
+
+        D uses one callback for managing a rule and for starting its evaluation, so
+        this accepts either: an administrator owns the rule, an executor runs it.
+        """
+
+        if principal is None:
+            raise AccessDeniedError
+        for action in (AccessAction.SCOPE_ADMIN, AccessAction.SCOPE_CONTRIBUTE):
+            if await self._allowed(principal, action, ResourceRef.scope(scope_id), context):
+                return
+        raise AccessDeniedError
+
     # -- helpers -------------------------------------------------------------
 
-    def _require_supported_retention(self, rule: ShareRule) -> None:
+    def _require_supported_terms(self, rule: ShareRule) -> None:
         if rule.terms.retention not in _SUPPORTED_RETENTION:
             # An unknown retention is not a silently ignorable label.
             raise AccessInvalidRequestError("shared_use_retention")
         if not rule.terms.use or not rule.terms.audience:
             raise AccessInvalidRequestError("shared_use_not_agreed")
 
-    def _side_resources(
+    async def _require_head_status(self, service: ShareRuleService, rule: ShareRule) -> None:
+        head = await service.get(rule.scope_id, rule.rule_id)
+        if head.status != "active" or head.version != rule.version:
+            # An invalidated rule or a superseded version is not a live agreement.
+            raise ShareRuleInvalidatedError(rule.rule_id)
+
+    async def _require_audience_member(
+        self,
+        principal: PrincipalRef,
+        coverage: ShareRunCoverage,
+        context: AccessAuditContext,
+    ) -> None:
+        """The reading principal must belong to the declared audience.
+
+        Membership and execution rights, not its administration: an executor that may
+        write the target is an authorized consumer even without `scope.admin` there.
+        """
+
+        for scope_id in sorted(coverage.declared_audience_scope_ids):
+            checks = (
+                (AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)),
+                (AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(scope_id)),
+            )
+            if not any([await self._allowed(principal, *item, context) for item in checks]):
+                raise AccessDeniedError
+
+    async def _require_coverage(self, rule: ShareRule, run: ShareRun, coverage: ShareRunCoverage) -> None:
+        if not coverage.audiences_covered:
+            # A declared audience nobody accepted is not a suppressed audience.
+            raise AccessDeniedError
+        # Use D's own coverage contract rather than re-deriving set membership here,
+        # so a corrected expansion in D's reader is inherited instead of duplicated.
+        if not coverage.origins_covered:
+            raise ShareRuleAcceptanceError(rule.rule_id, rule.version, "origin:recorded")
+        if not set(run.origin_scopes()) <= set(coverage.accepted_origin_scope_ids):
+            # A required origin outside what the record covers breaks the agreement.
+            raise ShareRuleAcceptanceError(rule.rule_id, rule.version, "origin:run")
+
+    def _coverage_checks(
         self,
         rule: ShareRule,
         side: ShareAcceptanceSide,
         scope_ids: tuple[str, ...],
-    ) -> tuple[tuple[str, ResourceRef, AccessAction], ...]:
-        if side == "origin":
-            action = AccessAction.ARTIFACT_SHARE if rule.terms_binding().artifact_families else AccessAction.SCOPE_ADMIN
-        else:
-            action = AccessAction.SCOPE_ADMIN
-        return tuple((scope_id, ResourceRef.scope(scope_id), action) for scope_id in scope_ids)
+    ) -> tuple[tuple[str, tuple[AccessAction, ResourceRef]], ...]:
+        """Authority one actor needs for the part of the agreement it claims.
+
+        Origin coverage is a claim about a Scope's material, so the Scope
+        administrator agrees to it: ``artifact.share`` is Artifact-level and invalid
+        on a Scope resource, and ``scope.contribute`` only admits local writes.
+        Audience coverage is membership of the declaring Scope, which the Scope
+        administration decides; it never requires the audience member's consent.
+        """
+
+        # Both sides are a declaration about a Scope, so its administrator is who
+        # agrees. Consumer eligibility is a separate check at use time; making it the
+        # acceptance condition would confuse manager consent with membership.
+        return tuple((scope_id, (AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id))) for scope_id in scope_ids)
 
     def _execution_checks(self, rule: ShareRule, run: ShareRun) -> tuple[tuple[AccessAction, ResourceRef], ...]:
         checks: list[tuple[AccessAction, ResourceRef]] = [
@@ -315,6 +391,10 @@ class StandingUseAuthorization:
             return
         for action, resource in checks:
             await self.access.require(principal, action, resource, context=context)
+
+
+async def _rule(service: ShareRuleService, scope_id: str, rule_id: str, version: int) -> ShareRule:
+    return await service.get(scope_id, rule_id, version=version)
 
 
 def principal_key(principal: PrincipalRef | None) -> str:

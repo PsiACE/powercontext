@@ -229,7 +229,7 @@ from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecove
 from powercontext.builtin.runtime.topic_memory_scope import topic_memory_processing_block
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.runtime.worker_observability import worker_model_usage_collector
-from powercontext.builtin.sharing.service import ShareAuthorizer, ShareRuleService
+from powercontext.builtin.sharing.service import ShareAuthorizer, ShareOriginCheck, ShareRuleService
 from powercontext.builtin.sources import (
     BUILTIN_SOURCE_REGISTRY,
     TEXT_EVIDENCE_PROJECTION_KEY,
@@ -570,6 +570,7 @@ async def open_builtin_runtime(  # noqa: C901
     handoff_verification_keys: tuple[bytes, ...] = (),
     recall_effort_sink: RecallEffortSink | None = None,
     share_rule_authorizer: ShareAuthorizer | None = None,
+    share_rule_target_check: ShareOriginCheck | None = None,
     dispatch_processing: bool = True,
     _archive_recovery: bool = False,
 ) -> AsyncIterator[BuiltinRuntime]:
@@ -935,6 +936,7 @@ async def open_builtin_runtime(  # noqa: C901
                     contexts.repositories.sources,
                     contexts.repositories.artifacts,
                     authorize_origin=share_rule_authorizer,
+                    authorize_target=share_rule_target_check,
                 ),
                 readiness=RuntimeReadinessChecks(
                     readiness_probes,

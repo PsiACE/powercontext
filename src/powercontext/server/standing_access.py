@@ -22,12 +22,13 @@ and never mints an acceptance id.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from powercontext.artifacts import ArtifactAddress
-from powercontext.builtin.authz.errors import AccessIdentityRequiredError
+from powercontext.builtin.authz.errors import AccessIdentityRequiredError, AccessUnavailableError
 from powercontext.builtin.authz.service import AccessControlService
-from powercontext.builtin.authz.standing_use import StandingUseAuthorization
+from powercontext.builtin.authz.standing_use import StandingUseAuthorization, StandingUseGrant
 from powercontext.server.context import current_principal, current_request_id
 
 if TYPE_CHECKING:
@@ -39,6 +40,13 @@ if TYPE_CHECKING:
     from powercontext.sources import SourceRef
 
     OriginReference: TypeAlias = ArtifactAddress | SourceRef
+
+
+# Task-local: an acceptance call has already been authorized by B over exactly the
+# coverage the actor claims, so D's blanket target check must not veto a contributor
+# who administers only its own origin. A ContextVar keeps this per-request instead of
+# mutating a shared callback.
+_ACCEPTING: ContextVar[bool] = ContextVar("powercontext_standing_accepting", default=False)
 
 
 class StandingAccess:
@@ -53,7 +61,25 @@ class StandingAccess:
         self.access = access
 
     def bind(self, runtime: BuiltinRuntime) -> None:
+        """Bind after construction, for callers that build the Runtime themselves.
+
+        Composition passes both checks to ``open_builtin_runtime`` directly; this
+        remains for embedding code that already holds a Runtime.
+        """
+
         runtime.configure_standing_use_authorization(self.authorize_origin, authorize_target=self.authorize_target)
+
+    def attach(self, runtime: BuiltinRuntime) -> None:
+        """Retain the Runtime the checks were composed with, for run-use entrypoints."""
+
+        self._runtime = runtime
+
+    @property
+    def service(self) -> ShareRuleService:
+        service = getattr(self, "_runtime", None)
+        if service is None or service.share_rules is None:
+            raise AccessUnavailableError("standing_rules_unavailable")
+        return service.share_rules
 
     async def authorize_origin(self, scope_id: str, reference: OriginReference) -> None:
         """Discovery reached this origin: require the caller's current read authority."""
@@ -63,8 +89,17 @@ class StandingAccess:
         )
 
     async def authorize_target(self, scope_id: str) -> None:
-        """A run is starting or continuing in the target: require current write authority."""
+        """A rule action or run start: require current authority in the target.
 
+        D reuses this callback for managing a rule, starting its evaluation and
+        recording an acceptance. During an acceptance B has already checked the
+        actor's authority over the exact coverage it claims, and a contributor that
+        administers only its own origin must not be required to administer the
+        target as well.
+        """
+
+        if _ACCEPTING.get():
+            return
         await self.standing.require_target(self._principal(), scope_id, context=self._context("share_run_target"))
 
     async def accept(
@@ -75,15 +110,52 @@ class StandingAccess:
         *,
         covered_scope_ids: tuple[str, ...] | None = None,
     ) -> ShareAcceptance:
-        """Record the authenticated caller's own acceptance of this rule version."""
+        """Record the authenticated caller's own acceptance of this rule version.
 
-        return await self.standing.accept(
-            service,
+        The actor's authority over the part it claims is checked here, before D
+        reserves the row, so no target-wide administration is implied.
+        """
+
+        token = _ACCEPTING.set(True)
+        try:
+            return await self.standing.accept(
+                service,
+                self._principal(),
+                rule,
+                side,
+                covered_scope_ids=covered_scope_ids,
+                context=self._context("share_rule_accept"),
+            )
+        finally:
+            _ACCEPTING.reset(token)
+
+    async def require_run_use(
+        self,
+        service: ShareRuleService,
+        *,
+        scope_id: str,
+        rule_id: str,
+        version: int,
+        run_id: str,
+        use: str,
+    ) -> StandingUseGrant:
+        """Admit one pinned run for one requested use as the authenticated caller.
+
+        Loads the rule version, run, recorded agreement and coverage from D, then
+        checks the head status, requested use, acceptors and the caller's own origin
+        read and target write together. No coverage or digest is taken from the
+        caller.
+        """
+
+        return await self.standing.require_run_use(
             self._principal(),
-            rule,
-            side,
-            covered_scope_ids=covered_scope_ids,
-            context=self._context("share_rule_accept"),
+            service,
+            scope_id=scope_id,
+            rule_id=rule_id,
+            version=version,
+            run_id=run_id,
+            use=use,
+            context=self._context("share_run_use"),
         )
 
     def _principal(self):

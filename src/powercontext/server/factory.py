@@ -105,6 +105,7 @@ from powercontext.server.plugins import PluginManager
 from powercontext.server.processing_security import build_host_security, build_worker_security
 from powercontext.server.request_id import HttpRequestIdMiddleware
 from powercontext.server.settings import MissingAuthenticationProviderError, ServerSettings
+from powercontext.server.standing_access import StandingAccess
 from powercontext.server.tracing import HttpTracingMiddleware, ServerTracing
 from powercontext.server.worker_tracing import WorkerTracing
 
@@ -265,6 +266,11 @@ def create_server_app(  # noqa: C901
                 if resolved.access.mode == "enforced" and isinstance(active_access_control, AccessControlService)
                 else None
             )
+            standing_access = (
+                StandingAccess(active_access_control)
+                if resolved.access.mode == "enforced" and isinstance(active_access_control, AccessControlService)
+                else None
+            )
             worker_security = build_worker_security(
                 resolved,
                 active_access_control,
@@ -313,6 +319,8 @@ def create_server_app(  # noqa: C901
                         and (profile_generator is not None or config.inference.generation_model is not None),
                         legacy_static_principal=static_principal if legacy_static_admin else None,
                     ),
+                    share_rule_authorizer=None if standing_access is None else standing_access.authorize_origin,
+                    share_rule_target_check=None if standing_access is None else standing_access.authorize_target,
                     cursor_secret=cursor_secret,
                     handoff_verification_keys=tuple(
                         secret.get_secret_value().encode()
@@ -329,6 +337,9 @@ def create_server_app(  # noqa: C901
                 await recovery.initialize()
                 app.state.owner_recovery = recovery
                 await resources.enter_async_context(recovery.monitor())
+            if standing_access is not None:
+                # Retain the adapter so the run-use entrypoint can reach the service.
+                standing_access.attach(runtime)
             server_id = await _initialize_server_identity(runtime, cursor_secret)
             records = runtime._records()
             if not isinstance(records, RelationalRecordService):
