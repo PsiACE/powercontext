@@ -141,11 +141,18 @@ from powercontext.builtin.code.models import CodeConfig, CodeQueryRequest, CodeQ
 from powercontext.builtin.code.service import CodeService
 from powercontext.builtin.context import BuiltinArtifacts, BuiltinSources
 from powercontext.builtin.dream.application import DreamApplication
-from powercontext.builtin.dream.service import CandidateAttester, DreamAuthorizer, DreamService
+from powercontext.builtin.dream.service import (
+    CandidateAttester,
+    CandidateUseCheck,
+    DreamAuthorizer,
+    DreamService,
+    RunUseCheck,
+)
 from powercontext.builtin.evidence.resolver import (
     AuthorizationContext,
     ScopedEvidenceAuthorizer,
     ScopedEvidenceBatchAuthorizer,
+    ScopedUseAuthorizer,
 )
 from powercontext.builtin.inference import (
     EmbeddingModel,
@@ -318,6 +325,10 @@ from powercontext.builtin.scope import (
 from powercontext.builtin.scope.deletion import ScopeDeletionApplication
 from powercontext.builtin.scope.errors import ScopeNotWritableError
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
+from powercontext.builtin.sharing.application import ShareApplication
+from powercontext.builtin.sharing.service import ShareAcceptanceValidator as StandingAcceptanceValidator
+from powercontext.builtin.sharing.service import ShareAuthorizer as StandingOriginAuthorizer
+from powercontext.builtin.sharing.service import ShareOriginCheck as StandingTargetAuthorizer
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_ADAPTER,
     CONTENT_SOURCE_NAME,
@@ -374,6 +385,7 @@ if TYPE_CHECKING:
     from powercontext.builtin.portability import PortableBundleService
     from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
     from powercontext.builtin.runtime.scope_reads import ScopeReadSnapshot
+    from powercontext.builtin.sharing.service import ShareRuleService
 
 
 class TopicMemorySearch(Protocol):
@@ -4273,6 +4285,7 @@ class BuiltinRuntime:
         publication_application: ArtifactPublicationApplication | None = None,
         scope_application: ScopeApplication | None = None,
         scope_deletion_application: ScopeDeletionApplication | None = None,
+        share_rule_service: ShareRuleService | None = None,
         readiness: RuntimeReadinessChecks | None = None,
         clock: Clock | None = None,
         tracing: RuntimeTracing | None = None,
@@ -4308,6 +4321,8 @@ class BuiltinRuntime:
         self._generation_service = generation_service
         self._dream_service = dream_service
         self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        self._review_use_checker: CandidateUseCheck | None = None
+        self._standing_use_origin_authorizer: StandingOriginAuthorizer | None = None
         self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
         self._review_evidence_batch_authorizer: ScopedEvidenceBatchAuthorizer | None = None
@@ -4367,10 +4382,12 @@ class BuiltinRuntime:
         self.decision_model = decision_model
         self.publications = publication_application
         self.scopes = scope_application
+        # Standing rules require the Scope application: they name target and origins.
         # Lifecycle deletion is a separate capability because it needs the Scope
         # application's structural resolution and its write lock, not a second
         # authority over Scope identity.
         self.scope_deletions: ScopeDeletionApplication | None = scope_deletion_application
+        self.share_rules = share_rule_service if scope_application is not None else None
         self._scope_operations: dict[tuple[asyncio.Task[Any] | None, str], ScopeDescriptor] = {}
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness
         self._clock = _utc_now if clock is None else clock
@@ -4397,8 +4414,9 @@ class BuiltinRuntime:
         self.bootstrap = BootstrapApplication(self)
         self.experience = ExperienceApplication(self)
         self.artifacts = ArtifactApplication(self)
-        self.cross_scope = CrossScopeQueryApplication(self)
         self.dream = DreamApplication(self)
+        self.cross_scope = CrossScopeQueryApplication(self)
+        self.sharing = ShareApplication(self)
         self.external_skills = ExternalSkillApplication(self)
         self.handoff = HandoffApplication(self)
         self.work = WorkApplication(self)
@@ -4518,6 +4536,57 @@ class BuiltinRuntime:
             },
         )
 
+    def configure_standing_use_authorization(
+        self,
+        authorize_origin: StandingOriginAuthorizer,
+        *,
+        authorize_target: StandingTargetAuthorizer | None = None,
+        validate_acceptance: StandingAcceptanceValidator | None = None,
+    ) -> None:
+        """Bind the trusted Access checks that own standing-agreement decisions.
+
+        Only a Server adapter that can name the authenticated principal may bind
+        these, because a recorded rule term is an agreement, not a grant. The three
+        checks are one contract, not alternatives: discovery rechecks every origin it
+        reaches through ``authorize_origin``, a rule action or run start through
+        ``authorize_target``, and every acceptance through ``validate_acceptance``
+        before its row is written. Binding here is the same seam composition uses, so
+        a Runtime configured after construction is bound as completely as one built
+        with the checks passed to ``open_builtin_runtime``.
+        """
+
+        self._standing_use_origin_authorizer = authorize_origin
+        service = self.share_rules
+        if service is not None:
+            service.configure_authorization(
+                authorize_origin=authorize_origin,
+                authorize_target=authorize_target,
+                authorize_acceptance=validate_acceptance,
+            )
+
+    def configure_dream_shared_use(
+        self,
+        *,
+        check_run_use: RunUseCheck | None,
+        check_candidate_use: CandidateUseCheck | None,
+        authorize_origin_use: ScopedUseAuthorizer | None = None,
+        bind_executor: Callable[[str], object] | None = None,
+        clear_executor: Callable[[object], None] | None = None,
+    ) -> None:
+        """Bind the agreed-use gates for Dream runs and their Candidates.
+
+        Kept separate from the evidence/Review wiring so a Server that already
+        composed those can add standing-use enforcement without rebinding policy.
+        """
+
+        self._review_use_checker = check_candidate_use
+        if self._dream_service is not None:
+            self._dream_service.check_run_use = check_run_use
+            if authorize_origin_use is not None:
+                self._dream_service.authorize_use = authorize_origin_use
+            self._dream_service.bind_executor = bind_executor
+            self._dream_service.clear_executor = clear_executor
+
     def configure_evidence_authorization(
         self,
         *,
@@ -4526,6 +4595,8 @@ class BuiltinRuntime:
         context: AuthorizationContext,
         attest_candidate: CandidateAttester,
         authorize_candidate: CandidateAttester | None = None,
+        check_run_use: RunUseCheck | None = None,
+        check_candidate_use: CandidateUseCheck | None = None,
         catalog_action: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None,
         review_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None,
         review_many: ScopedEvidenceBatchAuthorizer | None = None,
@@ -4537,7 +4608,9 @@ class BuiltinRuntime:
         self._review_evidence_authorizer = review
         self._review_evidence_batch_authorizer = review_many
         self._review_authorization_context = context
+        self._review_use_checker = check_candidate_use
         if self._dream_service is not None:
+            self._dream_service.check_run_use = check_run_use
             self._dream_service.authorize = dream
             self._dream_service.authorization_context = context
             self._dream_service.attest_candidate = attest_candidate
@@ -4595,9 +4668,7 @@ class BuiltinRuntime:
             registered = await self.scopes.get(scope)
             # One serving boundary decides availability for every scoped read and
             # write, so a deleting Scope stops ordinary reads, historical
-            # readback, search, Prepare and plugin reads at the same point. The
-            # descriptor is already read here; a cached composition cannot serve
-            # content for a Scope whose cutoff has taken effect.
+            # readback, search, Prepare and plugin reads at the same point.
             _require_available(registered)
             with self._scope_cache.lease(scope):
                 self._scope_operations[key] = registered
@@ -4713,6 +4784,7 @@ class BuiltinRuntime:
         scope = validate_scope_id(scope_id)
         service = self._review_service(scope)
         service.authorize_action = self._review_action_authorizer
+        service.check_candidate_use = self._review_use_checker
         authorizer = self._review_evidence_authorizer
         if authorizer is not None:
             service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)

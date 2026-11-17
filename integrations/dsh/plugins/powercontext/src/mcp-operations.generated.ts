@@ -96,7 +96,7 @@ export const MCP_OPERATIONS = {
     "readOnly": true
   },
   "get_scope_deletion": {
-    "readOnly": false
+    "readOnly": true
   },
   "get_skill": {
     "readOnly": true

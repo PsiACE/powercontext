@@ -42,6 +42,7 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.client import PowerContextClient, ServerResponseError
+from powercontext.http import ConfirmScopeDeletionRequest, ScopeDeletionPreviewRequest
 from powercontext.server.app import ServerApplication, create_app
 from powercontext.server.authentication import StaticBearerAuthenticationProvider
 from powercontext.server.middleware import AuthenticationMiddleware
@@ -50,6 +51,7 @@ from tests.e2e.dream_support import open_dream_runtime
 ADMIN = PrincipalRef(type="service", id="lifecycle-admin")
 MANAGER = PrincipalRef(type="user", id="lifecycle-manager")
 READER = PrincipalRef(type="user", id="lifecycle-reader")
+OBSERVER = PrincipalRef(type="user", id="lifecycle-observer")
 AUDIT = AccessAuditContext(transport="http", operation="lifecycle", request_id="lifecycle")
 DEPLOYMENT_ID = "lifecycle-public"
 
@@ -57,9 +59,12 @@ DEPLOYMENT_ID = "lifecycle-public"
 def test_scope_archive_and_confirmed_deletion_over_public_contract(tmp_path: Path) -> None:
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'lifecycle.db'}")
-        async with open_builtin_access_control(
-            database, bootstrap_administrators=(ADMIN,), deployment_id=DEPLOYMENT_ID
-        ) as access, open_dream_runtime(BuiltinConfig(database=database, runtime=RuntimeConfig())) as runtime:
+        async with (
+            open_builtin_access_control(
+                database, bootstrap_administrators=(ADMIN,), deployment_id=DEPLOYMENT_ID
+            ) as access,
+            open_dream_runtime(BuiltinConfig(database=database, runtime=RuntimeConfig())) as runtime,
+        ):
             assert runtime.scopes is not None
             root = await runtime.scopes.create(ScopeDraft(title="Orders", summary="r", idempotency_key="r"))
             child = await runtime.scopes.create(
@@ -82,18 +87,6 @@ def test_scope_archive_and_confirmed_deletion_over_public_contract(tmp_path: Pat
                         context=AUDIT,
                     )
 
-            # Reading an operation whose confirmed members are gone needs deployment
-            # observation; this build records no separate requester.
-            await access.create_binding(
-                ADMIN,
-                CreateBinding(
-                    subject=MANAGER,
-                    resource=ResourceRef.server(DEPLOYMENT_ID),
-                    role=AccessRole.SERVER_OBSERVER,
-                    idempotency_key="manager-observer",
-                ),
-                context=AUDIT,
-            )
             def app_for(principal: PrincipalRef) -> tuple[Any, dict[str, str]]:
                 token = f"{principal.id}-token"
                 provider = StaticBearerAuthenticationProvider(token, principal)
@@ -194,8 +187,48 @@ def test_scope_archive_and_confirmed_deletion_over_public_contract(tmp_path: Pat
                         "confirmed_digest": digest,
                     },
                 )
-                assert confirmed.status_code in {200, 202}, confirmed.text
+                # The operation is accepted durably, so the declared success is 202
+                # whether or not cleanup already finished in this call.
+                assert confirmed.status_code == 202, confirmed.text
                 receipt = confirmed.json()
+                # The real SDK accepts that success status, so a completed cleanup
+                # never surfaces to a caller as an error.
+                async with PowerContextClient(
+                    "http://testserver", http_client=http, trust_transport_security=True
+                ) as sdk:
+                    # A fresh childless Scope exercises the SDK's own success path,
+                    # including an immediate complete cleanup.
+                    spare = await runtime.scopes.create(
+                        ScopeDraft(title="Spare", summary="sdk delete", idempotency_key="spare")
+                    )
+                    for role, key in (
+                        (AccessRole.SCOPE_ADMIN, "manager-admin"),
+                        (AccessRole.SCOPE_CONTRIBUTOR, "manager-contrib"),
+                    ):
+                        await access.create_binding(
+                            ADMIN,
+                            CreateBinding(
+                                subject=MANAGER,
+                                resource=ResourceRef.scope(spare.scope_id),
+                                role=role,
+                                idempotency_key=f"{key}-{spare.scope_id}",
+                            ),
+                            context=AUDIT,
+                        )
+                    sdk_preview = await sdk.preview_scope_deletion(
+                        ScopeDeletionPreviewRequest.model_validate({
+                            "selection": {"mode": "exact", "scope_ids": [spare.scope_id]}
+                        })
+                    )
+                    sdk_receipt = await sdk.confirm_scope_deletion(
+                        ConfirmScopeDeletionRequest.model_validate({
+                            "selection": {"mode": "exact", "scope_ids": [spare.scope_id]},
+                            "confirmed_digest": sdk_preview.membership_digest,
+                        })
+                    )
+                    assert sdk_receipt.state in {"complete", "cleanup_pending"}
+                    resumed = await sdk.resume_scope_deletion_cleanup(sdk_receipt.operation_id)
+                    assert resumed.state == "complete"
                 assert receipt["state"] in {"complete", "cleanup_pending"}
                 assert receipt["membership_digest"] == digest
                 operation_id = receipt["operation_id"]
@@ -228,5 +261,34 @@ def test_scope_archive_and_confirmed_deletion_over_public_contract(tmp_path: Pat
                 assert denied.status_code == 403, denied.text
                 denied_status = await reader_http.get(f"/v1/scope-deletions/{operation_id}")
                 assert denied_status.status_code == 403, denied_status.text
+
+            # Observation is not destructive authority: a server-wide observer with no
+            # management of the confirmed members cannot read or resume the operation.
+            await access.create_binding(
+                ADMIN,
+                CreateBinding(
+                    subject=OBSERVER,
+                    resource=ResourceRef.server(DEPLOYMENT_ID),
+                    role=AccessRole.SERVER_OBSERVER,
+                    idempotency_key="observer-only",
+                ),
+                context=AUDIT,
+            )
+            observer_app, observer_headers = app_for(OBSERVER)
+            async with (
+                observer_app.router.lifespan_context(observer_app),
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=observer_app),
+                    base_url="http://testserver",
+                    headers=observer_headers,
+                ) as observer_http,
+            ):
+                for method, path in (
+                    ("get", f"/v1/scope-deletions/{operation_id}"),
+                    ("post", f"/v1/scope-deletions/{operation_id}/cleanup"),
+                    ("post", f"/v1/scope-deletions/{operation_id}/coverage-repair"),
+                ):
+                    observed = await getattr(observer_http, method)(path)
+                    assert observed.status_code == 403, (path, observed.text)
 
     asyncio.run(scenario())

@@ -24,6 +24,8 @@ from powercontext.server.authentication import AuthenticationResult
 _internal_bridge: ContextVar[bool] = ContextVar("powercontext_internal_bridge", default=False)
 _request_id: ContextVar[str | None] = ContextVar("powercontext_request_id", default=None)
 _principal: ContextVar[PrincipalRef | None] = ContextVar("powercontext_principal", default=None)
+_executing: ContextVar[PrincipalRef | None] = ContextVar("powercontext_executing_principal", default=None)
+# The recorded executor of background work; never a session principal and never ambient.
 _authentication: ContextVar[AuthenticationResult | None] = ContextVar("powercontext_authentication", default=None)
 
 
@@ -49,6 +51,24 @@ def reset_principal(token: Token[PrincipalRef | None]) -> None:
 
 def current_principal() -> PrincipalRef | None:
     return _principal.get()
+
+
+def bind_executing_principal(principal: PrincipalRef | None) -> Token[PrincipalRef | None]:
+    """Bind the recorded executor for background work that has no request session.
+
+    This is the identity the run was admitted under, not an ambient grant: every
+    authority check still decides afresh for that principal.
+    """
+
+    return _executing.set(principal)
+
+
+def reset_executing_principal(token: Token[PrincipalRef | None]) -> None:
+    _executing.reset(token)
+
+
+def current_executing_principal() -> PrincipalRef | None:
+    return current_principal() or _executing.get()
 
 
 def bind_authentication(

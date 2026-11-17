@@ -98,6 +98,9 @@ class CreateDreamRunRequest(BaseModel):
     sources: tuple[SourceRef, ...] = Field(default=(), validate_default=True)
     target: ArtifactRef | None = None
     tag_target: TagDreamTarget | None = None
+    # Binds this run to one pinned durable share run whose agreed use covers exactly
+    # the scoped selections below. Without it, another Scope's material is not admitted.
+    share_run_id: str | None = Field(default=None, max_length=64, exclude_if=lambda value: value is None)
     idempotency_key: str = Field(min_length=1, max_length=128)
 
     @field_validator("idempotency_key")
@@ -344,6 +347,8 @@ class DreamRecord(BaseModel):
     deadline_at: datetime | None = None
     profile_policy: ProfileDreamPolicy | None = None
     proposal_fingerprint: str | None = None
+    # Persisted binding so every later phase rechecks the same pinned agreement.
+    share_run_id: str | None = None
 
 
 class DreamPlan(BaseModel):

@@ -108,6 +108,13 @@ async def decide_profile(service, connection, candidate_id, expected_version, *,
     return result
 
 
+def local_sources(service, sources):
+    """Keep only references this Scope owns in the committed local lineage columns."""
+
+    admitted = getattr(service, "_admitted_source_keys", None) or frozenset()
+    return tuple(source for source in sources if source.model_dump_json() not in admitted)
+
+
 async def _decide_initial_profile(service, connection, candidate, policy, *, reason=None):
     """Commit the first Profile, or refuse when one already exists.
 
@@ -144,8 +151,11 @@ async def _decide_initial_profile(service, connection, candidate, policy, *, rea
                 dream_run_id=proposal.dream_run_id,
             ),
         ),
-        sources=candidate.sources,
+        # Foreign references are recorded as origins, never as this Scope's own Sources:
+        # the local lineage columns hold only references that exist here.
+        sources=local_sources(service, candidate.sources),
         artifacts=candidate.artifacts,
+        origins=candidate.origins,
     )
     artifact = await service._artifacts.create(connection, service._scope_id, PROFILE_ARTIFACT_ID, draft)
     return await service._candidates.mark_approved(

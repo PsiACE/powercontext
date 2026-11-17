@@ -137,7 +137,7 @@ from powercontext.builtin.persistence.processing_migration import (
     bootstrap_processing_schema,
 )
 from powercontext.builtin.persistence.revision_metadata_schema import ensure_artifact_revision_metadata_schema
-from powercontext.builtin.persistence.schema import ensure_portable_timestamp_precision
+from powercontext.builtin.persistence.schema import create_tables, ensure_portable_timestamp_precision
 from powercontext.builtin.persistence.scope_search_schema import ensure_scope_search_schema
 from powercontext.builtin.persistence.seekdb.profile import SeekDBConfig, SeekDBProfile
 from powercontext.builtin.persistence.skill_distribution_schema import ensure_skill_distribution_schema
@@ -148,7 +148,7 @@ from powercontext.builtin.persistence.sqlite.topic_memory_index import (
     SQLiteTopicMemoryFTSIndex,
     SQLiteTopicMemoryVectorIndex,
 )
-from powercontext.builtin.persistence.tables import BUILTIN_TABLES, PORTABLE_RESTORE_RECEIPTS_TABLE
+from powercontext.builtin.persistence.tables import BUILTIN_TABLES, PORTABLE_RESTORE_RECEIPTS_TABLE, SHARE_TABLES
 from powercontext.builtin.persistence.tag_schema import ensure_topic_memory_tag_schema
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
@@ -230,6 +230,12 @@ from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecove
 from powercontext.builtin.runtime.topic_memory_scope import topic_memory_processing_block
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.runtime.worker_observability import worker_model_usage_collector
+from powercontext.builtin.sharing.service import (
+    ShareAcceptanceValidator,
+    ShareAuthorizer,
+    ShareOriginCheck,
+    ShareRuleService,
+)
 from powercontext.builtin.sources import (
     BUILTIN_SOURCE_REGISTRY,
     TEXT_EVIDENCE_PROJECTION_KEY,
@@ -569,6 +575,9 @@ async def open_builtin_runtime(  # noqa: C901
     cursor_secret: bytes | None = None,
     handoff_verification_keys: tuple[bytes, ...] = (),
     recall_effort_sink: RecallEffortSink | None = None,
+    share_rule_authorizer: ShareAuthorizer | None = None,
+    share_rule_target_check: ShareOriginCheck | None = None,
+    share_rule_acceptance_validator: ShareAcceptanceValidator | None = None,
     dispatch_processing: bool = True,
     _archive_recovery: bool = False,
 ) -> AsyncIterator[BuiltinRuntime]:
@@ -929,6 +938,15 @@ async def open_builtin_runtime(  # noqa: C901
                 publication_application=contexts.publications,
                 scope_application=contexts.scopes,
                 scope_deletion_application=contexts.scope_deletions,
+                share_rule_service=ShareRuleService(
+                    contexts.database,
+                    contexts.scopes,
+                    contexts.repositories.sources,
+                    contexts.repositories.artifacts,
+                    authorize_origin=share_rule_authorizer,
+                    authorize_target=share_rule_target_check,
+                    authorize_acceptance=share_rule_acceptance_validator,
+                ),
                 readiness=RuntimeReadinessChecks(
                     readiness_probes,
                     disabled_dependencies=(name for name, probe in inference_readiness if probe is None),
@@ -938,6 +956,7 @@ async def open_builtin_runtime(  # noqa: C901
                 archive_service=contexts.portability,
             )
         )
+        runtime.share_rules = await _share_rule_service_available(runtime.share_rules, contexts.database)
         runtime.artifact_processing_supervisor = await resources.enter_async_context(
             _open_artifact_processing_supervisor(
                 config,
@@ -1283,6 +1302,7 @@ async def open_builtin_contexts(  # noqa: C901 -- Backend admission and resource
                     await ensure_artifact_revision_metadata_schema(connection)
                     await ensure_artifact_lineage_origins_schema(connection)
                     await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
+                    await create_tables(connection, SHARE_TABLES)
                     # A Topic child reuses its parent's schema. It never reads or
                     # writes Memory/Experience projections; rebuilding their FTS
                     # indexes here would take the shared SQLite write lock once
@@ -1374,6 +1394,7 @@ async def open_builtin_contexts(  # noqa: C901 -- Backend admission and resource
                 await ensure_artifact_revision_metadata_schema(connection)
                 await ensure_artifact_lineage_origins_schema(connection)
                 await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
+                await create_tables(connection, SHARE_TABLES)
                 if not _topic_memory_worker:
                     await _initialize_atomic_memory_authority(connection)
                     await atomic_index.initialize(connection)
@@ -2532,6 +2553,23 @@ def _search_modes(capabilities: AtomicMemoryIndexCapabilities) -> tuple[MemorySe
     if capabilities.hybrid:
         modes.append("hybrid")
     return tuple(modes)
+
+
+async def _share_rule_service_available(service: ShareRuleService | None, database: Any) -> ShareRuleService | None:
+    """Advertise standing rules only when their storage is really present.
+
+    A managed database takes its schema from the registered chain. Until that chain
+    carries these tables, an absent table must surface as "unsupported" rather than
+    as a live service whose first call raises a raw driver error.
+    """
+
+    if service is None:
+        return None
+    async with database.transaction() as connection:
+        names = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
+    if not {table.name for table in SHARE_TABLES} <= names:
+        return None
+    return service
 
 
 __all__ = ["BuiltinConfigurationError", "open_builtin_contexts", "open_builtin_runtime", "preflight_builtin_runtime"]

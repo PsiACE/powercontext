@@ -2728,7 +2728,6 @@ async def preview_scope_deletion(
 async def confirm_scope_deletion(
     request: ConfirmScopeDeletionRequest,
     http_request: Request,
-    response: Response,
 ) -> ScopeDeletionReceipt:
     deletions = _require_scope_deletions(http_request)
     selection = _domain_scope_selection(request.selection)
@@ -2737,7 +2736,8 @@ async def confirm_scope_deletion(
         raise ScopeDeletionConflictError(preview.root_scope_id, "the structural set changed since it was previewed")
     await _require_confirmed_management(http_request, preview.scope_ids)
     receipt = await deletions.confirm(selection, request.confirmed_digest, single_scope=request.single_scope)
-    response.status_code = 200 if receipt.complete else 202
+    # The operation is accepted and durable; its own receipt says whether cleanup
+    # already finished, so the response stays the declared 202 either way.
     return _scope_deletion_receipt_response(receipt)
 
 
@@ -2768,13 +2768,12 @@ async def _require_deletion_management(http_request: Request, receipt) -> None:
         return
     principal = _require_principal()
     managed = tuple(member.scope_id for member in receipt.members)
-    # The confirmed members are the authority surface. Once cleanup has removed them
-    # their rows cannot be evaluated, and this build records no separate requester,
-    # so the operation is readable only under deployment-level observation rather
-    # than by inventing an owner or snapshot privilege.
+    # The confirmed members are the authority surface, and every one of them is
+    # required. Deployment observation is not destructive authority over another
+    # Scope's deletion, so it is never an alternative to member management.
     checks = tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in managed)
-    checks += ((AccessAction.SERVER_OBSERVE, ResourceRef.server(access.deployment_id)),)
-    await access.require_any(principal, checks, context=_access_audit_context("scope_deletion_status"))
+    if checks:
+        await access.require_all(principal, checks, context=_access_audit_context("scope_deletion_status"))
 
 
 async def resume_scope_deletion_cleanup(
@@ -6610,18 +6609,18 @@ def _scope_deletion_confirm_access(
 
 def _scope_deletion_operation_access(
     _payload: Mapping[str, Any],
-    deployment_id: str,
+    _deployment_id: str,
 ) -> tuple[tuple[AccessAction, ResourceRef], ...]:
-    """Declare the boundary for one operation read; the handler rechecks the members.
+    """Require an authenticated caller; the handler checks the operation's members.
 
-    The operation id in the path does not identify a Scope, and its confirmed
-    members may already be gone after cleanup, so the declarative requirement is
-    deployment observation. The handler additionally requires current management
-    authority on every recorded member, which is the authority the operation
-    actually acts under.
+    The operation id in the path identifies no Scope, and the authority that
+    matters is current management of every Scope the operation confirmed. Those
+    members are persisted with the operation, so the handler reads them and
+    requires all of them; a static path payload cannot express that, and
+    deployment observation is not an alternative to it.
     """
 
-    return ((AccessAction.SERVER_OBSERVE, ResourceRef.server(deployment_id)),)
+    return ()
 
 
 def _publish_artifact_access(
