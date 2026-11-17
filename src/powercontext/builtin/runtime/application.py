@@ -310,7 +310,13 @@ from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher, sea
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecoveryService
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
-from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
+from powercontext.builtin.scope import (
+    ScopeApplication,
+    ScopeDescriptor,
+    ScopeSelection,
+)
+from powercontext.builtin.scope.deletion import ScopeDeletionApplication
+from powercontext.builtin.scope.errors import ScopeNotWritableError
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_ADAPTER,
@@ -568,6 +574,22 @@ class _RuntimeStateError(RuntimeError):
             "topic-memory-browse": "Topic Memory browsing is not configured",
         }
         super().__init__(messages[code])
+
+
+def _require_available(scope: ScopeDescriptor) -> None:
+    """Refuse ordinary work once a Scope's deletion has taken effect.
+
+    ``archived`` deliberately stays available: archive stops writes but keeps
+    authorized reads. Only the deletion cutoff removes the Scope from ordinary
+    reads and writes, and it does so before any owned resource is removed.
+    """
+
+    # Read through the attribute so a caller-supplied descriptor that predates the
+    # lifecycle field still serves; an absent state is the writable default, never
+    # a permissive fallback for a real cutoff.
+    state = getattr(scope, "lifecycle_state", "writable")
+    if state in {"deleting", "deleted"}:
+        raise ScopeNotWritableError(scope.scope_id, state)
 
 
 class ScopedSourceApplication:
@@ -4250,6 +4272,7 @@ class BuiltinRuntime:
         decision_model: DecisionModel | None = None,
         publication_application: ArtifactPublicationApplication | None = None,
         scope_application: ScopeApplication | None = None,
+        scope_deletion_application: ScopeDeletionApplication | None = None,
         readiness: RuntimeReadinessChecks | None = None,
         clock: Clock | None = None,
         tracing: RuntimeTracing | None = None,
@@ -4344,6 +4367,10 @@ class BuiltinRuntime:
         self.decision_model = decision_model
         self.publications = publication_application
         self.scopes = scope_application
+        # Lifecycle deletion is a separate capability because it needs the Scope
+        # application's structural resolution and its write lock, not a second
+        # authority over Scope identity.
+        self.scope_deletions: ScopeDeletionApplication | None = scope_deletion_application
         self._scope_operations: dict[tuple[asyncio.Task[Any] | None, str], ScopeDescriptor] = {}
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness
         self._clock = _utc_now if clock is None else clock
@@ -4566,6 +4593,12 @@ class BuiltinRuntime:
             if self.scopes is None:
                 raise _RuntimeStateError("scope")
             registered = await self.scopes.get(scope)
+            # One serving boundary decides availability for every scoped read and
+            # write, so a deleting Scope stops ordinary reads, historical
+            # readback, search, Prepare and plugin reads at the same point. The
+            # descriptor is already read here; a cached composition cannot serve
+            # content for a Scope whose cutoff has taken effect.
+            _require_available(registered)
             with self._scope_cache.lease(scope):
                 self._scope_operations[key] = registered
                 try:

@@ -28,6 +28,8 @@ from powercontext.limits import (
     MAX_SCOPE_EXTERNAL_REFERENCE_KIND_LENGTH,
     MAX_SCOPE_EXTERNAL_REFERENCE_VALUE_LENGTH,
     MAX_SCOPE_IDEMPOTENCY_KEY_LENGTH,
+    MAX_SCOPE_RANGE_DEPTH,
+    MAX_SCOPE_RANGE_NODES,
     MAX_SCOPE_SUMMARY_LENGTH,
     MAX_SCOPE_TITLE_LENGTH,
 )
@@ -149,6 +151,9 @@ class ScopeDescriptor(_ScopeValue):
     context_references: tuple[str, ...] = ()
     external_references: tuple[ScopeExternalReference, ...] = ()
     version: StrictInt = Field(ge=1)
+    # Ordinary Scopes start writable. The field is read from pc_scopes, which is
+    # the same row the write gate locks, so a caller never sees a cached state.
+    lifecycle_state: Literal["writable", "archived", "deleting", "deleted"] = "writable"
 
     @field_validator("scope_id")
     @classmethod
@@ -291,9 +296,134 @@ class ScopeSelection(_ScopeValue):
         return {"mode": self.mode}
 
 
+class ScopeRangeLimits(_ScopeValue):
+    """Explicit node and depth bounds for one structural resolution."""
+
+    max_nodes: StrictInt = Field(default=512, ge=1, le=MAX_SCOPE_RANGE_NODES)
+    max_depth: StrictInt = Field(default=16, ge=1, le=MAX_SCOPE_RANGE_DEPTH)
+
+
+class ScopeRange(_ScopeValue):
+    """A bounded structural membership result, never an authorization or a content read."""
+
+    selection: ScopeSelection
+    scopes: tuple[ScopeDescriptor, ...]
+    limits: ScopeRangeLimits
+    membership_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def require_membership_in_bounds(self) -> ScopeRange:
+        """A result either fits its declared budget or does not exist."""
+        if len(self.scopes) > self.limits.max_nodes:
+            raise ValueError("Scope range exceeds its node budget")  # noqa: TRY003
+        if len({scope.scope_id for scope in self.scopes}) != len(self.scopes):
+            raise ValueError("Scope range members must be unique")  # noqa: TRY003
+        return self
+
+    @property
+    def scope_ids(self) -> tuple[str, ...]:
+        return tuple(scope.scope_id for scope in self.scopes)
+
+    @property
+    def versions(self) -> dict[str, StrictInt]:
+        """Per-member metadata versions a caller can recheck before confirming an action."""
+        return {scope.scope_id: scope.version for scope in self.scopes}
+
+
 def _required_text(field: str, value: str, maximum: int) -> str:
     if not value.strip() or value != value.strip():
         raise ValueError(f"{field} must be non-empty without surrounding whitespace")  # noqa: TRY003
     if len(value) > maximum:
         raise ValueError(f"{field} must not exceed {maximum} characters")  # noqa: TRY003
     return value
+
+
+class ScopeDeletionMember(_ScopeValue):
+    """One Scope in a confirmed structural set, with the state it was confirmed at."""
+
+    scope_id: str
+    parent_scope_id: str | None = None
+    version: StrictInt = Field(ge=1)
+
+    @field_validator("scope_id")
+    @classmethod
+    def validate_scope_id(cls, value: str) -> str:
+        return validate_scope_id(value)
+
+    @field_validator("parent_scope_id")
+    @classmethod
+    def validate_parent_scope_id(cls, value: str | None) -> str | None:
+        return None if value is None else validate_scope_id(value)
+
+    @classmethod
+    def of(cls, scope: ScopeDescriptor) -> ScopeDeletionMember:
+        return cls(scope_id=scope.scope_id, parent_scope_id=scope.parent_scope_id, version=scope.version)
+
+
+class ScopeDeletionPreview(_ScopeValue):
+    """The exact structural set a deletion would act on, and nothing else.
+
+    Preview is not an authorization: every member still needs its own management
+    authority, and this type grants none. It exists so a caller can show an
+    operator precisely which Scopes an explicit confirmation would delete.
+    """
+
+    root_scope_id: str
+    members: tuple[ScopeDeletionMember, ...]
+    membership_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Structural children of any member that lie outside the set. For a subtree
+    # this is always empty; it is populated for an explicit multi-root set and
+    # tells the operator that confirming now would leave those children behind.
+    outside_children: tuple[str, ...] = ()
+
+    @field_validator("root_scope_id")
+    @classmethod
+    def validate_root_scope_id(cls, value: str) -> str:
+        return validate_scope_id(value)
+
+    @property
+    def scope_ids(self) -> tuple[str, ...]:
+        return tuple(member.scope_id for member in self.members)
+
+
+ScopeResourcePurgeState = Literal["pending", "done", "failed"]
+ScopeDeletionState = Literal["cleanup_pending", "complete"]
+
+
+class ScopeResourceProgress(_ScopeValue):
+    """Persisted cleanup progress for one member and one owned-resource handler."""
+
+    scope_id: str
+    handler: str
+    state: ScopeResourcePurgeState
+    attempts: StrictInt = Field(ge=0)
+    # A stable code, never a payload or exception text.
+    last_error_code: str | None = None
+
+    @field_validator("scope_id")
+    @classmethod
+    def validate_scope_id(cls, value: str) -> str:
+        return validate_scope_id(value)
+
+
+class ScopeDeletionReceipt(_ScopeValue):
+    """The durable record of one confirmed deletion and its cleanup progress."""
+
+    operation_id: str
+    root_scope_id: str
+    membership_digest: str
+    state: ScopeDeletionState
+    members: tuple[ScopeDeletionMember, ...]
+    progress: tuple[ScopeResourceProgress, ...]
+
+    @property
+    def complete(self) -> bool:
+        return self.state == "complete"
+
+    @property
+    def failed(self) -> tuple[ScopeResourceProgress, ...]:
+        return tuple(item for item in self.progress if item.state == "failed")
+
+    @property
+    def unfinished(self) -> tuple[ScopeResourceProgress, ...]:
+        return tuple(item for item in self.progress if item.state != "done")

@@ -34,6 +34,7 @@ from powercontext.artifacts import Artifact, ArtifactRef
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
+from powercontext.builtin.persistence.scope_lifecycle import require_writable
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACT_TAGS_TABLE
 from powercontext.builtin.records import (
     BaseValueNotFoundError,
@@ -173,6 +174,10 @@ class RelationalTagService:
         execution_context=None,
     ) -> ArtifactTagSet:
         desired = normalize_tags(tags)
+        # Tags live in the Scope that owns the Artifact, so this is an ordinary
+        # write there. Gating the one commit boundary covers both an approved tag
+        # Candidate and a direct tag replacement without a second check.
+        await require_writable(connection, scope_id)
         await self.lock_target(connection, scope_id, target)
         await self._target_reference(connection, scope_id, target)
         if target.family == "atomic-memory" and self._atomic_write_authorizer is not None:

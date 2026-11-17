@@ -145,6 +145,15 @@ class SQLiteExperienceFTSIndex:
     ) -> tuple[Mapping[Any, Any], ...]:
         return await search_approved_artifact_rows(connection, scope_id, family, query, limit, admission=admission)
 
+    async def purge_scope(self, connection: AsyncConnection, scope_id: str, /) -> None:
+        """Delete this Scope's lexical FTS rows.
+
+        The owner's only dedicated table is the FTS projection; searchable text
+        lives on ``pc_artifact_heads``, which the owned-resource handler already
+        removes with the revisions.
+        """
+        await connection.execute(text("DELETE FROM pc_artifact_fts WHERE scope_id = :scope_id"), {"scope_id": scope_id})
+
     async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None:
         await remove_experience_projection(connection, scope_id, artifact_id)
         await connection.execute(

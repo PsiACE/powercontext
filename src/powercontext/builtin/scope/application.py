@@ -29,11 +29,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.cursor_codec import Clock, SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.scope_lifecycle import WRITABLE, ScopeLifecycleState
 from powercontext.builtin.scope.errors import (
     ScopeBindingNotFoundError,
     ScopeBindingTargetMissingError,
     ScopeIdempotencyConflictError,
+    ScopeLifecycleConflictError,
     ScopeNotFoundError,
+    ScopeNotWritableError,
+    ScopeRangeLimitError,
     ScopeRelationshipError,
     ScopeVersionConflictError,
 )
@@ -46,6 +50,8 @@ from powercontext.builtin.scope.models import (
     ScopeDraft,
     ScopeExternalReference,
     ScopeMutation,
+    ScopeRange,
+    ScopeRangeLimits,
     ScopeSelection,
 )
 from powercontext.builtin.scope.repository import ScopeRepository
@@ -98,10 +104,15 @@ class ScopeApplication:
         digest = _draft_digest(draft)
         try:
             async with self._database.transaction() as connection:
-                await self._repository.lock_write_transaction(connection)
+                # Creation attaches a child to a parent, so it belongs on the same
+                # structural boundary as a move. A Scope being deleted must not
+                # gain a member after its confirmed set was cut off.
+                await self._repository.lock_hierarchy(connection)
                 existing = await self._repository.creation(connection, draft.idempotency_key)
                 if existing is not None:
                     return await self._resolve_creation(connection, draft.idempotency_key, digest, existing)
+                if draft.parent_scope_id is not None:
+                    await self._require_not_deleting(connection, draft.parent_scope_id)
                 await self._validate_relationships(
                     connection,
                     scope_id=None,
@@ -206,6 +217,12 @@ class ScopeApplication:
             current = await self._required(connection, scope_id)
             if current.version != mutation.expected_version:
                 raise ScopeVersionConflictError(scope_id, mutation.expected_version, current.version)
+            if current.lifecycle_state in {"deleting", "deleted"}:
+                # A confirmed set is fixed; moving it in or out is not a metadata
+                # edit but a change to a deletion that was already accepted.
+                raise ScopeNotWritableError(scope_id, current.lifecycle_state)
+            if mutation.parent_scope_id is not None:
+                await self._require_not_deleting(connection, mutation.parent_scope_id)
             await self._validate_relationships(
                 connection,
                 scope_id=scope_id,
@@ -215,6 +232,49 @@ class ScopeApplication:
             if not await self._repository.replace(connection, scope_id, mutation):
                 refreshed = await self._required(connection, scope_id)
                 raise ScopeVersionConflictError(scope_id, mutation.expected_version, refreshed.version)
+            return await self._required(connection, scope_id)
+
+    async def archive(self, scope_id: str, expected_version: int, /) -> ScopeDescriptor:
+        """Stop ordinary writes in this Scope only; children keep their own state."""
+
+        return await self._transition(
+            scope_id,
+            expected_version,
+            expected=WRITABLE,
+            requested="archived",
+            next_state="archived",
+        )
+
+    async def reopen(self, scope_id: str, expected_version: int, /) -> ScopeDescriptor:
+        """Return one archived Scope to writable while retaining its identity."""
+
+        return await self._transition(
+            scope_id,
+            expected_version,
+            expected="archived",
+            requested="writable",
+            next_state=WRITABLE,
+        )
+
+    async def _transition(
+        self,
+        scope_id: str,
+        expected_version: int,
+        *,
+        expected: ScopeLifecycleState,
+        requested: ScopeLifecycleState,
+        next_state: ScopeLifecycleState,
+    ) -> ScopeDescriptor:
+        async with self._write_lock, self._database.transaction() as connection:
+            # Structural attach/move shares this boundary, so a move cannot slip
+            # between reading the subtree and changing the named Scope's state.
+            await self._repository.lock_hierarchy(connection)
+            current = await self._required(connection, scope_id)
+            if current.version != expected_version:
+                raise ScopeVersionConflictError(scope_id, expected_version, current.version)
+            if not await self._repository.transition_lifecycle(connection, scope_id, expected, next_state):
+                refreshed = await self._required(connection, scope_id)
+                raise ScopeLifecycleConflictError(scope_id, requested, refreshed.lifecycle_state)
             return await self._required(connection, scope_id)
 
     async def default_scope(self) -> ScopeDescriptor | None:
@@ -242,8 +302,8 @@ class ScopeApplication:
 
     async def _set_default(self, scope_id: str) -> ScopeDescriptor:
         async with self._database.transaction() as connection:
-            await self._repository.lock_write_transaction(connection)
-            scope = await self._required(connection, scope_id)
+            await self._repository.lock_hierarchy(connection)
+            scope = await self._require_not_deleting(connection, scope_id)
             await self._repository.set_default(connection, scope_id)
             return scope
 
@@ -261,8 +321,11 @@ class ScopeApplication:
 
     async def _bind(self, key: ScopeBindingKey, scope_id: str) -> ScopeBinding:
         async with self._database.transaction() as connection:
-            await self._repository.lock_write_transaction(connection)
+            await self._repository.lock_hierarchy(connection)
             await self._required(connection, scope_id)
+            # A new persistent binding must not point at a Scope whose deletion was
+            # already confirmed; that would need another explicit repair round.
+            await self._require_not_deleting(connection, scope_id)
             return await self._repository.set_binding(connection, key, scope_id)
 
     async def binding(self, key: ScopeBindingKey, /) -> ScopeBinding | None:
@@ -309,6 +372,92 @@ class ScopeApplication:
                 raise AssertionError
             scopes = await self._repository.list(connection)
             return _subtree(scopes, root_scope_id)
+
+    async def _require_not_deleting(self, connection: AsyncConnection, scope_id: str) -> ScopeDescriptor:
+        """Refuse new structural or binding attachment to a Scope past its cutoff.
+
+        ``archived`` stays attachable: archive stops this Scope's own writes but
+        its children keep their own state. Only a deletion, whose set is already
+        confirmed and cut off, must not gain members or bindings afterwards.
+        """
+        scope = await self._required(connection, scope_id)
+        if scope.lifecycle_state in {"deleting", "deleted"}:
+            raise ScopeNotWritableError(scope_id, scope.lifecycle_state)
+        return scope
+
+    async def resolve_range(
+        self,
+        selection: ScopeSelection,
+        /,
+        *,
+        limits: ScopeRangeLimits | None = None,
+    ) -> ScopeRange:
+        """Resolve explicit or structural Scope membership within explicit budgets.
+
+        Structural descendants come from parent edges only. Context References,
+        publication copies and Artifact lineage are never traversed, and nothing
+        here authorizes reading any Scope's content. Exceeding a budget raises
+        instead of returning a partial range.
+        """
+
+        bounds = ScopeRangeLimits() if limits is None else limits
+        async with self._database.transaction() as connection:
+            if selection.mode == "all":
+                raise ScopeRangeLimitError("mode")
+            scopes = (
+                await self._exact_range(connection, selection, bounds)
+                if selection.mode == "exact"
+                else await self._structural_range(connection, selection, bounds)
+            )
+        return ScopeRange(
+            selection=selection,
+            scopes=scopes,
+            limits=bounds,
+            membership_digest=_membership_digest(scopes),
+        )
+
+    async def _exact_range(
+        self,
+        connection: AsyncConnection,
+        selection: ScopeSelection,
+        limits: ScopeRangeLimits,
+    ) -> tuple[ScopeDescriptor, ...]:
+        if len(selection.scope_ids) > limits.max_nodes:
+            raise ScopeRangeLimitError("nodes", limit=limits.max_nodes)
+        resolved = await self._repository.get_many(connection, selection.scope_ids)
+        found = {scope.scope_id for scope in resolved}
+        if missing := next((scope_id for scope_id in selection.scope_ids if scope_id not in found), None):
+            raise ScopeNotFoundError(missing)
+        return resolved
+
+    async def _structural_range(
+        self,
+        connection: AsyncConnection,
+        selection: ScopeSelection,
+        limits: ScopeRangeLimits,
+    ) -> tuple[ScopeDescriptor, ...]:
+        root_scope_id = selection.root_scope_id
+        if root_scope_id is None:
+            raise AssertionError
+        root = await self._required(connection, root_scope_id)
+        resolved = [root]
+        pending = (root.scope_id,)
+        depth = 0
+        while pending:
+            if depth == limits.max_depth:
+                # Establish that the refused level is really populated rather
+                # than reporting an exhausted budget for an empty tree.
+                if await self._repository.children(connection, pending, limit=1):
+                    raise ScopeRangeLimitError("depth", limit=limits.max_depth)
+                break
+            remaining = limits.max_nodes - len(resolved)
+            children = await self._repository.children(connection, pending, limit=remaining + 1)
+            if len(children) > remaining:
+                raise ScopeRangeLimitError("nodes", limit=limits.max_nodes)
+            resolved.extend(children)
+            pending = tuple(child.scope_id for child in children)
+            depth += 1
+        return tuple(resolved)
 
     async def _required(self, connection: AsyncConnection, scope_id: str) -> ScopeDescriptor:
         scope = await self._repository.get(connection, scope_id)
@@ -358,6 +507,18 @@ def generate_scope_id() -> str:
 def _draft_digest(draft: ScopeDraft) -> str:
     payload = draft.model_dump_json(exclude={"idempotency_key"})
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _membership_digest(scopes: tuple[ScopeDescriptor, ...]) -> str:
+    """Bind a range to the exact structural state a caller later confirms.
+
+    Any attachment, move, or metadata update changes a member's parent or
+    version, so a re-resolved range only repeats the digest while the set and
+    its structural state are unchanged.
+    """
+
+    lines = sorted(f"{scope.scope_id}\t{scope.parent_scope_id or ''}\t{scope.version}" for scope in scopes)
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def _subtree(scopes: tuple[ScopeDescriptor, ...], root_scope_id: str) -> tuple[ScopeDescriptor, ...]:
