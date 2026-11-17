@@ -148,6 +148,7 @@ from powercontext.builtin.dream.service import (
     DreamService,
     RunUseCheck,
 )
+from powercontext.builtin.dream.share_conclusion import record_conclusion
 from powercontext.builtin.evidence.resolver import (
     AuthorizationContext,
     ScopedEvidenceAuthorizer,
@@ -171,6 +172,7 @@ from powercontext.builtin.persistence.bootstrap_receipts import (
     StoredBootstrapReceipt,
 )
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.dream import DreamRepository
 from powercontext.builtin.persistence.skill_publications import SkillPublication
 from powercontext.builtin.processing_diagnostics import observe_processing_failure
 from powercontext.builtin.publication import ArtifactPublicationApplication
@@ -3768,10 +3770,15 @@ class ScopedReviewApplication:
                 self.scope_id,
                 embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING if current.family == "atomic-memory" else None,
             ):
-                return await self._runtime._review(self.scope_id).approve(
+                approved = await self._runtime._review(self.scope_id).approve(
                     request.candidate_id,
                     request.expected_version,
                 )
+            # Concluded only after the commit transaction closed, so recording it cannot
+            # disturb that commit and its recheck cannot see a half-recorded conclusion.
+            async with self._runtime._review_authorization_context():
+                await self._runtime._record_candidate_conclusion(self.scope_id, approved, committed=True)
+            return approved
 
     async def reject(self, request: RejectCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
@@ -3780,11 +3787,13 @@ class ScopedReviewApplication:
                 return await self._runtime._catalog_review(self.scope_id).reject(
                     request.candidate_id, request.expected_version, request.reason
                 )
-            return await self._runtime._review(self.scope_id).reject(
+            rejected = await self._runtime._review(self.scope_id).reject(
                 request.candidate_id,
                 request.expected_version,
                 request.reason,
             )
+            await self._runtime._record_candidate_conclusion(self.scope_id, rejected, committed=False)
+            return rejected
 
     async def revise(self, request: ReviseCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
@@ -4535,6 +4544,39 @@ class BuiltinRuntime:
                 authorize_acceptance=validate_acceptance,
             )
 
+    async def _record_candidate_conclusion(self, scope_id: str, approved, *, committed: bool) -> None:
+        """Link an approved Candidate's bound share run to its real committed revision.
+
+        Runs after the commit and outside its transaction, so a bookkeeping failure can
+        never roll back the Artifact. D decides idempotency and one-wayness.
+        """
+
+        if not approved.candidate_id.startswith("cand_dream_") or self.share_rules is None:
+            return
+        run_id = approved.candidate_id.removeprefix("cand_dream_")
+        async with self.primary_database.connection() as connection:
+            record = await DreamRepository().get(connection, scope_id, run_id)
+        if record.share_run_id is None:
+            return
+        if committed and approved.result_artifact is not None:
+            await record_conclusion(
+                self.share_rules,
+                scope_id=scope_id,
+                share_run_id=record.share_run_id,
+                dream_run_id=run_id,
+                candidate_id=approved.candidate_id,
+                committed=approved.result_artifact,
+            )
+            return
+        await record_conclusion(
+            self.share_rules,
+            scope_id=scope_id,
+            share_run_id=record.share_run_id,
+            dream_run_id=run_id,
+            candidate_id=approved.candidate_id,
+            outcome="rejected",
+        )
+
     def configure_dream_shared_use(
         self,
         *,
@@ -4557,6 +4599,8 @@ class BuiltinRuntime:
                 self._dream_service.authorize_use = authorize_origin_use
             self._dream_service.bind_executor = bind_executor
             self._dream_service.clear_executor = clear_executor
+            # D's conclusion writer becomes reachable only once this Runtime exists.
+            self._dream_service.sharing = lambda: self.share_rules
 
     def configure_evidence_authorization(
         self,

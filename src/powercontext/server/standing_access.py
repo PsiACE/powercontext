@@ -34,7 +34,11 @@ from powercontext.builtin.authz.errors import (
 )
 from powercontext.builtin.authz.service import AccessControlService
 from powercontext.builtin.authz.standing_use import StandingUseAuthorization, StandingUseGrant, principal_key
-from powercontext.server.context import current_principal, current_request_id
+from powercontext.server.context import (
+    current_executing_principal,
+    current_principal,
+    current_request_id,
+)
 
 if TYPE_CHECKING:
     from typing import TypeAlias
@@ -111,7 +115,12 @@ class StandingAccess:
 
         if _ACCEPTING.get():
             return
-        await self.standing.require_target(self._principal(), scope_id, context=self._context("share_run_target"))
+        # D also calls this from background conclusion recording, where no session
+        # principal exists; the recorded executor is that identity, never an ambient one.
+        principal = current_principal() or current_executing_principal()
+        if principal is None:
+            raise AccessIdentityRequiredError
+        await self.standing.require_target(principal, scope_id, context=self._context("share_run_target"))
 
     async def validate_acceptance(
         self,

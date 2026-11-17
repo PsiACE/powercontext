@@ -94,7 +94,7 @@ class DreamAccess(DreamAuthorization):
             check_candidate_use=self.require_candidate_use,
         )
 
-    async def require_run_use(self, share_run_id: str, run, record) -> None:
+    async def require_run_use(self, share_run_id: str, run, record, *, admit: bool = True) -> None:
         """Admit one Dream run's foreign inputs under its pinned agreement.
 
         The durable run fixes rule, version and exact pinned inputs; the request must
@@ -109,8 +109,9 @@ class DreamAccess(DreamAuthorization):
             pinned = await service.get_run(record.run.scope_id, share_run_id)
         except ShareError as error:
             raise DreamError("shared_use_unavailable") from error
-        if pinned.dream_run_id is not None and pinned.dream_run_id != record.run.run_id:
-            # One pinned evaluation belongs to exactly one Dream execution.
+        if admit and pinned.dream_run_id is not None and pinned.dream_run_id != record.run.run_id:
+            # One pinned evaluation is claimed by exactly one Dream execution. A later
+            # recheck of an already-bound run only re-authorizes that same binding.
             raise DreamError("shared_use_run")
         if record.request is None:
             raise DreamError("dream_request_unavailable")
@@ -160,7 +161,9 @@ class DreamAccess(DreamAuthorization):
             return
         record = await DreamRepository().get(connection, scope_id, candidate.candidate_id.removeprefix("cand_dream_"))
         if record.share_run_id is not None:
-            await self.require_run_use(record.share_run_id, record.run, record)
+            # A commit-time recheck re-authorizes the binding the run already holds; it is
+            # not a new claim on the pinned evaluation.
+            await self.require_run_use(record.share_run_id, record.run, record, admit=False)
 
     @override
     def _request_id(self) -> str | None:
