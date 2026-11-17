@@ -216,6 +216,7 @@ from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
 from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication, ScopeDeletionApplication
+from powercontext.builtin.scope.deletion import TrustedEmbedding
 from powercontext.builtin.scope.resources import default_handlers
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.source_eligibility import is_generation_eligible, require_source_eligible
@@ -759,10 +760,11 @@ class RelationalContexts:
                 atomic_memory_index=self.atomic_memory_index,
                 experience_index=self.experience_index,
             ),
-            # This composition is an in-process caller whose access decisions are
-            # made by the Runtime/Server that owns it; the deletion service still
-            # refuses an unattested operation at terminal readback.
-            trusted_local=True,
+            # This composition declares itself the trusted owner of authorization
+            # for its in-process callers. The declaration is made here, once, at
+            # construction — never per call — and its operations record no
+            # requester, so terminal readback stays closed to them.
+            trusted_embedding=TrustedEmbedding("RelationalContexts"),
         )
         self._scope_states: dict[str, _ScopeState] = {}
 
