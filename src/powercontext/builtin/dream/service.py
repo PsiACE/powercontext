@@ -108,7 +108,7 @@ from powercontext.builtin.review.models import Candidate, CandidateStatus
 from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime.processing_contracts import processing_error_code
 from powercontext.builtin.runtime.processing_execution import InvocationAlreadyHandled, ScopeInvocation
-from powercontext.builtin.sharing.models import ShareRun
+from powercontext.builtin.sharing.models import ShareRun, ShareRunAlreadyBoundError
 from powercontext.builtin.sharing.service import ShareRuleService
 from powercontext.builtin.tags import TagPreconditionError
 
@@ -236,6 +236,9 @@ class DreamService:
             await self._require_shared_use(scope_id, principal_id, request, shared.share_run_id)
             await self._authorize_scoped_origins(scope_id, principal_id, request)
         resolver = self._resolver(scope_id, principal_id)
+        # One execution identity, allocated once: a replayed request returns the run it
+        # already created and never claims a second identity for the same pinned run.
+        run_id = "dr_" + uuid4().hex
         async with self._transaction() as connection:
             # Lock the intent before business rows, matching Worker commit order.
             binding = binding_for_request(request)
@@ -282,11 +285,24 @@ class DreamService:
             )
             if await self.repository.pending_count(connection, scope_id) >= self.max_pending_per_scope:
                 raise DreamError("capacity_exceeded")
+            if shared is not None and self.sharing is not None:
+                # Bind the pinned evaluation to this execution inside the admission
+                # transaction, before any generation: D's claim joins it, so a rollback or
+                # a cancellation leaves no orphan binding and a second execution cannot take
+                # the same run. Identity only; authority was already checked above.
+                service = self.sharing()
+                if service is None:
+                    raise DreamError("shared_use_unavailable")
+                try:
+                    await service.claim(connection, scope_id, shared.share_run_id, dream_run_id=run_id)
+                except ShareRunAlreadyBoundError as error:
+                    # Another execution owns this pinned run; refuse before billing.
+                    raise DreamError("shared_use_run") from error
             intent = await self.intents.request(connection, scope_id, binding)
             record = DreamRecord(
                 run=DreamRun(
                     scope_id=scope_id,
-                    run_id="dr_" + uuid4().hex,
+                    run_id=run_id,
                     operation=request.operation,
                     target=request.target,
                     tag_target=request.tag_target,
