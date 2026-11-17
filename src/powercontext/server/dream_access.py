@@ -109,9 +109,10 @@ class DreamAccess(DreamAuthorization):
             pinned = await service.get_run(record.run.scope_id, share_run_id)
         except ShareError as error:
             raise DreamError("shared_use_unavailable") from error
-        if admit and pinned.dream_run_id is not None and pinned.dream_run_id != record.run.run_id:
-            # One pinned evaluation is claimed by exactly one Dream execution. A later
-            # recheck of an already-bound run only re-authorizes that same binding.
+        if pinned.dream_run_id is not None and pinned.dream_run_id != record.run.run_id:
+            # One pinned evaluation is claimed by exactly one Dream execution. This holds at
+            # admission and at every later recheck: a bound run owned by a different
+            # execution is never re-authorized, so `admit=False` cannot bypass the identity.
             raise DreamError("shared_use_run")
         if record.request is None:
             raise DreamError("dream_request_unavailable")

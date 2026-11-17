@@ -163,6 +163,17 @@ class ScopedShareApplication:
         async with self._runtime._scoped_operation(self.scope_id):
             return await service.list_runs(self.scope_id, rule_id=rule_id)
 
+    async def claim_run(self, run_id: str, /, *, dream_run_id: str, candidate_id: str | None = None) -> ShareRun:
+        """Bind this pinned run to one Dream execution before generation.
+
+        Embedded trust boundary: this establishes identity only and performs no Access
+        check, so the caller must have authorized the acting principal already.
+        """
+
+        service = self._service()
+        async with self._runtime._scoped_operation(self.scope_id):
+            return await service.claim_run(self.scope_id, run_id, dream_run_id=dream_run_id, candidate_id=candidate_id)
+
     async def record_outcome(
         self,
         run_id: str,

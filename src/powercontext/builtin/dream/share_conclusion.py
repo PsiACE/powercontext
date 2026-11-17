@@ -15,13 +15,18 @@
 """Link one pinned share run to the Dream execution it admitted.
 
 D owns the conclusion: its outcome is one-way, its replay is idempotent, and only a
-real committed revision may mark a run committed. This module only decides *when*
-that existing call is made, and never lets bookkeeping failure disturb the owning
-commit or trigger another billed generation.
+real committed revision may mark a run committed. This module decides only *when*
+that existing call is made, isolates its failure from the owning business result, and
+lets a later replay or a read of the same result reconcile it.
+
+The bookkeeping is deliberately recoverable rather than fire-and-forget: D's own
+one-way and idempotent rules make a second identical attempt safe, so a missed link is
+repaired from persisted Dream/Candidate state without repeating generation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -36,6 +41,29 @@ logger = logging.getLogger(__name__)
 DreamConclusion = Literal["no_change", "needs_evidence", "rejected"]
 
 
+def _log_link_failure(error: BaseException, *, scope_id: str, operation: str, policy_version: int | None) -> None:
+    """Report one bookkeeping failure with registered fields only.
+
+    The exception *type* is diagnostic; its message and values are not recorded, so no
+    origin reference, digest or provider text reaches the log.
+    """
+
+    log_safely(
+        logger,
+        logging.WARNING,
+        "Share run conclusion was not recorded",
+        extra={
+            "event": "dream.share_conclusion.failed",
+            "operation": operation,
+            "unit": "stage",
+            "outcome": "failure",
+            "scope": scope_id,
+            "policy_version": policy_version,
+            "exception_type": type(error).__name__,
+        },
+    )
+
+
 async def record_conclusion(
     service: ShareRuleService,
     *,
@@ -45,13 +73,12 @@ async def record_conclusion(
     candidate_id: str | None = None,
     outcome: DreamConclusion | None = None,
     committed: ArtifactRef | None = None,
+    operation: str = "share_run_conclusion",
 ) -> ShareRun | None:
-    """Record this execution's conclusion on the pinned run, never raising.
+    """Record this execution's conclusion on the pinned run.
 
-    Called after the owning durable write, so a failure here is reported and retried by
-    the next replay instead of rolling back a commit or re-sending generation. D's own
-    one-way and idempotent rules decide whether the call is a no-op, a replay, or a
-    genuine conflict.
+    Returns the stored run, or ``None`` when the link could not be recorded. Cancellation
+    always propagates: it is the caller shutting down, not a bookkeeping failure.
     """
 
     try:
@@ -63,21 +90,10 @@ async def record_conclusion(
             dream_run_id=dream_run_id,
             candidate_id=candidate_id,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
-        log_safely(
-            logger,
-            logging.WARNING,
-            "Share run conclusion was not recorded",
-            extra={
-                "event": "dream.share_conclusion.failed",
-                "unit": "stage",
-                "outcome": "failure",
-                "scope": scope_id,
-                "share_run": share_run_id,
-                "dream_run": dream_run_id,
-                "exception_type": type(error).__name__,
-            },
-        )
+        _log_link_failure(error, scope_id=scope_id, operation=operation, policy_version=None)
         return None
 
 

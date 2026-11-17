@@ -140,6 +140,16 @@ class ShareAcceptanceConflictError(ShareError, RuntimeError):
         super().__init__(self.code)
 
 
+class ShareRunAlreadyBoundError(ShareError, RuntimeError):
+    """A pinned run is already bound to a different Dream execution."""
+
+    code = "share_run_already_bound"
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        super().__init__(self.code)
+
+
 class ShareRunStateError(ShareError, RuntimeError):
     """A recorded evaluation cannot move to the requested state."""
 
