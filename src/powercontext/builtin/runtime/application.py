@@ -311,6 +311,10 @@ from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecove
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
+from powercontext.builtin.sharing.application import ShareApplication
+from powercontext.builtin.sharing.service import ShareAcceptanceValidator as StandingAcceptanceValidator
+from powercontext.builtin.sharing.service import ShareAuthorizer as StandingOriginAuthorizer
+from powercontext.builtin.sharing.service import ShareOriginCheck as StandingTargetAuthorizer
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_ADAPTER,
     CONTENT_SOURCE_NAME,
@@ -367,6 +371,7 @@ if TYPE_CHECKING:
     from powercontext.builtin.portability import PortableBundleService
     from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
     from powercontext.builtin.runtime.scope_reads import ScopeReadSnapshot
+    from powercontext.builtin.sharing.service import ShareRuleService
 
 
 class TopicMemorySearch(Protocol):
@@ -4249,6 +4254,7 @@ class BuiltinRuntime:
         decision_model: DecisionModel | None = None,
         publication_application: ArtifactPublicationApplication | None = None,
         scope_application: ScopeApplication | None = None,
+        share_rule_service: ShareRuleService | None = None,
         readiness: RuntimeReadinessChecks | None = None,
         clock: Clock | None = None,
         tracing: RuntimeTracing | None = None,
@@ -4284,6 +4290,7 @@ class BuiltinRuntime:
         self._generation_service = generation_service
         self._dream_service = dream_service
         self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        self._standing_use_origin_authorizer: StandingOriginAuthorizer | None = None
         self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
         self._review_evidence_batch_authorizer: ScopedEvidenceBatchAuthorizer | None = None
@@ -4343,6 +4350,8 @@ class BuiltinRuntime:
         self.decision_model = decision_model
         self.publications = publication_application
         self.scopes = scope_application
+        # Standing rules require the Scope application: they name target and origins.
+        self.share_rules = share_rule_service if scope_application is not None else None
         self._scope_operations: dict[tuple[asyncio.Task[Any] | None, str], ScopeDescriptor] = {}
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness
         self._clock = _utc_now if clock is None else clock
@@ -4370,6 +4379,7 @@ class BuiltinRuntime:
         self.experience = ExperienceApplication(self)
         self.artifacts = ArtifactApplication(self)
         self.dream = DreamApplication(self)
+        self.sharing = ShareApplication(self)
         self.external_skills = ExternalSkillApplication(self)
         self.handoff = HandoffApplication(self)
         self.work = WorkApplication(self)
@@ -4488,6 +4498,34 @@ class BuiltinRuntime:
                 ),
             },
         )
+
+    def configure_standing_use_authorization(
+        self,
+        authorize_origin: StandingOriginAuthorizer,
+        *,
+        authorize_target: StandingTargetAuthorizer | None = None,
+        validate_acceptance: StandingAcceptanceValidator | None = None,
+    ) -> None:
+        """Bind the trusted Access checks that own standing-agreement decisions.
+
+        Only a Server adapter that can name the authenticated principal may bind
+        these, because a recorded rule term is an agreement, not a grant. The three
+        checks are one contract, not alternatives: discovery rechecks every origin it
+        reaches through ``authorize_origin``, a rule action or run start through
+        ``authorize_target``, and every acceptance through ``validate_acceptance``
+        before its row is written. Binding here is the same seam composition uses, so
+        a Runtime configured after construction is bound as completely as one built
+        with the checks passed to ``open_builtin_runtime``.
+        """
+
+        self._standing_use_origin_authorizer = authorize_origin
+        service = self.share_rules
+        if service is not None:
+            service.configure_authorization(
+                authorize_origin=authorize_origin,
+                authorize_target=authorize_target,
+                authorize_acceptance=validate_acceptance,
+            )
 
     def configure_evidence_authorization(
         self,

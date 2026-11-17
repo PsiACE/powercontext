@@ -71,6 +71,7 @@ class AccessConflictError(AccessControlError, RuntimeError):
             "candidate-owner": "the Candidate is already locked to a different proposed owner",
             "idempotency-key": "the Access Binding idempotency key was reused with different input",
             "access_cursor_stale": "the Access cursor belongs to an older policy revision",
+            "shared_use_terms": "the shared use terms differ from the terms this run pinned",
         }
         super().__init__(messages.get(code, "the Access Binding conflicts with current state"))
 
@@ -104,6 +105,20 @@ class AccessInvalidRequestError(AccessControlError, ValueError):
             "resource": "the Access resource is invalid",
             "receiver-principal": "an accepted Handoff receiver must match the authenticated Principal",
             "reason": "the Access Binding reason exceeds its limit",
+            "shared_use_audience": "shared use must include the target Scope in its audience",
+            "shared_use_acceptance": "the shared use acceptance is invalid",
+            "shared_use_not_agreed": "the requested shared use is not among the agreed uses",
+            "shared_use_permission_scope": "the shared use permission scope is not a supported value",
+            "shared_use_retention": "the shared use retention is not a supported value",
+            "shared_use_use": "the shared use purpose is not a supported value",
+            "shared_use_origin": "shared use requires exact, distinct Artifact or Source origins",
+            "shared_use_revision_only_unsupported": (
+                "revision-only shared use cannot be enforced by logical Artifact grants"
+            ),
+            "shared_use_target": "shared use requires one target Scope",
+            "shared_use_withhold_unsupported": (
+                "withholding a committed conclusion on origin revocation has no supported conditions"
+            ),
         }
         super().__init__(messages.get(code, f"invalid Access request: {code}"))
 
