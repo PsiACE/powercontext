@@ -49,7 +49,7 @@ from powercontext.builtin.sharing import (
     ShareRuleAcceptanceError,
     ShareRuleDraft,
     ShareRuleInvalidatedError,
-    ShareRuleServiceUnavailable,
+    ShareRuleNotFoundError,
     ShareRuleTerms,
     ShareRun,
     ShareRunLimits,
@@ -728,46 +728,55 @@ def test_a_run_cannot_be_completed_after_its_rule_is_invalidated(tmp_path: Path)
     asyncio.run(scenario())
 
 
-def test_managed_database_does_not_advertise_standing_rules_it_cannot_serve(tmp_path: Path) -> None:
-    """A managed chain without the share tables must not expose a failing service.
+def test_database_left_at_the_previous_revision_is_refused_before_serving(tmp_path: Path) -> None:
+    """Storage lacking the standing-rule relations must not be served as if it had them.
 
-    An unmanaged profile creates these tables at bootstrap. A managed database takes
-    its schema from the frozen chain, so until that chain carries them the Runtime
-    must report sharing as unavailable instead of raising a raw driver error on the
-    first call.
+    This is the boundary a real operator meets: the relations are absent while the rest of the layout is
+    intact. Starting the Server must refuse with a clean migration instruction before any SQL can fail on
+    a missing table, rather than advertising a capability whose first call would raise. The revision marker
+    is moved back only because the relations were removed; the fixture does not reconstruct a complete
+    earlier revision.
     """
 
-    from powercontext.builtin.persistence.migrations.deployment import server_bundle
-    from powercontext.builtin.persistence.migrations.sqlite import SQLiteMigrationRunner
-    from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
-
-    database = tmp_path / "managed.db"
-    runner = SQLiteMigrationRunner(
-        database,
-        server_bundle(),
-        configuration={
-            "processing_manifest": canonical_processing_manifest(BuiltinConfig()),
-            "embedding_enabled": False,
-        },
-    )
-    plan = runner.plan()
-    runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
-
-    async def scenario() -> None:
-        async with open_builtin_runtime(
-            BuiltinConfig(
-                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
-                runtime=RuntimeConfig(),
-            )
-        ) as runtime:
-            assert runtime.share_rules is None
-            with pytest.raises(ShareRuleServiceUnavailable):
-                # The capability is absent, so no Scope existence is probed either.
-                await runtime.sharing.for_scope("scope").resolve("rule")
-
     import asyncio
+    import sqlite3
 
-    asyncio.run(scenario())
+    from powercontext.builtin.persistence.migrations.deployment import deployment_runner
+    from powercontext.builtin.persistence.migrations.models import MigrationError
+    from powercontext.builtin.persistence.migrations.server_readiness import prepare_server_storage
+    from powercontext.server.settings import ServerSettings
+
+    database = tmp_path / "previous.db"
+    settings = ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+    runner = deployment_runner(settings)
+    plan = runner.plan(backup_policy="skip")
+    runner.apply(
+        plan_id=plan.plan_id,
+        accepted=True,
+        maintenance_confirmed=True,
+        backup_policy="skip",
+        accept_no_backup=True,
+    )
+
+    # Model storage left at the revision before the relations existed.
+    with sqlite3.connect(database) as connection:
+        for name in (
+            "pc_share_acceptances",
+            "pc_share_runs",
+            "pc_share_rule_versions",
+            "pc_share_rule_heads",
+        ):
+            connection.execute(f"DROP TABLE {name}")
+        connection.execute("UPDATE pc_schema_revision SET version_num = 'v1_5_0_008'")
+
+    # Refused with an actionable instruction, before serving anything.
+    with pytest.raises(MigrationError) as refusal:
+        asyncio.run(asyncio.to_thread(lambda: prepare_server_storage(settings)))
+    assert "migration_required" in str(refusal.value)
+
+    with sqlite3.connect(database) as connection:
+        names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    assert not any(name.startswith("pc_share") for name in names)
 
 
 def test_a_concluded_run_is_one_way_and_keeps_its_committed_revision(tmp_path: Path) -> None:
@@ -1505,3 +1514,50 @@ def test_both_readers_fail_closed_when_the_recorded_audience_consent_is_absent(
             assert per_run.origins_covered
 
     asyncio.run(second())
+
+
+def test_current_managed_revision_serves_standing_rules(tmp_path: Path) -> None:
+    """The current managed revision is a real target for the capability it advertises.
+
+    Positive counterpart to the absence check: the same gate advertises the service, and that service
+    answers a real read against its own storage.
+    """
+
+    import asyncio
+    import sqlite3
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.sqlite import SQLiteMigrationRunner
+    from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
+
+    database = tmp_path / "current.db"
+    runner = SQLiteMigrationRunner(
+        database,
+        server_bundle(),
+        configuration={
+            "processing_manifest": canonical_processing_manifest(BuiltinConfig()),
+            "embedding_enabled": False,
+        },
+    )
+    plan = runner.plan()
+    runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
+
+    with sqlite3.connect(database) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"pc_share_rule_heads", "pc_share_rule_versions", "pc_share_runs", "pc_share_acceptances"} <= tables
+    assert "pc_artifact_lineage_origins" in tables
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"), runtime=RuntimeConfig())
+        ) as runtime:
+            assert runtime.share_rules is not None
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Orders", summary="Project", idempotency_key="current")
+            )
+            # The service reads real storage: an unknown rule is a typed not-found, not a driver error.
+            with pytest.raises(ShareRuleNotFoundError):
+                await runtime.sharing.for_scope(scope.scope_id).resolve("rule_absent")
+
+    asyncio.run(scenario())

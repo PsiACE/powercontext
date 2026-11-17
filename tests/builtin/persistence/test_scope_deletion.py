@@ -903,3 +903,218 @@ def test_full_recorded_operation_still_converges_after_a_failure(tmp_path) -> No
             assert (await deletion.cleanup(receipt.operation_id)).complete
 
     _run(scenario)
+
+
+def test_coverage_is_checked_per_member_not_unioned_across_members(tmp_path) -> None:
+    """One member's recorded rows must not cover another member's missing owner.
+
+    A persisted asymmetric record — member A with all three owners, member B with
+    only two — used to pass the guard because the helper unioned every row of the
+    operation onto every member. The check runs before finalization, so B's live
+    Atomic Memory residue and B's Scope row both have to survive the refusal.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+        from powercontext.builtin.scope.deletion import _encode_members, recorded_coverage
+        from powercontext.builtin.scope.models import ScopeDeletionMember
+        from powercontext.builtin.scope.repository import ScopeRepository
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'asymmetric.db'}")
+        async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            assert runtime.scopes is not None and runtime.atomic_memory is not None
+            assert runtime.scope_deletions is not None
+            scopes = runtime.scopes
+            parent = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="p"))
+            complete_member = await scopes.create(
+                ScopeDraft(title="A", summary="Library", parent_scope_id=parent.scope_id, idempotency_key="a")
+            )
+            short_member = await scopes.create(
+                ScopeDraft(title="B", summary="Library", parent_scope_id=parent.scope_id, idempotency_key="b")
+            )
+
+            # Real owner content in BOTH members, so residue is observable.
+            for scope in (complete_member, short_member):
+                await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                    AtomicMemoryContent(kind="rule", text=f"private-{scope.title}"),
+                ))
+
+            repository = ScopeRepository()
+            members = tuple(
+                ScopeDeletionMember(
+                    scope_id=scope.scope_id, parent_scope_id=scope.parent_scope_id, version=scope.version
+                )
+                for scope in (complete_member, short_member)
+            )
+            async with runtime.primary_database.transaction() as connection:
+                await repository.lock_hierarchy(connection)
+                for scope in (complete_member, short_member):
+                    await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
+                await repository.record_deletion(
+                    connection, "del_asymmetric01", parent.scope_id, "0" * 64, _encode_members(members)
+                )
+                # A: full set. B: required owner never recorded.
+                await repository.record_progress(
+                    connection,
+                    "del_asymmetric01",
+                    tuple(
+                        (member.scope_id, handler)
+                        for member, handlers in (
+                            (complete_member, ("owned-resources", "evidence", "projections")),
+                            (short_member, ("owned-resources", "evidence")),
+                        )
+                        for handler in handlers
+                    ),
+                )
+
+            deletion = runtime.scope_deletions
+            refused = await deletion.cleanup("del_asymmetric01")
+            assert not refused.complete
+            # The gap names B only; A's rows must not have covered it.
+            coverage = recorded_coverage(refused)
+            assert set(coverage.missing) == {(short_member.scope_id, "projections")}
+            # Both members' metadata survives, so B's residue stays reachable.
+            for scope in (complete_member, short_member):
+                assert (await deletion.state_of(scope.scope_id)).lifecycle_state == "deleting"
+
+            # Repair adds one pending row for B only, then the real owner runs.
+            repaired = await deletion.repair_coverage("del_asymmetric01")
+            pending = {(item.scope_id, item.handler) for item in repaired.progress if item.state == "pending"}
+            assert pending == {(short_member.scope_id, "projections")}
+            completed = await deletion.cleanup("del_asymmetric01")
+            assert completed.complete
+            assert {item.state for item in completed.progress} == {"done"}
+            for scope in (complete_member, short_member):
+                with pytest.raises(ScopeNotFoundError):
+                    await deletion.state_of(scope.scope_id)
+
+    _run(scenario)
+
+
+def test_repair_preserves_a_rows_own_failure_diagnostic(tmp_path) -> None:
+    """Repair clears only its own coverage blocker, never a real failure reason."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+        from powercontext.builtin.scope.deletion import MISSING_COVERAGE_CODE, _encode_members
+        from powercontext.builtin.scope.models import ScopeDeletionMember
+        from powercontext.builtin.scope.repository import ScopeRepository
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'evidence.db'}")
+        async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            assert runtime.scopes is not None and runtime.atomic_memory is not None
+            assert runtime.scope_deletions is not None
+            scopes = runtime.scopes
+            scope = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="ev"))
+            await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(kind="rule", text="private-evidence"),
+            ))
+            repository = ScopeRepository()
+            members = (ScopeDeletionMember(scope_id=scope.scope_id, parent_scope_id=None, version=scope.version),)
+            async with runtime.primary_database.transaction() as connection:
+                await repository.lock_hierarchy(connection)
+                await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
+                await repository.record_deletion(
+                    connection, "del_evidence01", scope.scope_id, "0" * 64, _encode_members(members)
+                )
+                await repository.record_progress(
+                    connection, "del_evidence01", ((scope.scope_id, "owned-resources"), (scope.scope_id, "evidence"))
+                )
+                # A real resource failure with its own reason, plus the coverage gap.
+                await repository.finish_progress(
+                    connection,
+                    "del_evidence01",
+                    scope.scope_id,
+                    "owned-resources",
+                    state="failed",
+                    error_code="IntegrityError",
+                )
+                await repository.finish_progress(
+                    connection, "del_evidence01", scope.scope_id, "evidence", state="done", error_code=None
+                )
+                await repository.record_finalization_failure(connection, "del_evidence01", MISSING_COVERAGE_CODE)
+
+            deletion = runtime.scope_deletions
+            repaired = await deletion.repair_coverage("del_evidence01")
+            by_handler = {item.handler: item for item in repaired.progress}
+            # The real failure keeps its reason, state and attempt count.
+            assert by_handler["owned-resources"].last_error_code == "IntegrityError"
+            assert by_handler["owned-resources"].state == "failed"
+            assert by_handler["owned-resources"].attempts == 1
+            # Its own coverage blocker is gone because the gap is now pending work.
+            assert by_handler["evidence"].last_error_code is None
+            assert by_handler["evidence"].state == "done"
+            assert by_handler["evidence"].attempts == 1
+            # The missing owner is genuinely pending, not done.
+            assert by_handler["projections"].state == "pending"
+            assert by_handler["projections"].attempts == 0
+
+            # Repeating the repair changes nothing and erases no evidence.
+            again = await deletion.repair_coverage("del_evidence01")
+            assert {(i.handler, i.state, i.attempts) for i in again.progress} == {
+                (i.handler, i.state, i.attempts) for i in repaired.progress
+            }
+            assert {i.handler: i.last_error_code for i in again.progress}["owned-resources"] == "IntegrityError"
+
+    _run(scenario)
+
+
+def test_concurrent_repair_converges_without_duplicate_work(tmp_path) -> None:
+    """Two repairs of one operation converge instead of raising a duplicate-PK error.
+
+    Repair is a supported explicit recovery step, so overlapping attempts must reach
+    the same recorded intent. The rollback-and-reread follows the pattern this
+    repository already uses for its other idempotent insert races.
+    """
+
+    async def scenario() -> None:
+        import asyncio
+
+        from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+        from powercontext.builtin.scope.deletion import _encode_members
+        from powercontext.builtin.scope.models import ScopeDeletionMember
+        from powercontext.builtin.scope.repository import ScopeRepository
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'concurrent.db'}")
+        async with open_builtin_runtime(BuiltinConfig(database=database)) as runtime:
+            assert runtime.scopes is not None and runtime.atomic_memory is not None
+            assert runtime.scope_deletions is not None
+            scopes = runtime.scopes
+            scope = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="c"))
+            await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(kind="rule", text="private-concurrent"),
+            ))
+            repository = ScopeRepository()
+            members = (ScopeDeletionMember(scope_id=scope.scope_id, parent_scope_id=None, version=scope.version),)
+            async with runtime.primary_database.transaction() as connection:
+                await repository.lock_hierarchy(connection)
+                await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
+                await repository.record_deletion(
+                    connection, "del_concurrent1", scope.scope_id, "0" * 64, _encode_members(members)
+                )
+                await repository.record_progress(
+                    connection,
+                    "del_concurrent1",
+                    ((scope.scope_id, "owned-resources"), (scope.scope_id, "evidence")),
+                )
+
+            deletion = runtime.scope_deletions
+            # A refusing cleanup records the coverage blocker first.
+            assert not (await deletion.cleanup("del_concurrent1")).complete
+
+            results = await asyncio.gather(
+                deletion.repair_coverage("del_concurrent1"),
+                deletion.repair_coverage("del_concurrent1"),
+                return_exceptions=True,
+            )
+            failures = [result for result in results if isinstance(result, BaseException)]
+            assert failures == [], failures
+            receipts = [result for result in results if not isinstance(result, BaseException)]
+            assert len(receipts) == 2
+            # Both attempts observed the same single pending row: no duplicate work.
+            for receipt in receipts:
+                pending = [(item.scope_id, item.handler) for item in receipt.progress if item.state == "pending"]
+                assert pending == [(scope.scope_id, "projections")]
+            assert (await deletion.cleanup("del_concurrent1")).complete
+
+    _run(scenario)

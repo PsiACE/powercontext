@@ -113,7 +113,10 @@
                   ]
                 ],
                 "nullable": false,
-                "default": "writable",
+                "default": [
+                  "literal",
+                  "writable"
+                ],
                 "charset": "utf8mb4",
                 "collation": "utf8mb4_bin",
                 "extra": []

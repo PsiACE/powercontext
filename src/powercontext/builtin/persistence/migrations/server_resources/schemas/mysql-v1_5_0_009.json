@@ -1,0 +1,1157 @@
+{
+  "format": "powercontext.mysql-state-layouts.v1",
+  "revisions": {
+    "v1_5_0_009": {
+      "statements": [
+        "CREATE TABLE pc_artifact_lineage_origins ( scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, family VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, artifact_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, revision INTEGER NOT NULL, ordinal INTEGER NOT NULL, origin_scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, origin_kind VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, origin_family VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, origin_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, origin_revision INTEGER, locator MEDIUMBLOB, digest VARCHAR(71) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, PRIMARY KEY (scope_id, family, artifact_id, revision, ordinal), FOREIGN KEY(scope_id, family, artifact_id, revision) REFERENCES pc_artifacts (scope_id, family, artifact_id, revision) ON DELETE CASCADE, CONSTRAINT ck_pc_artifact_lineage_origins_kind CHECK (origin_kind IN ('source', 'artifact')), CONSTRAINT ck_pc_artifact_lineage_origins_revision CHECK ((origin_kind = 'source' AND origin_revision IS NULL) OR (origin_kind = 'artifact' AND origin_revision > 0)) )",
+        "CREATE TABLE pc_share_rule_heads ( scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, rule_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, current_version BIGINT NOT NULL, status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (scope_id, rule_id), FOREIGN KEY(scope_id) REFERENCES pc_scopes (scope_id) ON DELETE CASCADE, CONSTRAINT ck_pc_share_rule_heads_version_positive CHECK (current_version > 0), CONSTRAINT ck_pc_share_rule_heads_status CHECK (status IN ('active', 'invalidated')) )",
+        "CREATE TABLE pc_share_rule_versions ( scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, rule_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, version BIGINT NOT NULL, payload MEDIUMBLOB NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY (scope_id, rule_id, version), FOREIGN KEY(scope_id, rule_id) REFERENCES pc_share_rule_heads (scope_id, rule_id) ON DELETE CASCADE, CONSTRAINT ck_pc_share_rule_versions_version_positive CHECK (version > 0) )",
+        "CREATE TABLE pc_share_runs ( scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, run_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, rule_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, rule_version BIGINT NOT NULL, state VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, outcome VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, notification_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, manifest_digest VARCHAR(71) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, created_at BIGINT NOT NULL, payload MEDIUMBLOB NOT NULL, PRIMARY KEY (scope_id, run_id), FOREIGN KEY(scope_id) REFERENCES pc_scopes (scope_id) ON DELETE CASCADE, CONSTRAINT uq_pc_share_runs_notification UNIQUE (scope_id, rule_id, notification_key), CONSTRAINT ck_pc_share_runs_rule_version_positive CHECK (rule_version > 0), CONSTRAINT ck_pc_share_runs_state CHECK (state IN ('pinned', 'invalidated')), CONSTRAINT ck_pc_share_runs_outcome CHECK (outcome IN ('pending', 'no_change', 'needs_evidence', 'rejected', 'committed')) )",
+        "CREATE TABLE pc_share_acceptances ( scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, rule_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, version BIGINT NOT NULL, actor VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, side VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, terms_digest VARCHAR(71) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, covered_scope_ids MEDIUMBLOB NOT NULL, acceptance_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, accepted_at BIGINT NOT NULL, PRIMARY KEY (scope_id, rule_id, version, actor, side), FOREIGN KEY(scope_id, rule_id, version) REFERENCES pc_share_rule_versions (scope_id, rule_id, version) ON DELETE CASCADE, CONSTRAINT uq_pc_share_acceptances_id UNIQUE (acceptance_id), CONSTRAINT ck_pc_share_acceptances_side CHECK (side IN ('origin', 'target')) )",
+        "CREATE INDEX ix_pc_scopes_parent_scope_id ON pc_scopes (parent_scope_id)"
+      ],
+      "changes": [
+        {
+          "pc_artifact_lineage_origins": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "family": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "artifact_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "revision": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "ordinal": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "origin_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "origin_kind": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "origin_family": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "origin_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "origin_revision": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "locator": {
+                "type": [
+                  "mediumblob",
+                  []
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "digest": {
+                "type": [
+                  "varchar",
+                  [
+                    "71"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "family",
+                null,
+                "asc"
+              ],
+              [
+                "artifact_id",
+                null,
+                "asc"
+              ],
+              [
+                "revision",
+                null,
+                "asc"
+              ],
+              [
+                "ordinal",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "scope_id",
+                  "family",
+                  "artifact_id",
+                  "revision"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_artifacts",
+                "referred_columns": [
+                  "scope_id",
+                  "family",
+                  "artifact_id",
+                  "revision"
+                ],
+                "ondelete": "cascade",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_artifact_lineage_origins_kind": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "origin_kind"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "source"
+                    ],
+                    [
+                      "literal",
+                      "artifact"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_artifact_lineage_origins_revision": {
+                "expression": [
+                  "binary",
+                  "or",
+                  [
+                    "binary",
+                    "and",
+                    [
+                      "binary",
+                      "=",
+                      [
+                        "column",
+                        "origin_kind"
+                      ],
+                      [
+                        "literal",
+                        "source"
+                      ]
+                    ],
+                    [
+                      "is_null",
+                      [
+                        "column",
+                        "origin_revision"
+                      ]
+                    ]
+                  ],
+                  [
+                    "binary",
+                    "and",
+                    [
+                      "binary",
+                      "=",
+                      [
+                        "column",
+                        "origin_kind"
+                      ],
+                      [
+                        "literal",
+                        "artifact"
+                      ]
+                    ],
+                    [
+                      "binary",
+                      ">",
+                      [
+                        "column",
+                        "origin_revision"
+                      ],
+                      [
+                        "number",
+                        0
+                      ]
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {}
+          }
+        },
+        {
+          "pc_share_rule_heads": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "rule_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "current_version": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "status": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "updated_at": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "rule_id",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "scope_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_scopes",
+                "referred_columns": [
+                  "scope_id"
+                ],
+                "ondelete": "cascade",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_share_rule_heads_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "current_version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_share_rule_heads_status": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "status"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "active"
+                    ],
+                    [
+                      "literal",
+                      "invalidated"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {}
+          }
+        },
+        {
+          "pc_share_rule_versions": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "rule_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "version": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "payload": {
+                "type": [
+                  "mediumblob",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "created_at": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "rule_id",
+                null,
+                "asc"
+              ],
+              [
+                "version",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "scope_id",
+                  "rule_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_share_rule_heads",
+                "referred_columns": [
+                  "scope_id",
+                  "rule_id"
+                ],
+                "ondelete": "cascade",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_share_rule_versions_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {}
+          }
+        },
+        {
+          "pc_share_runs": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "run_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "rule_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "rule_version": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "state": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "outcome": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "notification_key": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "manifest_digest": {
+                "type": [
+                  "varchar",
+                  [
+                    "71"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "created_at": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "payload": {
+                "type": [
+                  "mediumblob",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "run_id",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "scope_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_scopes",
+                "referred_columns": [
+                  "scope_id"
+                ],
+                "ondelete": "cascade",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_share_runs_rule_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "rule_version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_share_runs_state": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "state"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "pinned"
+                    ],
+                    [
+                      "literal",
+                      "invalidated"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_share_runs_outcome": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "outcome"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "pending"
+                    ],
+                    [
+                      "literal",
+                      "no_change"
+                    ],
+                    [
+                      "literal",
+                      "needs_evidence"
+                    ],
+                    [
+                      "literal",
+                      "rejected"
+                    ],
+                    [
+                      "literal",
+                      "committed"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {
+              "uq_pc_share_runs_notification": {
+                "columns": [
+                  [
+                    "scope_id",
+                    null,
+                    "asc"
+                  ],
+                  [
+                    "rule_id",
+                    null,
+                    "asc"
+                  ],
+                  [
+                    "notification_key",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": true
+              }
+            }
+          }
+        },
+        {
+          "pc_share_acceptances": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "rule_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "version": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "actor": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "side": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "terms_digest": {
+                "type": [
+                  "varchar",
+                  [
+                    "71"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "covered_scope_ids": {
+                "type": [
+                  "mediumblob",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "acceptance_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "accepted_at": {
+                "type": [
+                  "bigint",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "rule_id",
+                null,
+                "asc"
+              ],
+              [
+                "version",
+                null,
+                "asc"
+              ],
+              [
+                "actor",
+                null,
+                "asc"
+              ],
+              [
+                "side",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "scope_id",
+                  "rule_id",
+                  "version"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_share_rule_versions",
+                "referred_columns": [
+                  "scope_id",
+                  "rule_id",
+                  "version"
+                ],
+                "ondelete": "cascade",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_share_acceptances_side": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "side"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "origin"
+                    ],
+                    [
+                      "literal",
+                      "target"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {
+              "uq_pc_share_acceptances_id": {
+                "columns": [
+                  [
+                    "acceptance_id",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": true
+              }
+            }
+          }
+        },
+        {
+          "pc_scopes": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "title": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "summary": {
+                "type": [
+                  "varchar",
+                  [
+                    "2000"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "scope_id_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "title_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "summary_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "parent_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "version": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "lifecycle_state": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": [
+                  "literal",
+                  "writable"
+                ],
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "parent_scope_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_scopes",
+                "referred_columns": [
+                  "scope_id"
+                ],
+                "ondelete": "restrict",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_scopes_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {
+              "ix_pc_scopes_parent_scope_id": {
+                "columns": [
+                  [
+                    "parent_scope_id",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

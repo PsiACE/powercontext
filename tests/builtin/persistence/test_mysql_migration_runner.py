@@ -1528,3 +1528,128 @@ def test_full_server_upgrade_with_renamed_check(backend, interrupted):
     assert _apply(runner, policy="manual").changed
     assert runner.verify().state == "ready"
     assert not _apply(runner, policy="manual").changed
+
+
+def test_registered_state_equals_what_its_own_ddl_produces() -> None:
+    """A revision's declared state must be exactly what applying its statements produces.
+
+    This is the defect class a self-referential check misses: if both the expectation and the check come
+    from the same declared state, they agree even when the DDL says something else. Applying each
+    statement's real DDL to the previous state and comparing with the declared state catches that.
+    """
+
+    import copy
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.mysql_schema import MySQLSchema, _parse_table
+
+    for label, bundle in (("target", server_bundle()), ("1.4.0 overlay", server_bundle(source_release="1.4.0"))):
+        schema = MySQLSchema(bundle)
+        previous = "v1_5_0_008"
+        revision = bundle.head
+        inventory = copy.deepcopy(schema._schemas[previous])
+
+        for statement in schema._statements[revision]:
+            text = " ".join(statement.split())
+            if text.startswith("CREATE TABLE"):
+                name, table = _parse_table(text, database=None)
+                inventory["tables"][name] = copy.deepcopy(table)
+            elif text.startswith("CREATE INDEX"):
+                parts = text.split()
+                index, table = parts[2], parts[4]
+                # A table with an index of its own keeps that table: an index statement never removes it.
+                columns = [part.strip("(),") for part in parts[5:] if part.strip("(),")]
+                inventory["tables"][table]["indexes"][index] = {
+                    "columns": [[column, None, "asc"] for column in columns],
+                    "unique": False,
+                }
+            else:  # pragma: no cover - guards the test itself against an unrecognised form
+                assert not text, f"{label}: unhandled statement {text[:60]}"
+
+        # Every table the previous state had must still be present, plus exactly the created ones.
+        assert set(schema._schemas[previous]["tables"]) <= set(inventory["tables"]), label
+        assert inventory["tables"] == schema._schemas[revision]["tables"], label
+
+        # And the schema accepts the state its own DDL produced.
+        schema.verify(inventory, revision)
+        assert schema.identify(inventory) == revision, label
+
+
+def test_lifecycle_default_is_the_reflected_literal_form() -> None:
+    """A string column default must be recorded the way reflection reports it.
+
+    MySQL reports a string default as a literal, and the owning parser turns that into a
+    ``["literal", value]`` node. The same column name carries that form in the released baseline
+    (``pc_artifact_heads.lifecycle_state`` is ``["literal", "active"]``), so a flat string here would
+    describe a shape no real database ever reports, and verification would reject a genuine upgrade.
+    """
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.mysql_schema import MySQLSchema
+
+    schema = MySQLSchema(server_bundle())
+
+    # The released baseline is the control: reflection already produced the literal form before this
+    # candidate chain existed, so this is the owning representation rather than a preference.
+    released = schema._schemas["s1300"]["tables"]["pc_artifact_heads"]["columns"]["lifecycle_state"]
+    assert released["default"] == ["literal", "active"]
+
+    for revision in ("v1_5_0_006", "v1_5_0_009"):
+        recorded = schema._schemas[revision]["tables"]["pc_scopes"]["columns"]["lifecycle_state"]["default"]
+        assert recorded == ["literal", "writable"], revision
+
+
+def test_candidate_chain_verifies_against_reflection_shaped_states() -> None:
+    """Walk the candidate revisions from states shaped as a real database would report them.
+
+    The starting inventory is built the way reflection builds it - string defaults as literal nodes -
+    rather than by copying the registry, so agreement here is evidence about a real upgrade rather than
+    a restatement of the expectation.
+    """
+
+    import copy
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.mysql_schema import MySQLSchema, _parse_table
+
+    def reflection_shaped(schema, revision, replacements):
+        state = copy.deepcopy(schema._schemas[revision])
+        for table, column, value in replacements:
+            state["tables"][table]["columns"][column]["default"] = value
+        return {"tables": state["tables"], "views": [], "triggers": []}
+
+    for label, bundle in (("target", server_bundle()), ("1.4.0 overlay", server_bundle(source_release="1.4.0"))):
+        schema = MySQLSchema(bundle)
+        literal = [("pc_scopes", "lifecycle_state", ["literal", "writable"])]
+
+        # 005 -> 006: the column arrives as reflection reports it, then verifies.
+        state = reflection_shaped(schema, "v1_5_0_005", [])
+        state["tables"]["pc_scopes"]["columns"]["lifecycle_state"] = copy.deepcopy(
+            schema._schemas["v1_5_0_006"]["tables"]["pc_scopes"]["columns"]["lifecycle_state"]
+        )
+        schema.verify(state, "v1_5_0_006")
+        assert schema.identify(state) == "v1_5_0_006", label
+
+        # 008 -> 009: apply the real DDL to a reflection-shaped 008 and verify the result.
+        state = reflection_shaped(schema, "v1_5_0_008", literal)
+        recovery = schema.recovery(state, "v1_5_0_008")
+        assert recovery.revision == "v1_5_0_009", label
+        for statement in recovery.pending_statements:
+            text = " ".join(statement.split())
+            if text.startswith("CREATE TABLE"):
+                name, table = _parse_table(text, database=None)
+                state["tables"][name] = copy.deepcopy(table)
+            elif text.startswith("CREATE INDEX"):
+                parts = text.split()
+                state["tables"][parts[4]]["indexes"][parts[2]] = {
+                    "columns": [[parts[5].strip("(),"), None, "asc"]],
+                    "unique": False,
+                }
+            else:  # pragma: no cover - guards this test against an unrecognised statement form
+                assert not text
+        schema.verify(state, "v1_5_0_009")
+        assert schema.identify(state) == "v1_5_0_009", label
+
+        # At the head there is no further revision to recover.
+        with pytest.raises(MigrationError):
+            schema.recovery(state, "v1_5_0_009")

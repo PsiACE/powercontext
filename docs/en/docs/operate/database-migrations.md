@@ -17,8 +17,8 @@ The design follows [RFC #1771](https://github.com/oceanbase/powercontext/pull/17
 The full Server framework uses two normalization checkpoints before its shared migration chain for the PowerContext
 1.5.2 target (stored compatibility IDs shown below):
 
-- **1.3.0:** `s1300 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006 → v1_5_0_007`.
-- **1.4.0:** `r1400 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006 → v1_5_0_007` through a separate frozen source bridge.
+- **1.3.0:** `s1300 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006 → v1_5_0_007 → v1_5_0_008 → v1_5_0_009`.
+- **1.4.0:** `r1400 → s1400 → s1401 → s1402 → v1_4_1_004 → v1_4_1_005 → v1_4_1_006 → v1_5_0_001 → v1_5_0_002 → v1_5_0_003 → v1_5_0_004 → v1_5_0_005 → v1_5_0_006 → v1_5_0_007 → v1_5_0_008 → v1_5_0_009` through a separate frozen source bridge.
 
 Application release numbers and schema revisions are distinct. The 1.4.0 release is not the `s1400` checkpoint:
 its existing Candidate schema is current, but its Topic attempt storage still needs the registered bridge.
@@ -99,6 +99,29 @@ Revision `v1_5_0_006` adds `pc_scopes.lifecycle_state` and nothing else. It is a
 
 Revision `v1_5_0_007` adds `pc_scope_deletions` and `pc_scope_deletion_progress`. They record one explicit deletion's operation identity, the exact structural set and versions the requester confirmed, and one progress row per member and owned-resource handler. Access cutoff is not stored here: it is `pc_scopes.lifecycle_state`, so an incomplete cleanup still leaves the members unavailable instead of readable again. Both tables are additive; no existing table, index or row changes, and `v1_5_0_005` and `v1_5_0_006` keep their recorded fingerprints.
 
+Revision `v1_5_0_008` rebuilds `pc_artifact_publications` so its source columns stay a retained
+address rather than a foreign key, while the target-side key still protects the delivered copy. Every
+row, address, digest and idempotency key is copied unchanged, so an existing publication reads back the
+exact origin it was made from. Removing the source key is a forward, non-additive constraint change: it
+drops one foreign key and adds nothing. The reason is retention, not relaxation. A consuming Scope keeps
+a copy it was authorized to retain; without this change the origin's own content could never be purged,
+because that row would pin it forever. Readback never resolves the origin row, so a published copy stays
+readable and exportable after its origin is deleted.
+
+Revision `v1_5_0_009` adds the managed storage the recorded-origin and standing-rule capabilities already
+define: `pc_artifact_lineage_origins`, the four `pc_share_*` relations, and an index on
+`pc_scopes.parent_scope_id`. All six statements are additive — they create relations or an index and
+rewrite no row — so existing Scopes, Sources, Artifacts, Candidates, processing progress, acceptances and
+publication history keep their exact identities, digests and terms. The index exists because a
+descendant lookup is a directory query: without it the lookup scans every Scope, and with it the same
+lookup searches only the matching rows. Measured on 10 000 Scopes, 200 descendant lookups fall from about
+35 ms to about 0.5 ms and the query plan changes from a full scan to an indexed search. Bounded result
+counts are not a bound on database work: a caller that asks for every Scope still reads every Scope.
+Scope lifecycle operations are the bounded case — an explicit deletion is previewed over one confirmed
+structural set, so its own range is declared and checked — while a full catalog selection remains
+unbounded and a bounded management interface for it is a separate, not-yet-provided surface. Whether an installation
+exposes standing rules at runtime also depends on the runtime wiring, not on this revision alone.
+
 Revision `v1_4_1_006` registers `pc_source_write_plugins` for persisted Source write plugin declarations.
 Revision `v1_5_0_001` adds Artifact plugin registration fields, family schemas, search state and projections,
 index coverage and change tracking, and vector-space/index registrations. SQLite also registers portable vector
@@ -127,6 +150,30 @@ Server identity initialization checks registered tables without issuing DDL on m
 identity value and explicitly rotating a stopped clone's identity retain their existing transactional behavior.
 
 Vector maintenance requires the exact historical embedding profile: profile ID, model, dimension, distance and normalization. For existing Atomic data it preserves historical embeddings and Topic retrieval shape without calling an embedding provider; older Memory conversion regenerates Atomic embeddings as described above. The registered SQLite transition adds and backfills Atomic Memory's vec0 helper and transactional triggers; native backends retain the registered vector columns and HNSW parameters. `pc_server_storage_profile` stores the complete embedding configuration, not another revision or recovery journal. Generic storage readers validate this declaration, and Server startup uses the configured or injected model's actual profile. Missing managed helpers and profile changes are rejected before startup repair or writes.
+
+A database created by table definitions alone — an unmanaged `create_all` file — carries no revision
+marker and is a different provenance from a released install. Planning reads its actual shape and
+compares it with the registered released shapes. Two outcomes are supported and one is not:
+
+| Observed shape | Outcome |
+| --- | --- |
+| Matches a registered released shape | Recognized as that source revision, for example `r1400`, and planned forward to `v1_5_0_009` |
+| Unmanaged, with storage the registered target does not preserve | Refused before any write, with `data_conversion_required` naming the relation and the check |
+| Unrecognized | Refused, with no changes made |
+
+The tested refusal case is a real 59-table `create_all` database recognized as `r1400` and planned to
+`v1_5_0_009`, then refused at apply with `data_conversion_required` because
+`pc_topic_memory_work_budgets` carries additional checks the registered target does not preserve. Nothing
+was written: no revision marker, no `pc_artifact_lineage_origins`, no `pc_share_*` relation, and every
+original row was intact. That is a deliberate refusal of an unsupported shape, not a successful upgrade —
+this file has no qualified conversion path. Reading it as "the contract works" would be overstatement:
+what is established is that an unsupported shape is rejected safely before mutation.
+
+Existing data is not put at risk by that refusal. A file in this state keeps serving on its current
+version, and the supported routes out are the existing, separately documented ones: export it as a
+portable bundle from a matching installation and restore into a freshly prepared target, or bring the
+shape to a registered released layout by the documented maintenance path first. Broader pre-existing
+unmanaged upgrade remains an open capability, not a delivered one.
 
 Empty persistent SQLite/seekDB Server storage with vectors initializes through the selected profile of the same chain. Existing unmanaged storage requires explicit maintenance, state-based normalization and verification of the registered checkpoint requirements. Changing configuration cannot bypass admission, enable vectors on no-vector managed storage, or implicitly add vector/Code objects. Enabling embedded Code on an already managed database without its tables requires a separately registered configuration transition; startup and the standalone Code CLI reject it. The catalog retains twelve combinations of the 1.3.0 source, three backends, vectors enabled or disabled, and Code enabled or disabled. Embedded seekDB requires pylibseekdb 1.4.0.post2 or newer with the recovered-transaction lock fix. Automatic CI and publication require all twelve configurations, including both embedded seekDB Code configurations; none are waived. Main workflow dispatch with `upgrade_selection=seekdb-code` runs a diagnostic subset and cannot authorize publication. The 1.4.0 bridge remains registered but is outside CI upgrade acceptance; passing this gate does not certify that path. Code cases build an index with each installed source release, preserve its cache files and embedded graph rows, and query the original fingerprint and symbols after the upgrade. Vector cases preserve nonempty historical Atomic and Topic embeddings, verify semantic reads and new writes through the installed target, reject profile drift, and compare fresh/upgraded storage. SQLite also tests missing-helper rejection and backup restoration. A successful no-vector case does not establish vector support; each configuration needs passing evidence for the actual target artifact before upgrade support can be claimed.
 
@@ -172,12 +219,14 @@ Sequence `000` identifies a registered historical baseline; upgrade steps start 
 | `v1_5_0_005` | 1.5.0 | 5 | `v1_5_0_005` | Remove previous plugin-framework storage and add nullable Artifact metadata |
 | `v1_5_0_006` | 1.5.0 | 6 | `v1_5_0_006` | Add Scope lifecycle state for archive and deletion |
 | `v1_5_0_007` | 1.5.0 | 7 | `v1_5_0_007` | Add the explicit Scope deletion operation and per-resource progress |
+| `v1_5_0_008` | 1.5.0 | 8 | `v1_5_0_008` | Keep a published copy's origin as a retained address |
+| `v1_5_0_009` | 1.5.0 | 9 | `v1_5_0_009` | Recorded origins, standing-rule storage, and the Scope parent index |
 
-Both registered source paths reach `v1_5_0_007`; only 1.3.0 is selected for CI upgrade acceptance:
+Both registered source paths reach `v1_5_0_009`; only 1.3.0 is selected for CI upgrade acceptance:
 
 ```text
-1.3.0: v1_3_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006 -> v1_5_0_007
-1.4.0: v1_4_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006 -> v1_5_0_007
+1.3.0: v1_3_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006 -> v1_5_0_007 -> v1_5_0_008 -> v1_5_0_009
+1.4.0: v1_4_0_000 -> v1_4_1_001 -> v1_4_1_002 -> v1_4_1_003 -> v1_4_1_004 -> v1_4_1_005 -> v1_4_1_006 -> v1_5_0_001 -> v1_5_0_002 -> v1_5_0_003 -> v1_5_0_004 -> v1_5_0_005 -> v1_5_0_006 -> v1_5_0_007 -> v1_5_0_008 -> v1_5_0_009
 ```
 
 `status` and `plan` show `source_migration`, `target_migration` and `pending_migrations`
