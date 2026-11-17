@@ -26,7 +26,9 @@ import sqlite3
 from pathlib import Path
 
 from powercontext.builtin.persistence.migrations.deployment import deployment_runner
-from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.persistence.migrations.models import MigrationError
+from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
+from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig
 from powercontext.builtin.runtime.composition import open_builtin_runtime
@@ -126,10 +128,75 @@ def test_database_at_the_previous_revision_plans_the_upgrade(tmp_path: Path) -> 
             connection.close()
 
         # Reapplying is a no-op, and the upgraded file is now a full target.
-        assert deployment_runner(
-            ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
-        ).plan(backup_policy="skip").state == "ready"
+        assert (
+            deployment_runner(ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")))
+            .plan(backup_policy="skip")
+            .state
+            == "ready"
+        )
         async with open_builtin_runtime(_config(database)) as runtime:
             assert runtime.share_rules is not None
 
     asyncio.run(scenario())
+
+
+def _build_unmanaged(database: Path) -> None:
+    """Create a file the way an unmanaged deployment does: tables only, no revision marker."""
+
+    async def build() -> None:
+        async with (
+            SQLiteProfile.open(SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"), tables=BUILTIN_TABLES) as profile,
+            profile.database.transaction() as connection,
+        ):
+            await connection.exec_driver_sql(
+                "INSERT INTO pc_scopes "
+                "(scope_id,title,summary,scope_id_search,title_search,summary_search,version) "
+                "VALUES ('legacy','old','s','s','t','s',1)"
+            )
+
+    asyncio.run(build())
+
+
+_REFUSALS = {"data_conversion_required", "unknown_baseline", "server_migration_unavailable"}
+
+
+def test_unmanaged_database_is_admitted_or_refused_never_silently_stamped(tmp_path: Path) -> None:
+    """An unmanaged file is either provably admitted or clearly refused, and refusal writes nothing."""
+
+    database = tmp_path / "unmanaged.db"
+    _build_unmanaged(database)
+    assert "pc_schema_revision" not in _names(database)
+
+    runner = deployment_runner(ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")))
+    try:
+        plan = runner.plan(backup_policy="skip")
+        result = runner.apply(
+            plan_id=plan.plan_id,
+            accepted=True,
+            maintenance_confirmed=True,
+            backup_policy="skip",
+            accept_no_backup=True,
+        )
+    except MigrationError as refusal:
+        # A shape the registered chain cannot prove is refused instead of coerced, before any write:
+        # no revision marker, no new relations, and the original rows untouched.
+        assert refusal.code in _REFUSALS, refusal.code
+        names = _names(database)
+        assert "pc_schema_revision" not in names
+        assert "pc_artifact_lineage_origins" not in names
+        assert not any(name.startswith("pc_share") for name in names)
+        connection = sqlite3.connect(database)
+        try:
+            assert connection.execute("SELECT scope_id FROM pc_scopes").fetchall() == [("legacy",)]
+        finally:
+            connection.close()
+        return
+
+    # A recognized released shape may proceed, but only after explicit acceptance.
+    assert result.state == "ready"
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute("SELECT scope_id FROM pc_scopes").fetchall() == [("legacy",)]
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()
