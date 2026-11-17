@@ -126,3 +126,12 @@ class ScopeRangeLimitError(ScopeError, RuntimeError):
             super().__init__("Scope range resolution requires an exact or subtree selection")
         else:
             super().__init__(f"Scope range exceeds its {kind} budget")
+
+
+class ScopeDeletionUnauthorizedError(ScopeError, PermissionError):
+    """The caller holds no current authority over every applicable confirmed member."""
+
+    def __init__(self, scope_id: str, reason: str) -> None:
+        self.scope_id = scope_id
+        self.reason = reason
+        super().__init__("Scope deletion operation is not authorized for this requester")

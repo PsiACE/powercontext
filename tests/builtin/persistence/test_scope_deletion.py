@@ -24,6 +24,7 @@ import pytest
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.experience import Experience, ExperienceContent
 from powercontext.builtin.artifacts.experience.models import ExperienceDraft
+from powercontext.builtin.authz.models import PrincipalRef, ResourceRef
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.scope_lifecycle import require_writable
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
@@ -34,6 +35,7 @@ from powercontext.builtin.scope import ScopeApplication, ScopeDeletionApplicatio
 from powercontext.builtin.scope.errors import (
     ScopeDeletionBindingRepairError,
     ScopeDeletionConflictError,
+    ScopeDeletionUnauthorizedError,
     ScopeNotFoundError,
     ScopeNotWritableError,
     ScopeRangeLimitError,
@@ -114,6 +116,7 @@ async def _family(tmp_path, *, handlers=None):
             opened.database,
             scopes,
             handlers=await _resolve_handlers(opened, handlers),
+            trusted_local=True,
         )
         root = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="root"))
         child = await scopes.create(
@@ -755,6 +758,7 @@ def test_deep_exact_chain_finalizes_without_recursion_and_retry_converges(tmp_pa
                     ScopeProjectionHandler(atomic, experience),
                 ),
                 limits=ScopeRangeLimits(max_nodes=depth),
+                trusted_local=True,
             )
 
             root = await scopes.create(ScopeDraft(title="root", summary="Project", idempotency_key="root"))
@@ -806,7 +810,7 @@ def test_legacy_short_recorded_operation_never_reports_false_complete(tmp_path) 
         from sqlalchemy import text
 
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-        from powercontext.builtin.scope.deletion import _encode_members
+        from powercontext.builtin.scope.deletion import encode_legacy_confirmed_scopes
         from powercontext.builtin.scope.models import ScopeDeletionMember
         from powercontext.builtin.scope.repository import ScopeRepository
 
@@ -827,7 +831,7 @@ def test_legacy_short_recorded_operation_never_reports_false_complete(tmp_path) 
                 await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
                 members = (ScopeDeletionMember(scope_id=scope.scope_id, parent_scope_id=None, version=scope.version),)
                 await repository.record_deletion(
-                    connection, "del_legacy0001", scope.scope_id, "0" * 64, _encode_members(members)
+                    connection, "del_legacy0001", scope.scope_id, "0" * 64, encode_legacy_confirmed_scopes(members)
                 )
                 await repository.record_progress(
                     connection, "del_legacy0001", ((scope.scope_id, "owned-resources"), (scope.scope_id, "evidence"))
@@ -916,7 +920,7 @@ def test_coverage_is_checked_per_member_not_unioned_across_members(tmp_path) -> 
 
     async def scenario() -> None:
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-        from powercontext.builtin.scope.deletion import _encode_members, recorded_coverage
+        from powercontext.builtin.scope.deletion import encode_legacy_confirmed_scopes, recorded_coverage
         from powercontext.builtin.scope.models import ScopeDeletionMember
         from powercontext.builtin.scope.repository import ScopeRepository
 
@@ -951,7 +955,7 @@ def test_coverage_is_checked_per_member_not_unioned_across_members(tmp_path) -> 
                 for scope in (complete_member, short_member):
                     await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
                 await repository.record_deletion(
-                    connection, "del_asymmetric01", parent.scope_id, "0" * 64, _encode_members(members)
+                    connection, "del_asymmetric01", parent.scope_id, "0" * 64, encode_legacy_confirmed_scopes(members)
                 )
                 # A: full set. B: required owner never recorded.
                 await repository.record_progress(
@@ -996,7 +1000,7 @@ def test_repair_preserves_a_rows_own_failure_diagnostic(tmp_path) -> None:
 
     async def scenario() -> None:
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-        from powercontext.builtin.scope.deletion import MISSING_COVERAGE_CODE, _encode_members
+        from powercontext.builtin.scope.deletion import MISSING_COVERAGE_CODE, encode_legacy_confirmed_scopes
         from powercontext.builtin.scope.models import ScopeDeletionMember
         from powercontext.builtin.scope.repository import ScopeRepository
 
@@ -1015,7 +1019,7 @@ def test_repair_preserves_a_rows_own_failure_diagnostic(tmp_path) -> None:
                 await repository.lock_hierarchy(connection)
                 await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
                 await repository.record_deletion(
-                    connection, "del_evidence01", scope.scope_id, "0" * 64, _encode_members(members)
+                    connection, "del_evidence01", scope.scope_id, "0" * 64, encode_legacy_confirmed_scopes(members)
                 )
                 await repository.record_progress(
                     connection, "del_evidence01", ((scope.scope_id, "owned-resources"), (scope.scope_id, "evidence"))
@@ -1071,7 +1075,7 @@ def test_concurrent_repair_converges_without_duplicate_work(tmp_path) -> None:
         import asyncio
 
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-        from powercontext.builtin.scope.deletion import _encode_members
+        from powercontext.builtin.scope.deletion import encode_legacy_confirmed_scopes
         from powercontext.builtin.scope.models import ScopeDeletionMember
         from powercontext.builtin.scope.repository import ScopeRepository
 
@@ -1090,7 +1094,7 @@ def test_concurrent_repair_converges_without_duplicate_work(tmp_path) -> None:
                 await repository.lock_hierarchy(connection)
                 await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
                 await repository.record_deletion(
-                    connection, "del_concurrent1", scope.scope_id, "0" * 64, _encode_members(members)
+                    connection, "del_concurrent1", scope.scope_id, "0" * 64, encode_legacy_confirmed_scopes(members)
                 )
                 await repository.record_progress(
                     connection,
@@ -1116,5 +1120,286 @@ def test_concurrent_repair_converges_without_duplicate_work(tmp_path) -> None:
                 pending = [(item.scope_id, item.handler) for item in receipt.progress if item.state == "pending"]
                 assert pending == [(scope.scope_id, "projections")]
             assert (await deletion.cleanup("del_concurrent1")).complete
+
+    _run(scenario)
+
+
+GRANTER = PrincipalRef(type="service", id="test-granter")
+MANAGER = PrincipalRef(type="user", id="manager")
+OUTSIDER = PrincipalRef(type="user", id="outsider")
+OBSERVER = PrincipalRef(type="service", id="observer")
+
+
+async def _access_for(profile):
+    """Open the canonical Access service over the same database the Scopes live in."""
+
+    from contextlib import AsyncExitStack
+
+    from powercontext.builtin.authz.composition import open_builtin_access_control
+
+    stack = AsyncExitStack()
+    access = await stack.enter_async_context(
+        open_builtin_access_control(
+            SQLiteConfig(url=str(profile.database.engine.url)), bootstrap_administrators=(GRANTER,)
+        )
+    )
+    return stack, access
+
+
+async def _grant(access, principal, scope_id: str, role, *, granter=None) -> None:
+    """Create one binding through the canonical service, as an authorized granter."""
+
+    from powercontext.builtin.authz.service import AccessAuditContext, CreateBinding
+
+    return await access.create_binding(
+        granter,
+        CreateBinding(
+            subject=principal,
+            resource=ResourceRef.scope(scope_id),
+            role=role,
+            idempotency_key=f"g:{principal.id}:{scope_id}:{role.value}",
+        ),
+        context=AccessAuditContext(transport="uds", operation="test_grant"),
+    )
+
+
+def _checker(access, principal):
+    from powercontext.builtin.authz.service import AccessAuditContext
+
+    async def check(checks) -> None:
+        await access.require_all(
+            principal, tuple(checks), context=AccessAuditContext(transport="uds", operation="scope_deletion")
+        )
+
+    return check
+
+
+async def _access_for_database(profile):
+    """The canonical Access service over the same engine the Scopes live in."""
+
+    from contextlib import AsyncExitStack
+
+    from powercontext.builtin.authz.composition import open_builtin_access_control
+
+    stack = AsyncExitStack()
+    access = await stack.enter_async_context(
+        open_builtin_access_control(
+            SQLiteConfig(url=str(profile.database.engine.url)), bootstrap_administrators=(GRANTER,)
+        )
+    )
+    return stack, access
+
+
+def test_manager_needs_authority_on_every_member_and_observer_is_never_enough(tmp_path) -> None:
+    """One member's manager cannot confirm; observation cannot confirm at all."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'every-member.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                deletion = ScopeDeletionApplication(
+                    profile.database, scopes, handlers=await _complete_handlers(profile)
+                )
+                root = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="r"))
+                child = await scopes.create(
+                    ScopeDraft(title="Interface", summary="L", parent_scope_id=root.scope_id, idempotency_key="c")
+                )
+                selection = ScopeSelection(mode="subtree", root_scope_id=root.scope_id)
+                preview = await deletion.preview(selection)
+
+                # Authority on one member only: refused before any cutoff.
+                await _grant(access, MANAGER, root.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.confirm(
+                        selection,
+                        preview.membership_digest,
+                        requester=MANAGER,
+                        authorize=_checker(access, MANAGER),
+                    )
+                assert (await deletion.state_of(root.scope_id)).lifecycle_state == "writable"
+                assert (await deletion.state_of(child.scope_id)).lifecycle_state == "writable"
+
+                # An observer role is not management authority.
+                await _grant(access, OBSERVER, root.scope_id, AccessRole.SCOPE_VIEWER, granter=GRANTER)
+                await _grant(access, OBSERVER, child.scope_id, AccessRole.SCOPE_VIEWER, granter=GRANTER)
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.confirm(
+                        selection,
+                        preview.membership_digest,
+                        requester=OBSERVER,
+                        authorize=_checker(access, OBSERVER),
+                    )
+                assert (await deletion.state_of(root.scope_id)).lifecycle_state == "writable"
+
+                # Authority on every member is admitted, and the requester is recorded.
+                await _grant(access, MANAGER, child.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                receipt = await deletion.confirm(
+                    selection,
+                    preview.membership_digest,
+                    requester=MANAGER,
+                    authorize=_checker(access, MANAGER),
+                )
+                assert receipt.complete
+                assert receipt.attestation is not None
+                assert (receipt.attestation.requester_type, receipt.attestation.requester_id) == (
+                    MANAGER.type,
+                    MANAGER.id,
+                )
+            finally:
+                await stack.aclose() if stack is not None else None
+
+    _run(scenario)
+
+
+def test_revoked_manager_cannot_resume_a_pending_deletion(tmp_path) -> None:
+    """Live authority is re-checked, so a revocation stops further destructive work."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'revoked.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                failing = _FailingHandler()
+                owners = await _complete_handlers(profile)
+                deletion = ScopeDeletionApplication(profile.database, scopes, handlers=(*owners, failing))
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="rv"))
+                binding = await _grant(access, MANAGER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                assert binding is not None
+
+                selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+                preview = await deletion.preview(selection)
+                receipt = await deletion.confirm(
+                    selection, preview.membership_digest, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert not receipt.complete
+
+                # Revoke the manager's authority over the still-live member.
+                from powercontext.builtin.authz.service import AccessAuditContext
+
+                await access.revoke_binding(
+                    GRANTER,
+                    binding.binding_id,
+                    expected_version=binding.version,
+                    idempotency_key="revoke-1",
+                    context=AccessAuditContext(transport="uds", operation="revoke"),
+                )
+
+                # The manager can no longer resume, and the member stays unavailable.
+                failing.fail = False
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.cleanup(receipt.operation_id, requester=MANAGER, authorize=_checker(access, MANAGER))
+                assert (await deletion.state_of(scope.scope_id)).lifecycle_state == "deleting"
+            finally:
+                await stack.aclose()
+
+    _run(scenario)
+
+
+def test_terminal_readback_is_limited_to_the_recorded_requester(tmp_path) -> None:
+    """After members are gone, only the attested requester reads the operation."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'terminal.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                deletion = ScopeDeletionApplication(
+                    profile.database, scopes, handlers=await _complete_handlers(profile)
+                )
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="tm"))
+                await _grant(access, MANAGER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+
+                selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+                preview = await deletion.preview(selection)
+                receipt = await deletion.confirm(
+                    selection, preview.membership_digest, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert receipt.complete
+
+                # The requester can read the terminal record without any live Scope.
+                readback = await deletion.operation(
+                    receipt.operation_id, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert readback is not None and readback.complete
+
+                # Anyone else is refused, and no Scope is resurrected.
+                for outsider in (OUTSIDER, OBSERVER):
+                    with pytest.raises(ScopeDeletionUnauthorizedError):
+                        await deletion.operation(
+                            receipt.operation_id, requester=outsider, authorize=_checker(access, outsider)
+                        )
+                with pytest.raises(ScopeNotFoundError):
+                    await deletion.state_of(scope.scope_id)
+
+                # A completed operation stays idempotent for its requester.
+                assert (
+                    await deletion.cleanup(receipt.operation_id, requester=MANAGER, authorize=_checker(access, MANAGER))
+                ).complete
+            finally:
+                await stack.aclose()
+
+    _run(scenario)
+
+
+def test_legacy_operation_without_a_requester_is_never_admitted(tmp_path) -> None:
+    """A record with no attestation fails closed for every principal."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.scope.deletion import encode_legacy_confirmed_scopes
+        from powercontext.builtin.scope.models import ScopeDeletionMember
+        from powercontext.builtin.scope.repository import ScopeRepository
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                deletion = ScopeDeletionApplication(
+                    profile.database, scopes, handlers=await _complete_handlers(profile)
+                )
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="lg"))
+                repository = ScopeRepository()
+                members = (ScopeDeletionMember(scope_id=scope.scope_id, parent_scope_id=None, version=scope.version),)
+                # A record written before attestations existed: no requester at all.
+                async with profile.database.transaction() as connection:
+                    await repository.lock_hierarchy(connection)
+                    await repository.transition_lifecycle(connection, scope.scope_id, "writable", "deleting")
+                    await repository.record_deletion(
+                        connection,
+                        "del_legacy0001",
+                        scope.scope_id,
+                        "0" * 64,
+                        encode_legacy_confirmed_scopes(members),
+                    )
+                    await repository.record_progress(
+                        connection,
+                        "del_legacy0001",
+                        ((scope.scope_id, "owned-resources"), (scope.scope_id, "evidence")),
+                    )
+
+                receipt = await deletion._receipt("del_legacy0001")
+                assert receipt.attestation is None
+
+                # An unattested record is refused for a live member, whatever the role.
+                for principal in (MANAGER, OUTSIDER):
+                    with pytest.raises(ScopeDeletionUnauthorizedError):
+                        await deletion.operation(
+                            "del_legacy0001", requester=principal, authorize=_checker(access, principal)
+                        )
+                # And without any requester at all.
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.cleanup("del_legacy0001")
+            finally:
+                await stack.aclose()
 
     _run(scenario)

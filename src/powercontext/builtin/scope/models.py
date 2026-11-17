@@ -415,6 +415,9 @@ class ScopeDeletionReceipt(_ScopeValue):
     state: ScopeDeletionState
     members: tuple[ScopeDeletionMember, ...]
     progress: tuple[ScopeResourceProgress, ...]
+    # Present for operations recorded with a requester. A legacy record has none,
+    # which is information, not a default owner.
+    attestation: ScopeDeletionAttestation | None = None
 
     @property
     def complete(self) -> bool:
@@ -427,3 +430,29 @@ class ScopeDeletionReceipt(_ScopeValue):
     @property
     def unfinished(self) -> tuple[ScopeResourceProgress, ...]:
         return tuple(item for item in self.progress if item.state != "done")
+
+
+class ScopeDeletionAttestation(_ScopeValue):
+    """Who confirmed an operation and which authority was actually checked.
+
+    This is evidence of what was true at confirmation, never a grant. It carries
+    no content: only the authenticated principal and the exact
+    ``(action, scope_id)`` checks that admitted the operation.
+    """
+
+    requester_type: Literal["user", "service"]
+    requester_id: str = Field(min_length=1, max_length=255)
+    checks: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def of(cls, principal, checks: tuple[tuple[str, str], ...]) -> ScopeDeletionAttestation:
+        return cls(
+            requester_type=principal.type,
+            requester_id=principal.id,
+            checks=tuple(sorted(set(checks))),
+        )
+
+    def names(self, principal) -> bool:
+        """Whether ``principal`` is exactly the requester this operation recorded."""
+
+        return principal is not None and (self.requester_type == principal.type and self.requester_id == principal.id)

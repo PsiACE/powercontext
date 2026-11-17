@@ -38,15 +38,18 @@ import rfc8785
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from powercontext.builtin.authz.models import AccessAction, ResourceRef
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.scope.errors import (
     ScopeDeletionBindingRepairError,
     ScopeDeletionConflictError,
+    ScopeDeletionUnauthorizedError,
     ScopeLifecycleConflictError,
     ScopeNotFoundError,
     ScopeResourceHandlerUnsupportedError,
 )
 from powercontext.builtin.scope.models import (
+    ScopeDeletionAttestation,
     ScopeDeletionMember,
     ScopeDeletionPreview,
     ScopeDeletionReceipt,
@@ -79,6 +82,7 @@ class ScopeDeletionApplication:
         repository: ScopeRepository | None = None,
         handlers: tuple[ScopeResourceHandler, ...] | None = None,
         limits: ScopeRangeLimits | None = None,
+        trusted_local: bool = False,
     ) -> None:
         self._database = database
         self._scopes = scopes
@@ -87,6 +91,11 @@ class ScopeDeletionApplication:
         # Bounded resolution contract: exceeding either budget refuses the whole
         # operation instead of acting on a truncated set.
         self._limits = ScopeRangeLimits() if limits is None else limits
+        # Mirror the Runtime's existing trust contract: a local in-process caller
+        # may declare that authorization is intentionally handled by its owner,
+        # exactly as `ExecutionContext.trusted_local` already does elsewhere. The
+        # default is not trusted, so an unauthenticated caller fails closed.
+        self._trusted_local = trusted_local
 
     async def preview(self, selection: ScopeSelection, /) -> ScopeDeletionPreview:
         """Return the exact bounded structural set and its digest. This grants no authority."""
@@ -95,6 +104,12 @@ class ScopeDeletionApplication:
             raise ScopeDeletionConflictError("<all>", "deletion requires an explicit Scope selection")
         async with self._database.transaction() as connection:
             return await self._preview(connection, selection)
+
+    async def _preview_members(self, selection: ScopeSelection) -> tuple[ScopeDeletionMember, ...]:
+        """Resolve the structural members outside any caller-held transaction."""
+
+        async with self._database.transaction() as connection:
+            return (await self._preview(connection, selection)).members
 
     async def _preview(self, connection: AsyncConnection, selection: ScopeSelection) -> ScopeDeletionPreview:
         # The bounded resolver owns structural membership and bounds: it reads
@@ -118,6 +133,8 @@ class ScopeDeletionApplication:
         /,
         *,
         single_scope: bool = False,
+        requester=None,
+        authorize=None,
     ) -> ScopeDeletionReceipt:
         """Cut access and record the operation, refusing a changed set or unsafe prerequisites.
 
@@ -130,6 +147,13 @@ class ScopeDeletionApplication:
         # resource this build owns must never be accepted and then reported complete.
         require_complete_handlers(self._handlers)
         require_supported_handlers(self._handlers)
+        # Authority is resolved before the write transaction is opened: the check
+        # reads the same database through the access service, which cannot share
+        # this transaction's writer lock. The digest is re-verified inside the
+        # transaction below, so a set that changed in between is still refused.
+        attestation = await self._authorize_members(
+            (await self._preview_members(selection)), requester=requester, authorize=authorize
+        )
         async with self._scopes._write_lock, self._database.transaction() as connection:
             # Structural attach/move and publication take this same boundary, so a
             # child cannot be attached or moved after the set is read and before it
@@ -164,7 +188,7 @@ class ScopeDeletionApplication:
                 operation_id,
                 current.root_scope_id,
                 current.membership_digest,
-                _encode_members(current.members),
+                _encode_record(current.members, attestation),
             )
             await self._repository.record_progress(
                 connection,
@@ -174,12 +198,13 @@ class ScopeDeletionApplication:
             # Inbound references are removed with the cutoff, not with cleanup, so
             # no consumer is left pointing at unavailable material.
             await self._repository.clear_references_to(connection, current.scope_ids)
-        return await self.cleanup(operation_id)
+        return await self.cleanup(operation_id, requester=requester, authorize=authorize)
 
-    async def cleanup(self, operation_id: str, /) -> ScopeDeletionReceipt:
+    async def cleanup(self, operation_id: str, /, *, requester=None, authorize=None) -> ScopeDeletionReceipt:
         """Run every unfinished handler; repeat calls resume and complete the operation."""
 
         record = await self._receipt(operation_id)
+        await self._authorize_members(record.members, requester=requester, authorize=authorize)
         if record.state == "complete":
             return record
         for progress in record.unfinished:
@@ -252,7 +277,7 @@ class ScopeDeletionApplication:
                 )
         return await self._receipt(receipt.operation_id)
 
-    async def repair_coverage(self, operation_id: str, /) -> ScopeDeletionReceipt:
+    async def repair_coverage(self, operation_id: str, /, *, requester=None, authorize=None) -> ScopeDeletionReceipt:
         """Record the required owner work a legacy operation never had, as pending.
 
         An operation created under an earlier, shorter handler set cannot be
@@ -274,6 +299,7 @@ class ScopeDeletionApplication:
         if record is None:
             raise ScopeNotFoundError(operation_id)
         receipt = await self._receipt(operation_id)
+        await self._authorize_members(receipt.members, requester=requester, authorize=authorize)
         if receipt.state == "complete":
             # A legitimately completed operation is idempotent and is not reopened.
             return receipt
@@ -302,13 +328,20 @@ class ScopeDeletionApplication:
                 return reread
         return await self._receipt(operation_id)
 
-    async def operation(self, operation_id: str, /) -> ScopeDeletionReceipt | None:
-        """Read one operation and its progress for an authorized manager."""
+    async def operation(self, operation_id: str, /, *, requester=None, authorize=None) -> ScopeDeletionReceipt | None:
+        """Read one operation and its progress for an authorized manager.
+
+        Status is authorized exactly like a resume: current authority on every
+        applicable member while they exist, and the recorded requester once they
+        are gone. Observation alone never admits this read.
+        """
 
         try:
-            return await self._receipt(operation_id)
+            receipt = await self._receipt(operation_id)
         except ScopeNotFoundError:
             return None
+        await self._authorize_members(receipt.members, requester=requester, authorize=authorize)
+        return receipt
 
     async def state_of(self, scope_id: str, /) -> ScopeDescriptor:
         async with self._database.transaction() as connection:
@@ -358,6 +391,87 @@ class ScopeDeletionApplication:
             if binding is not None:
                 raise ScopeDeletionBindingRepairError(member.scope_id, binding, is_default=False)
 
+    async def _authorize_members(
+        self,
+        members: tuple[ScopeDeletionMember, ...],
+        /,
+        *,
+        requester=None,
+        authorize=None,
+    ) -> ScopeDeletionAttestation:
+        """Require current management authority on **every** applicable member.
+
+        One gate for confirm, cleanup, repair and status so a single member's
+        manager can never read or resume another manager's operation. The checks
+        are AND-ed per member, and observation is deliberately not among them.
+
+        While a member's row still exists its *live* authority decides, so a
+        revocation takes effect before further destructive work. Once every member
+        is gone there is no Scope left to check, and the operation's own attested
+        requester is the only subject — a bounded terminal-readback choice, not a
+        global role and not a grant over any content.
+        """
+
+        if requester is None or authorize is None:
+            # A local owner that declared itself trusted keeps the pre-existing
+            # in-process contract; it still records no fabricated requester, so its
+            # operations stay unattested and terminal readback stays closed to it.
+            if self._trusted_local:
+                return ScopeDeletionAttestation(requester_type="service", requester_id="local", checks=())
+            # No authenticated subject was supplied. Only an operation whose
+            # members are all gone may proceed on its recorded attestation; a live
+            # member must be checked against a real principal.
+            if any(await self._live_member_ids(members)):
+                raise ScopeDeletionUnauthorizedError("<live>", "an authenticated requester is required")
+            recorded = await self._attested_requester(members)
+            if recorded is None:
+                raise ScopeDeletionUnauthorizedError("<legacy>", "operation records no requester")
+            return recorded
+
+        live = await self._live_member_ids(members)
+        if live:
+            checks = tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in live)
+            try:
+                await authorize(checks)
+            except ScopeDeletionUnauthorizedError:
+                raise
+            except Exception as error:
+                # Any denial from the access service is this operation's refusal:
+                # the caller holds no current authority over every member. The
+                # original error is preserved as the cause, never swallowed.
+                raise ScopeDeletionUnauthorizedError(
+                    live[0] if len(live) == 1 else "<multiple>", "current authority is insufficient"
+                ) from error
+            return ScopeDeletionAttestation.of(
+                requester,
+                tuple((AccessAction.SCOPE_ADMIN.value, scope_id) for scope_id in live),
+            )
+        # Every member is already gone: fall back to the recorded requester only.
+        recorded = await self._attested_requester(members)
+        if recorded is None or not recorded.names(requester):
+            raise ScopeDeletionUnauthorizedError("<terminal>", "operation is not visible to this requester")
+        return recorded
+
+    async def _live_member_ids(self, members: tuple[ScopeDeletionMember, ...], /) -> tuple[str, ...]:
+        """The confirmed members whose Scope row still exists, in confirmed order."""
+
+        async with self._database.transaction() as connection:
+            targets = await self._repository.deletion_targets(connection, tuple(member.scope_id for member in members))
+        present = {row[0] for row in targets}
+        return tuple(member.scope_id for member in members if member.scope_id in present)
+
+    async def _attested_requester(self, members: tuple[ScopeDeletionMember, ...], /) -> ScopeDeletionAttestation | None:
+        """Read the requester attestation of the operation covering these members."""
+
+        async with self._database.transaction() as connection:
+            operation = await self._repository.deletion_covering(
+                connection, tuple(member.scope_id for member in members)
+            )
+        if operation is None:
+            return None
+        _, attestation = _decode_record(operation)
+        return attestation
+
     def _handler(self, name: str) -> ScopeResourceHandler:
         for handler in self._handlers:
             if handler.name == name:
@@ -370,7 +484,7 @@ class ScopeDeletionApplication:
         if found is None:
             raise ScopeNotFoundError(operation_id)
         record, progress = found
-        members = _decode_members(record["confirmed_scopes"])
+        members, attestation = _decode_record(record["confirmed_scopes"])
         return ScopeDeletionReceipt(
             operation_id=str(record["operation_id"]),
             root_scope_id=str(record["root_scope_id"]),
@@ -387,6 +501,7 @@ class ScopeDeletionApplication:
                 )
                 for row in progress
             ),
+            attestation=attestation,
         )
 
 
@@ -499,15 +614,52 @@ def removal_order(members: tuple[ScopeDeletionMember, ...], /) -> tuple[str, ...
     return tuple(ordered)
 
 
-def _encode_members(members: tuple[ScopeDeletionMember, ...]) -> bytes:
+def _encode_record(
+    members: tuple[ScopeDeletionMember, ...],
+    attestation: ScopeDeletionAttestation | None,
+    /,
+) -> bytes:
+    """Encode the confirmed set, and the requester attestation when one exists.
+
+    The column is a canonical JSON document, so adding the attestation is a
+    document extension rather than a schema change. A record written before
+    attestations existed stays a bare member list and is decoded as "unattested",
+    which is what it is — it must not acquire an owner retroactively.
+    """
+
+    document: dict[str, object] = {
+        "members": [member.model_dump(mode="json") for member in members],
+    }
+    if attestation is not None:
+        document["attestation"] = attestation.model_dump(mode="json")
+    return rfc8785.dumps(document)
+
+
+def encode_legacy_confirmed_scopes(members: tuple[ScopeDeletionMember, ...], /) -> bytes:
+    """Encode the pre-attestation record shape, for fixtures reproducing legacy state.
+
+    Production writes always use ``_encode_record``. This exists so a test can
+    reproduce an operation that *genuinely* has no recorded requester, without
+    fabricating one.
+    """
+
     return rfc8785.dumps([member.model_dump(mode="json") for member in members])
 
 
-def _decode_members(payload: bytes | memoryview | str) -> tuple[ScopeDeletionMember, ...]:
+def _decode_record(
+    payload: bytes | memoryview | str,
+    /,
+) -> tuple[tuple[ScopeDeletionMember, ...], ScopeDeletionAttestation | None]:
     import json
 
     raw = bytes(payload).decode("utf-8") if isinstance(payload, (bytes, bytearray, memoryview)) else payload
-    return tuple(ScopeDeletionMember.model_validate(item) for item in json.loads(raw))
+    document = json.loads(raw)
+    if isinstance(document, list):
+        # Legacy shape: a bare confirmed member list with no requester.
+        return tuple(ScopeDeletionMember.model_validate(item) for item in document), None
+    members = tuple(ScopeDeletionMember.model_validate(item) for item in document["members"])
+    attestation = document.get("attestation")
+    return members, None if attestation is None else ScopeDeletionAttestation.model_validate(attestation)
 
 
 def _operation_id() -> str:
