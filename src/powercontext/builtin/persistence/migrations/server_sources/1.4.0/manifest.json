@@ -433,7 +433,8 @@
     "schemas/mysql-v1_5_0_004.json",
     "schemas/mysql-v1_5_0_005.json",
     "schemas/mysql-v1_5_0_006.json",
-    "schemas/mysql-v1_5_0_007.json"
+    "schemas/mysql-v1_5_0_007.json",
+    "schemas/mysql-v1_5_0_008.json"
   ],
   "mysql_history": "mysql",
   "mysql_schema_extensions": {

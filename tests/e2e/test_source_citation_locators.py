@@ -78,11 +78,34 @@ def test_locators_survive_upgrade_reopen_http_and_mcp(tmp_path):
         for statement in retired["statements"]:
             connection.execute(statement)
         connection.execute("DROP TABLE pc_artifact_source_locators")
+        # v1_5_0_008 rebuilt this table on the shared chain; undo that too so the file is really at
+        # the released 003 shape rather than only wearing the revision marker.
+        connection.execute("ALTER TABLE pc_artifact_publications RENAME TO pc_artifact_publications_008")
+        connection.execute(
+            "CREATE TABLE pc_artifact_publications ("
+            "target_scope_id VARCHAR(256) NOT NULL, target_family VARCHAR(128) NOT NULL, "
+            "target_artifact_id VARCHAR(128) NOT NULL, target_revision INTEGER NOT NULL, "
+            "source_scope_id VARCHAR(256) NOT NULL, source_family VARCHAR(128) NOT NULL, "
+            "source_artifact_id VARCHAR(128) NOT NULL, source_revision INTEGER NOT NULL, "
+            "content_digest VARCHAR(64) NOT NULL, idempotency_key VARCHAR(256) NOT NULL, "
+            "PRIMARY KEY (target_scope_id, target_family, target_artifact_id, target_revision), "
+            "FOREIGN KEY(target_scope_id, target_family, target_artifact_id, target_revision) "
+            "REFERENCES pc_artifacts (scope_id, family, artifact_id, revision) ON DELETE RESTRICT, "
+            "FOREIGN KEY(source_scope_id, source_family, source_artifact_id, source_revision) "
+            "REFERENCES pc_artifacts (scope_id, family, artifact_id, revision) ON DELETE RESTRICT, "
+            "CONSTRAINT uq_pc_artifact_publications_request UNIQUE (target_scope_id, idempotency_key))"
+        )
+        connection.execute(
+            "INSERT INTO pc_artifact_publications SELECT target_scope_id, target_family, "
+            "target_artifact_id, target_revision, source_scope_id, source_family, source_artifact_id, "
+            "source_revision, content_digest, idempotency_key FROM pc_artifact_publications_008"
+        )
+        connection.execute("DROP TABLE pc_artifact_publications_008")
         connection.execute("UPDATE pc_schema_revision SET version_num = 'v1_5_0_003'")
 
     runner = deployment_runner(_settings(database))
     plan = runner.plan()
-    assert plan.revisions == ("v1_5_0_004", "v1_5_0_005", "v1_5_0_007")
+    assert plan.revisions == ("v1_5_0_004", "v1_5_0_005", "v1_5_0_006", "v1_5_0_007", "v1_5_0_008")
     runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
 
     locators = [
