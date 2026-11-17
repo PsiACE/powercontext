@@ -1,0 +1,398 @@
+{
+  "format": "powercontext.mysql-state-layouts.v1",
+  "revisions": {
+    "v1_5_0_008": {
+      "statements": [
+        "CREATE TABLE `pc_artifact_publications_rebuilt` (`target_scope_id` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `target_family` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `target_artifact_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `target_revision` int(11) NOT NULL, `source_scope_id` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `source_family` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `source_artifact_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `source_revision` int(11) NOT NULL, `content_digest` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `idempotency_key` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, PRIMARY KEY (`target_scope_id`, `target_family`, `target_artifact_id`, `target_revision`), FOREIGN KEY (`target_scope_id`, `target_family`, `target_artifact_id`, `target_revision`) REFERENCES `pc_artifacts`(`scope_id`, `family`, `artifact_id`, `revision`) ON UPDATE RESTRICT ON DELETE RESTRICT, UNIQUE KEY `uq_pc_artifact_publications_request` (`target_scope_id`, `idempotency_key`))",
+        "INSERT INTO `pc_artifact_publications_rebuilt` (`target_scope_id`, `target_family`, `target_artifact_id`, `target_revision`, `source_scope_id`, `source_family`, `source_artifact_id`, `source_revision`, `content_digest`, `idempotency_key`) SELECT `target_scope_id`, `target_family`, `target_artifact_id`, `target_revision`, `source_scope_id`, `source_family`, `source_artifact_id`, `source_revision`, `content_digest`, `idempotency_key` FROM `pc_artifact_publications`",
+        "DROP TABLE `pc_artifact_publications`",
+        "RENAME TABLE `pc_artifact_publications_rebuilt` TO `pc_artifact_publications`"
+      ],
+      "changes": [
+        {
+          "pc_artifact_publications_rebuilt": {
+            "columns": {
+              "target_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "target_family": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "target_artifact_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "target_revision": {
+                "type": [
+                  "int",
+                  [
+                    "11"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_family": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_artifact_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_revision": {
+                "type": [
+                  "int",
+                  [
+                    "11"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "content_digest": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "idempotency_key": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "target_scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "target_family",
+                null,
+                "asc"
+              ],
+              [
+                "target_artifact_id",
+                null,
+                "asc"
+              ],
+              [
+                "target_revision",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "target_scope_id",
+                  "target_family",
+                  "target_artifact_id",
+                  "target_revision"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_artifacts",
+                "referred_columns": [
+                  "scope_id",
+                  "family",
+                  "artifact_id",
+                  "revision"
+                ],
+                "ondelete": "restrict",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": [],
+            "indexes": [
+              {
+                "name": "uq_pc_artifact_publications_request",
+                "unique": true,
+                "columns": [
+                  "target_scope_id",
+                  "idempotency_key"
+                ]
+              }
+            ]
+          }
+        },
+        {},
+        {
+          "pc_artifact_publications": null
+        },
+        {
+          "pc_artifact_publications_rebuilt": null,
+          "pc_artifact_publications": {
+            "columns": {
+              "target_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "target_family": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "target_artifact_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "target_revision": {
+                "type": [
+                  "int",
+                  [
+                    "11"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_family": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_artifact_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "128"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "source_revision": {
+                "type": [
+                  "int",
+                  [
+                    "11"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "content_digest": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "idempotency_key": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "target_scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "target_family",
+                null,
+                "asc"
+              ],
+              [
+                "target_artifact_id",
+                null,
+                "asc"
+              ],
+              [
+                "target_revision",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "target_scope_id",
+                  "target_family",
+                  "target_artifact_id",
+                  "target_revision"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_artifacts",
+                "referred_columns": [
+                  "scope_id",
+                  "family",
+                  "artifact_id",
+                  "revision"
+                ],
+                "ondelete": "restrict",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": [],
+            "indexes": [
+              {
+                "name": "uq_pc_artifact_publications_request",
+                "unique": true,
+                "columns": [
+                  "target_scope_id",
+                  "idempotency_key"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

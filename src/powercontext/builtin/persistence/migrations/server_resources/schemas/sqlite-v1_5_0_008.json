@@ -1,0 +1,8 @@
+{
+  "statements": [
+    "CREATE TABLE pc_artifact_publications_rebuilt (\n\ttarget_scope_id VARCHAR(256) NOT NULL, \n\ttarget_family VARCHAR(128) NOT NULL, \n\ttarget_artifact_id VARCHAR(128) NOT NULL, \n\ttarget_revision INTEGER NOT NULL, \n\tsource_scope_id VARCHAR(256) NOT NULL, \n\tsource_family VARCHAR(128) NOT NULL, \n\tsource_artifact_id VARCHAR(128) NOT NULL, \n\tsource_revision INTEGER NOT NULL, \n\tcontent_digest VARCHAR(64) NOT NULL, \n\tidempotency_key VARCHAR(256) NOT NULL, \n\tPRIMARY KEY (target_scope_id, target_family, target_artifact_id, target_revision), \n\tFOREIGN KEY(target_scope_id, target_family, target_artifact_id, target_revision) REFERENCES pc_artifacts (scope_id, family, artifact_id, revision) ON DELETE RESTRICT, \n\tCONSTRAINT uq_pc_artifact_publications_request UNIQUE (target_scope_id, idempotency_key)\n)",
+    "INSERT INTO pc_artifact_publications_rebuilt (target_scope_id, target_family, target_artifact_id, target_revision, source_scope_id, source_family, source_artifact_id, source_revision, content_digest, idempotency_key) SELECT target_scope_id, target_family, target_artifact_id, target_revision, source_scope_id, source_family, source_artifact_id, source_revision, content_digest, idempotency_key FROM pc_artifact_publications",
+    "DROP TABLE pc_artifact_publications",
+    "ALTER TABLE pc_artifact_publications_rebuilt RENAME TO pc_artifact_publications"
+  ]
+}
