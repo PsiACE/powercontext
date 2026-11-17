@@ -449,12 +449,18 @@ class ShareRuleService:
     async def claim_run(
         self, scope_id: str, run_id: str, /, *, dream_run_id: str, candidate_id: str | None = None
     ) -> ShareRun:
-        """Bind this pinned run to one Dream execution in its own transaction.
+        """Checked entry point: authorize the target, then bind in its own transaction.
 
-        Same contract as `claim`, for an embedded caller that does not already own a
-        transaction. It is not a public transport entry point.
+        This is the caller-facing form. Like every other public mutation here it checks
+        the target's current authority through the configured authorizer *before* opening
+        its own transaction, so an unauthorized caller cannot bind or deny a future
+        admission by asserting an execution identity. A Runtime composed without an
+        authorizer keeps its unconfigured trusted semantics, exactly as the other
+        mutators do. Nothing is authorized inside a transaction the caller already owns;
+        `claim(connection, ...)` remains the transactional form F composes with.
         """
 
+        await self._require_target(scope_id)
         async with self._database.transaction() as connection:
             return await self._claim(connection, scope_id, run_id, dream_run_id, candidate_id)
 
@@ -475,8 +481,10 @@ class ShareRuleService:
         if run.state == "invalidated" or head.status == "invalidated":
             raise ShareRuleInvalidatedError(run.rule_id)
         if run.outcome != "pending":
-            # A concluded evaluation's identity is part of its recorded conclusion.
-            if run.dream_run_id == dream_run_id:
+            # A concluded evaluation's identity is part of its recorded conclusion, so an
+            # exact replay is idempotent while a different Dream run or a contradictory
+            # candidate is a conflict, never silently accepted.
+            if _same_claim(run, dream_run_id, candidate_id):
                 return run
             raise ShareRunAlreadyBoundError(run_id)
         return await self.runs.claim_binding(
@@ -1016,6 +1024,16 @@ class ShareRuleService:
 
     def _now(self) -> datetime:
         return self._clock()
+
+
+def _same_claim(run: ShareRun, dream_run_id: str, candidate_id: str | None) -> bool:
+    """Report whether a run's recorded identity is exactly this claim.
+
+    An omitted candidate keeps whatever is stored, so it never contradicts. A supplied
+    one must match, because the candidate binding is exclusive like the Dream run.
+    """
+
+    return run.dream_run_id == dream_run_id and (candidate_id is None or run.candidate_id == candidate_id)
 
 
 def _bound_identity(run: ShareRun, dream_run_id: str | None, candidate_id: str | None) -> tuple[str | None, str | None]:
