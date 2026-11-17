@@ -140,6 +140,9 @@ class ReviewService:
         self._authorization_context = authorization_context
         self._bound_connection = connection
         self.authorize_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        # Recheck a Dream Candidate's pinned agreement at the commit boundary. Access
+        # decides; Review only asks with the candidate it is about to commit.
+        self.check_candidate_use: Callable[[AsyncConnection, str, Candidate[Any]], Awaitable[None]] | None = None
 
     def configure_authorization(self, authorize: EvidenceAuthorizer, context: AuthorizationContext) -> None:
         if self._evidence is None:
@@ -764,6 +767,8 @@ class ReviewService:
                 raise CandidateConflictError(candidate_id, expected_version, candidate.version)
             await self._authorize_decision("approve", candidate)
             await self._validate_candidate_audit(connection, candidate)
+            if self.check_candidate_use is not None:
+                await self.check_candidate_use(connection, self._scope_id, candidate)
             if candidate.family == Skill.family and candidate.candidate_id.startswith("cand_dream_"):
                 run_id = candidate.candidate_id.removeprefix("cand_dream_")
                 run = await DreamRepository().get(connection, self._scope_id, run_id)

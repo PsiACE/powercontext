@@ -20,7 +20,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -65,6 +65,10 @@ from powercontext.builtin.dream.models import (
     ListDreamRunsRequest,
 )
 from powercontext.builtin.dream.provenance import candidate_audit, proposal_fingerprint
+from powercontext.builtin.dream.shared_use import (
+    binding_for,
+    require_foreign_operation,
+)
 from powercontext.builtin.evidence.models import (
     EvidenceResolutionError,
     ResolvedEvidence,
@@ -110,6 +114,11 @@ DreamAuthorizer = Callable[[str, str, DreamPermission, EvidenceReference | None]
 EvidenceFactory = Callable[[str, EvidenceAuthorizer], EvidenceResolver]
 ReviewFactory = Callable[[str, AsyncConnection | None], ReviewService]
 CandidateAttester = Callable[[AsyncConnection, DreamRecord, str, str], Awaitable[None]]
+# Recheck one run's agreed use from authoritative ids. F never supplies coverage,
+# digests, acceptances or grants; Access loads and decides all of them.
+RunUseCheck = Callable[[str, DreamRun, DreamRecord], Awaitable[None]]
+# Recheck one Candidate's bound run agreement while its commit transaction is open.
+CandidateUseCheck = Callable[[AsyncConnection, str, Candidate[Any]], Awaitable[None]]
 CatalogFactory = Callable[[str, AsyncConnection | None], CatalogChangeService]
 logger = logging.getLogger(__name__)
 
@@ -130,6 +139,9 @@ class DreamService:
         attest_candidate: CandidateAttester | None = None,
         authorize_candidate: CandidateAttester | None = None,
         authorize_use: ScopedUseAuthorizer | None = None,
+        check_run_use: RunUseCheck | None = None,
+        bind_executor: Callable[[str], object] | None = None,
+        clear_executor: Callable[[object], None] | None = None,
         operations: tuple[DreamOperation, ...] = (),
         processing: ScopeInvocation | None = None,
         catalog_changes: CatalogFactory | None = None,
@@ -149,6 +161,12 @@ class DreamService:
         # Agreed cross-Scope use comes from the Access boundary that owns it. When no
         # such authority is wired, another Scope's material is not usable as evidence.
         self.authorize_use = authorize_use
+        # Absent, a foreign run cannot be admitted at all: no hook means no agreement.
+        self.check_run_use = check_run_use
+        # Bind/clear the recorded executor around background work. Only a Server adapter
+        # that owns the request principal may supply these.
+        self.bind_executor = bind_executor
+        self.clear_executor = clear_executor
         self.operations = operations
         self.processing = processing
         self.intents = ArtifactProcessingIntentRepository()
@@ -187,7 +205,9 @@ class DreamService:
         resolver.limits = self.budget
         return resolver
 
-    async def create(self, scope_id: str, principal_id: str, request: CreateDreamRunRequest) -> DreamRun:
+    async def create(  # noqa: C901 - ordered admission checks stay together
+        self, scope_id: str, principal_id: str, request: CreateDreamRunRequest
+    ) -> DreamRun:
         # Refuse unusable external evidence before any queue write, body read, or model
         # call: a billed attempt that ends in a late refusal is not an admission check.
         _require_recordable_origins(scope_id, request)
@@ -201,6 +221,14 @@ class DreamService:
             raise DreamError("capability_unavailable")
         if request.operation == "revise_prompt" and request.target is not None:
             await self.review(scope_id, None).require_prompt_target(request.target)
+        shared = binding_for(request, scope_id=scope_id)
+        if shared is not None:
+            # Validate the pinned agreement before this run is accepted, and outside the
+            # admission transaction, so the decision's own reads cannot deadlock it. The
+            # per-origin read is checked here too, so the first foreign read this run
+            # depends on is a decision, not a side effect of resolution.
+            await self._require_shared_use(scope_id, principal_id, request, shared.share_run_id)
+            await self._authorize_scoped_origins(scope_id, principal_id, request)
         resolver = self._resolver(scope_id, principal_id)
         async with self._transaction() as connection:
             # Lock the intent before business rows, matching Worker commit order.
@@ -261,6 +289,7 @@ class DreamService:
                 ),
                 request=request,
                 principal_id=principal_id,
+                share_run_id=request.share_run_id,
                 request_generation=intent.requested_generation,
                 profile_policy=None if profile_policy is None else ProfileDreamPolicy.from_policy(profile_policy),
             )
@@ -276,7 +305,7 @@ class DreamService:
         async with self._transaction() as connection:
             return await self.repository.list(connection, scope_id, request)
 
-    async def execute(self) -> bool:  # noqa: C901 - fenced admission, fair dispatch, and bounded recovery
+    async def execute(self) -> bool:
         """Execute one accepted Run attempt within a Supervisor Scope invocation.
 
         Returning false leaves a non-Dream invocation to the Family processor.
@@ -326,6 +355,19 @@ class DreamService:
             if record.run.terminal:
                 await self._complete_invocation(connection)
                 return True
+        # The recorded executor is bound for the whole attempt: the audit context and
+        # every recheck in this execution must see the identity admission authorized.
+        token = None
+        if record.share_run_id is not None and self.bind_executor is not None:
+            token = self.bind_executor(record.principal_id)
+        try:
+            await self._execute_attempt(record)
+        finally:
+            if token is not None and self.clear_executor is not None:
+                self.clear_executor(token)
+        return True
+
+    async def _execute_attempt(self, record: DreamRecord) -> None:
         deadline: asyncio.Timeout | None = None
         try:
             async with self._transaction() as connection:
@@ -345,7 +387,6 @@ class DreamService:
             else:
                 self._log_attempt_failure(record, error)
                 await self._fail_or_retry(record, _error_code(error), retry=False)
-        return True
 
     def _log_attempt_failure(
         self,
@@ -410,6 +451,7 @@ class DreamService:
         if record.request.tag_target is not None:
             before_tags = (await self._catalog(run.scope_id, None).inspect_target(record.request.tag_target)).tags
         await self._preflight_target(record)
+        await self._preflight_shared_use(record)
         resolved = await self._resolve(record)
         record = record.model_copy(
             update={
@@ -431,6 +473,7 @@ class DreamService:
             await self.repository.checkpoint(connection, record)
         if record.request is None:
             raise DreamError("dream_request_unavailable")
+        await self._preflight_shared_use(record)
         generated = await self.generator.generate(
             DreamGenerationInput(
                 operation=run.operation,
@@ -470,6 +513,22 @@ class DreamService:
                 prepared = await self.review(run.scope_id, None).prepare_skill(plan.proposal)
             plan = plan.model_copy(update={"proposal": prepared})
         await self._commit(record, plan)
+
+    async def _preflight_shared_use(self, record: DreamRecord) -> None:
+        """Recheck the pinned agreement before background work reads an origin body."""
+
+        if record.share_run_id is None or record.request is None:
+            if any(item.scope_id != record.run.scope_id for item in (record.request.scoped if record.request else ())):
+                # A foreign claim with no persisted binding can never execute.
+                raise DreamError("unsupported_shared_use")
+            return
+        await self._require_shared_use(
+            record.run.scope_id,
+            record.principal_id,
+            record.request,
+            record.share_run_id,
+            record,
+        )
 
     async def _preflight_target(self, record: DreamRecord) -> None:
         run = record.run
@@ -520,6 +579,7 @@ class DreamService:
             await self._authorize(run.scope_id, record.principal_id, "contribute")
             if run.operation in {"revise_profile", "initialize_profile"}:
                 await self._check_profile_policy(connection, record)
+            await self._preflight_shared_use(record)
             resolved = await self._resolve(record, connection)
             candidate = None
             if plan.outcome == "proposed":
@@ -543,6 +603,49 @@ class DreamService:
             )
             await self.repository.finish(connection, record, completed)
             await self._complete_invocation(connection)
+
+    async def _require_shared_use(
+        self,
+        scope_id: str,
+        principal_id: str,
+        request: CreateDreamRunRequest,
+        share_run_id: str,
+        record: DreamRecord | None = None,
+    ) -> None:
+        """Ask Access whether this run may use the origin material it claims.
+
+        The hook loads the durable rule, run and acceptances by id; this method only
+        supplies the run identity and the request it must match, and refuses when no
+        hook is configured. Nothing here grants, caches or synthesizes consent.
+        """
+
+        if self.check_run_use is None:
+            raise DreamError("unsupported_shared_use")
+        run = (
+            record.run
+            if record is not None
+            else DreamRun(
+                scope_id=scope_id,
+                run_id="",
+                operation=request.operation,
+                target=request.target,
+                accepted_at=datetime.now(UTC),
+            )
+        )
+        binding = DreamRecord(
+            run=run.model_copy(update={"share_run_id": share_run_id}),
+            request=request,
+            principal_id=principal_id,
+        )
+        await self.check_run_use(share_run_id, binding.run, binding)
+
+    async def _authorize_scoped_origins(self, scope_id: str, principal_id: str, request: CreateDreamRunRequest) -> None:
+        """Check the executing principal's current authority at each selected origin."""
+
+        for selection in request.scoped:
+            if selection.scope_id == scope_id:
+                continue
+            await self._authorize(selection.scope_id, principal_id, "read", selection.reference)
 
     async def _require_no_profile(self, connection: AsyncConnection, scope_id: str) -> None:
         """Refuse initialization of a Scope that already has a committed Profile."""
@@ -575,6 +678,8 @@ class DreamService:
             skill=record.run.operation == "derive_skill",
             target=_resolve_references(record.request)[1],
             catalog=record.run.operation == "revise_tags",
+            # Only a run bound to an admitted agreement may cite another Scope's node.
+            admitted_origins=record.share_run_id is not None,
         )
         if isinstance(plan.proposal, TagChangeProposal) and record.request.tag_target is not None:
             service = self._catalog(record.run.scope_id, connection)
@@ -830,7 +935,12 @@ def _require_recordable_origins(scope_id: str, request: CreateDreamRunRequest) -
     per-origin use check for the slice that wires agreed use and origin recording.
     """
 
-    if any(selection.scope_id != scope_id for selection in request.scoped):
+    if not any(selection.scope_id != scope_id for selection in request.scoped):
+        return
+    # Another Scope's material needs an operation that admits it and a durable pinned
+    # agreement; the agreement itself is checked against Access in the service.
+    require_foreign_operation(request.operation)
+    if request.share_run_id is None:
         raise DreamError("unsupported_shared_use")
 
 
@@ -888,6 +998,8 @@ def _supported_plan(record: DreamRecord, plan: DreamPlan, resolved: ResolvedEvid
             skill=record.run.operation == "derive_skill",
             target=_resolve_references(record.request)[1],
             catalog=record.run.operation == "revise_tags",
+            # Only a run bound to an admitted agreement may cite another Scope's node.
+            admitted_origins=record.share_run_id is not None,
         )
     except EvidenceResolutionError as error:
         if error.code != "needs_evidence":

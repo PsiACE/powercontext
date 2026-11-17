@@ -41,11 +41,12 @@ def select_evidence(
     skill: bool,
     target: ArtifactRef | None,
     catalog: bool = False,
+    admitted_origins: bool = False,
 ) -> SelectedEvidence:
     nodes = {node.evidence_id: node for node in manifest.nodes}
     for node_id in used:
         node = nodes.get(node_id)
-        _require_citable(node, skill=skill)
+        _require_citable(node, skill=skill, admitted_origins=admitted_origins)
     # Targets may be named as comparison context, but cannot support their own revision.
     chosen = {node_id for node_id in used if nodes[node_id].role != "target"}
     if not chosen:
@@ -82,13 +83,13 @@ def select_evidence(
     return SelectedEvidence(sources=sources, artifacts=artifacts)
 
 
-def _require_citable(node: EvidenceNode | None, *, skill: bool) -> None:
+def _require_citable(node: EvidenceNode | None, *, skill: bool, admitted_origins: bool = False) -> None:
     if node is None or node.role in {"unresolved", "lineage_only"} or (skill and node.kind == "memory"):
         raise EvidenceResolutionError("invalid_generation_output")
-    if node.origin_scope_id is not None:
-        # Candidate evidence and committed lineage hold Scope-local references, so
-        # citing another Scope's node would misattribute its origin. The manifest keeps
-        # the exact origin; the claim is refused instead of rewritten.
+    if node.origin_scope_id is not None and not admitted_origins:
+        # Without an admitted standing agreement, Candidate evidence and committed
+        # lineage hold only Scope-local references, so citing another Scope's node would
+        # misattribute its origin. An admitted run carries that origin explicitly.
         raise EvidenceResolutionError("unsupported_origin")
 
 

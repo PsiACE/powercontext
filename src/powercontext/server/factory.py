@@ -343,6 +343,9 @@ def create_server_app(  # noqa: C901
             if standing_access is not None:
                 # Retain the adapter so the run-use entrypoint can reach the service.
                 standing_access.attach(runtime)
+            if dream_access is not None:
+                # The agreed-use gates need the opened Runtime's share-rules service.
+                dream_access.bind_shared_use(runtime)
             server_id = await _initialize_server_identity(runtime, cursor_secret)
             records = runtime._records()
             if not isinstance(records, RelationalRecordService):

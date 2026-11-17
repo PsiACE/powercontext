@@ -141,11 +141,18 @@ from powercontext.builtin.code.models import CodeConfig, CodeQueryRequest, CodeQ
 from powercontext.builtin.code.service import CodeService
 from powercontext.builtin.context import BuiltinArtifacts, BuiltinSources
 from powercontext.builtin.dream.application import DreamApplication
-from powercontext.builtin.dream.service import CandidateAttester, DreamAuthorizer, DreamService
+from powercontext.builtin.dream.service import (
+    CandidateAttester,
+    CandidateUseCheck,
+    DreamAuthorizer,
+    DreamService,
+    RunUseCheck,
+)
 from powercontext.builtin.evidence.resolver import (
     AuthorizationContext,
     ScopedEvidenceAuthorizer,
     ScopedEvidenceBatchAuthorizer,
+    ScopedUseAuthorizer,
 )
 from powercontext.builtin.inference import (
     EmbeddingModel,
@@ -4290,6 +4297,7 @@ class BuiltinRuntime:
         self._generation_service = generation_service
         self._dream_service = dream_service
         self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        self._review_use_checker: CandidateUseCheck | None = None
         self._standing_use_origin_authorizer: StandingOriginAuthorizer | None = None
         self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
@@ -4527,6 +4535,29 @@ class BuiltinRuntime:
                 authorize_acceptance=validate_acceptance,
             )
 
+    def configure_dream_shared_use(
+        self,
+        *,
+        check_run_use: RunUseCheck | None,
+        check_candidate_use: CandidateUseCheck | None,
+        authorize_origin_use: ScopedUseAuthorizer | None = None,
+        bind_executor: Callable[[str], object] | None = None,
+        clear_executor: Callable[[object], None] | None = None,
+    ) -> None:
+        """Bind the agreed-use gates for Dream runs and their Candidates.
+
+        Kept separate from the evidence/Review wiring so a Server that already
+        composed those can add standing-use enforcement without rebinding policy.
+        """
+
+        self._review_use_checker = check_candidate_use
+        if self._dream_service is not None:
+            self._dream_service.check_run_use = check_run_use
+            if authorize_origin_use is not None:
+                self._dream_service.authorize_use = authorize_origin_use
+            self._dream_service.bind_executor = bind_executor
+            self._dream_service.clear_executor = clear_executor
+
     def configure_evidence_authorization(
         self,
         *,
@@ -4535,6 +4566,8 @@ class BuiltinRuntime:
         context: AuthorizationContext,
         attest_candidate: CandidateAttester,
         authorize_candidate: CandidateAttester | None = None,
+        check_run_use: RunUseCheck | None = None,
+        check_candidate_use: CandidateUseCheck | None = None,
         catalog_action: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None,
         review_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None,
         review_many: ScopedEvidenceBatchAuthorizer | None = None,
@@ -4546,7 +4579,9 @@ class BuiltinRuntime:
         self._review_evidence_authorizer = review
         self._review_evidence_batch_authorizer = review_many
         self._review_authorization_context = context
+        self._review_use_checker = check_candidate_use
         if self._dream_service is not None:
+            self._dream_service.check_run_use = check_run_use
             self._dream_service.authorize = dream
             self._dream_service.authorization_context = context
             self._dream_service.attest_candidate = attest_candidate
@@ -4716,6 +4751,7 @@ class BuiltinRuntime:
         scope = validate_scope_id(scope_id)
         service = self._review_service(scope)
         service.authorize_action = self._review_action_authorizer
+        service.check_candidate_use = self._review_use_checker
         authorizer = self._review_evidence_authorizer
         if authorizer is not None:
             service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)

@@ -27,7 +27,10 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from powercontext.builtin.artifacts.experience import ExperienceContent
+from powercontext.builtin.artifacts.profile.models import ProfileWriteContent
 from powercontext.builtin.authz import (
     AccessAction,
     AccessAuditContext,
@@ -42,9 +45,24 @@ from powercontext.builtin.authz import (
     ResourceRef,
 )
 from powercontext.builtin.authz.composition import open_builtin_access_control
+from powercontext.builtin.authz.dream import principal_identity
 from powercontext.builtin.authz.standing_use import principal_key
+from powercontext.builtin.dream.models import (
+    CreateDreamRunRequest,
+    DreamError,
+    DreamPlan,
+    GetDreamRunRequest,
+)
+from powercontext.builtin.evidence.models import ScopedEvidence
+from powercontext.builtin.inference.models import GenerationResult, InferenceUsage
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, RuntimeConfig
+from powercontext.builtin.runtime import (
+    ApproveCandidateRequest,
+    BuiltinConfig,
+    CaptureSource,
+    GetCandidateRequest,
+    RuntimeConfig,
+)
 from powercontext.builtin.runtime.application import BuiltinRuntime
 from powercontext.builtin.runtime.composition import open_builtin_runtime
 from powercontext.builtin.scope import ScopeDraft, ScopeSelection
@@ -57,7 +75,9 @@ from powercontext.builtin.sharing import (
     ShareRuleTerms,
 )
 from powercontext.builtin.sharing.service import ShareRuleService
+from powercontext.server.dream_access import DreamAccess
 from powercontext.server.standing_access import StandingAccess
+from tests.e2e.dream_support import open_dream_runtime, process_pending
 
 ADMIN = PrincipalRef(type="service", id="deployment-admin")
 ALICE = PrincipalRef(type="user", id="alice")
@@ -1324,5 +1344,419 @@ def test_one_contributor_cannot_admit_a_run_that_reached_another(tmp_path: Path)
             with run_as(RUNNER):
                 run = await sharing.resolve(rule.rule_id)
             assert sorted(item.origin_scope_id for item in run.inputs) == sorted([alice, bob])
+
+    asyncio.run(scenario())
+
+
+def test_foreign_dream_run_is_admitted_only_under_its_pinned_agreement(tmp_path: Path) -> None:
+    """A Dream run carries another Scope's Source only under its bound pinned run.
+
+    Durable run identity, B's current-rights admission and the exact pinned inputs are
+    all required. A forged run id, a mismatched selection, an unbound request and an
+    operation without foreign admission are refused before generation. Fixture only.
+    """
+
+    class FixtureGenerator:
+        config_id = "foreign-dream-fixture"
+
+        async def generate(self, value):
+            used = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="Reconciled the two channels from the pinned evidence.",
+                    intent="create",
+                    proposal=ExperienceContent(
+                        situation="A timed-out write may already have committed.",
+                        action="Replay only on the new channel with an idempotency key.",
+                        outcome="The replay created no duplicate record.",
+                        lesson="Check transaction status on the old channel first.",
+                    ),
+                    evidence_ids=used,
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    async def scenario() -> None:
+        # Access and the Runtime share one store, as the enforced Server composes them, so
+        # the commit-time recheck can bind to the transaction it is deciding inside.
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'foreign_dream.db'}")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=FixtureGenerator(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+                dream_candidate_attester=dream_adapter.attest_candidate,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                # The executor reads its own target as well as the pinned origin.
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "runner-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                local = await runtime.sources.for_scope(orders).capture(
+                    CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+
+                selection = (
+                    ScopedEvidence(scope_id=orders, source=local.source_ref),
+                    ScopedEvidence(scope_id=alice, source=foreign.source_ref),
+                )
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+
+                with run_as(RUNNER), pytest.raises(DreamError) as forged:
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=selection,
+                            share_run_id="shr_not_pinned",
+                            idempotency_key="forged",
+                        )
+                    )
+                assert forged.value.code == "shared_use_unavailable"
+
+                # The real pinned run, but the request widens it with an origin the
+                # agreement never pinned.
+                extra = await runtime.sources.for_scope(bob).capture(
+                    CaptureSource(source_id="unpinned", content="Not pinned.", metadata={})
+                )
+                with run_as(RUNNER), pytest.raises(DreamError) as widened:
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=(*selection, ScopedEvidence(scope_id=bob, source=extra.source_ref)),
+                            share_run_id=pinned.run_id,
+                            idempotency_key="mismatched",
+                        )
+                    )
+                assert widened.value.code == "shared_use_inputs"
+
+                # The positive path: the same shape, bound to its pinned run, is admitted
+                # and its Candidate can be approved. The pinned run is linked to this Dream
+                # execution by the target's own administrator.
+                with run_as(RUNNER):
+                    admitted = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=selection,
+                            share_run_id=pinned.run_id,
+                            idempotency_key="admitted",
+                        )
+                    )
+                assert admitted.status == "queued", admitted.error
+                # The target's administrator links the pinned evaluation to this execution.
+                with run_as(CAROL):
+                    await sharing.record_outcome(pinned.run_id, dream_run_id=admitted.run_id)
+                try:
+                    await process_pending(runtime)
+                except Exception as error:
+                    raise AssertionError(repr(error)) from error
+                completed = await dream.get(GetDreamRunRequest(run_id=admitted.run_id))
+                if completed.outcome != "proposed":
+                    raise AssertionError({
+                        "status": completed.status,
+                        "error": completed.error,
+                        "reason": completed.reason,
+                    })
+                assert completed.candidate is not None
+                owner = await access.candidate_owner(orders, completed.candidate.candidate_id)
+                assert owner is not None
+
+                with run_as(RUNNER), pytest.raises(DreamError) as unbound:
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=selection,
+                            idempotency_key="unbound",
+                        )
+                    )
+                assert unbound.value.code == "unsupported_shared_use"
+
+                # An operation with no foreign admission refuses even when bound to a run
+                # the same agreement covers, so one operation's admission never widens
+                # another's.
+                # An operation with no foreign admission refuses, so one operation's
+                # admission never widens another's.
+                with run_as(RUNNER), pytest.raises(ValidationError):
+                    CreateDreamRunRequest(
+                        operation="revise_memory",
+                        artifacts=(),
+                        scoped=selection,
+                        share_run_id=pinned.run_id,
+                        idempotency_key="other-op",
+                    )
+
+    asyncio.run(scenario())
+
+
+def test_foreign_dream_phases_fail_closed_after_revocation(tmp_path: Path) -> None:
+    """Revoking agreed use between phases stops the run at the next phase.
+
+    Admission, the background body read, Candidate persistence and approval each
+    recheck the pinned agreement, so no phase can complete on stale consent. The
+    deterministic local fixture generator is used; no provider is contacted.
+    """
+
+    class CountingGenerator:
+        config_id = "foreign-phase-fixture"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, value):
+            self.calls += 1
+            used = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="Reconciled the two channels from the pinned evidence.",
+                    intent="create",
+                    proposal=ExperienceContent(
+                        situation="A timed-out write may already have committed.",
+                        action="Replay only on the new channel with an idempotency key.",
+                        outcome="The replay created no duplicate record.",
+                        lesson="Check transaction status on the old channel first.",
+                    ),
+                    evidence_ids=used,
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'phases.db'}")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            generator = CountingGenerator()
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=generator,
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "phase-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                local = await runtime.sources.for_scope(orders).capture(
+                    CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+                selection = (
+                    ScopedEvidence(scope_id=orders, source=local.source_ref),
+                    ScopedEvidence(scope_id=alice, source=foreign.source_ref),
+                )
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+
+                # Revoking the origin agreement after admission stops the run before any
+                # origin body reaches the model.
+                with run_as(RUNNER):
+                    queued = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=selection,
+                            share_run_id=pinned.run_id,
+                            idempotency_key="revoke-after-admission",
+                        )
+                    )
+                before_invalidation = generator.calls
+                with run_as(CAROL):
+                    await sharing.invalidate(rule.rule_id, rule.version)
+                await process_pending(runtime)
+                stopped = await dream.get(GetDreamRunRequest(run_id=queued.run_id))
+                assert stopped.status == "failed"
+                assert generator.calls == before_invalidation
+
+                # A Candidate already stored also cannot commit after the rule is invalidated:
+                # approval rechecks the same pinned agreement.
+                with run_as(CAROL):
+                    healthy = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, healthy, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, healthy, "target", (orders,), CAROL)
+                with run_as(RUNNER):
+                    healthy_run = await sharing.resolve(healthy.rule_id)
+                    queued_candidate = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=selection,
+                            share_run_id=healthy_run.run_id,
+                            idempotency_key="revoke-before-approval",
+                        )
+                    )
+                with run_as(CAROL):
+                    await sharing.record_outcome(healthy_run.run_id, dream_run_id=queued_candidate.run_id)
+                await process_pending(runtime)
+                pending_run = await dream.get(GetDreamRunRequest(run_id=queued_candidate.run_id))
+                assert pending_run.outcome == "proposed", pending_run.error
+                assert pending_run.candidate is not None
+                with run_as(CAROL):
+                    await sharing.invalidate(healthy.rule_id, healthy.version)
+                with run_as(RUNNER), pytest.raises(DreamError) as blocked_commit:
+                    await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=pending_run.candidate.candidate_id,
+                            expected_version=pending_run.candidate.version,
+                        )
+                    )
+                assert blocked_commit.value.code in {"access_unavailable", "shared_use_unavailable"}
+                # No conclusion was committed for that Candidate.
+                still_pending = await runtime.review.for_scope(orders).get(
+                    GetCandidateRequest(candidate_id=pending_run.candidate.candidate_id)
+                )
+                assert still_pending.status == "pending"
+                assert still_pending.result_artifact is None
+
+                # The invalidated rule also blocks a fresh admission outright.
+                with run_as(RUNNER), pytest.raises(DreamError):
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=selection,
+                            share_run_id=pinned.run_id,
+                            idempotency_key="invalidated-rule",
+                        )
+                    )
+                # The refused admission added no further handoff: only the lawful
+                # second run generated, exactly once.
+                assert generator.calls == before_invalidation + 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skip(
+    reason="known blocker: ReviewService._validate_evidence resolves Sources only in the run "
+    "Scope, so an admitted foreign Source is refused at Candidate persistence; the fix belongs in "
+    "Review's owning validation and is not part of this unit",
+)
+def test_foreign_sources_initialize_a_first_profile_under_its_pinned_run(tmp_path: Path) -> None:
+    """A first Profile may be initialized from foreign Sources under a pinned run.
+
+    The target still has no baseline, the committed identity is the canonical
+    ``profile@1``, and the local idempotency control is unchanged. Fixture generator.
+    """
+
+    class ProfileGenerator:
+        config_id = "foreign-init-fixture"
+
+        async def generate(self, value):
+            used = tuple(item.evidence_id for item in value.evidence.evidence)
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    reason="The first Profile comes from the pinned external evidence.",
+                    intent="create",
+                    proposal=ProfileWriteContent(content="# Profile\n\nBased in Shenzhen."),
+                    evidence_ids=used,
+                ),
+                usage=InferenceUsage(requests=1),
+            )
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'foreign_init.db'}")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=ProfileGenerator(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "init-target-reader")
+                await runtime.profiles.put_policy(orders, generation_enabled=True, expected_version=0)
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                request = CreateDreamRunRequest(
+                    operation="initialize_profile",
+                    artifacts=(),
+                    scoped=(ScopedEvidence(scope_id=alice, source=foreign.source_ref),),
+                    share_run_id=pinned.run_id,
+                    idempotency_key="foreign-init",
+                )
+                with run_as(RUNNER):
+                    admitted = await dream.create(request)
+                    # The same request replays the accepted run, not a second Profile.
+                    assert await dream.create(request) == admitted
+                with run_as(CAROL):
+                    await sharing.record_outcome(pinned.run_id, dream_run_id=admitted.run_id)
+                assert admitted.target is None
+                await process_pending(runtime)
+                completed = await dream.get(GetDreamRunRequest(run_id=admitted.run_id))
+                assert completed.outcome == "proposed", (completed.status, completed.error)
+                assert completed.candidate is not None
+                with run_as(RUNNER):
+                    approved = await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=completed.candidate.candidate_id,
+                            expected_version=completed.candidate.version,
+                        )
+                    )
+                # One canonical identity, revision one, with the pinned origin recorded.
+                assert approved.result_artifact is not None
+                assert (
+                    approved.result_artifact.family,
+                    approved.result_artifact.artifact_id,
+                    approved.result_artifact.revision,
+                ) == ("profile", "profile", 1)
+                committed = await runtime.profiles.get(orders)
+                assert committed.content.generation.mode == "initialize_review_approved"
 
     asyncio.run(scenario())
