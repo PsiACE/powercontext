@@ -398,11 +398,16 @@ from powercontext.builtin.scope import (
     ScopeApplication,
     ScopeBindingNotFoundError,
     ScopeBindingTargetMissingError,
+    ScopeDeletionConflictError,
     ScopeDraft,
     ScopeIdempotencyConflictError,
+    ScopeLifecycleConflictError,
     ScopeMutation,
     ScopeNotFoundError,
+    ScopeNotWritableError,
+    ScopeRangeLimitError,
     ScopeRelationshipError,
+    ScopeResourceHandlerUnsupportedError,
     ScopeVersionConflictError,
 )
 from powercontext.builtin.scope import (
@@ -524,6 +529,7 @@ from powercontext.http import (
     CommitConnectorCheckpointRequest,
     CommitHandoffRequest,
     CommittedHandoff,
+    ConfirmScopeDeletionRequest,
     ConnectionAuthentication,
     ConnectionIdentity,
     ConnectorCheckpointState,
@@ -661,8 +667,12 @@ from powercontext.http import (
     ScopeAccessResource,
     ScopeBinding,
     ScopeBindingKey,
+    ScopeDeletionPreview,
+    ScopeDeletionPreviewRequest,
+    ScopeDeletionReceipt,
     ScopeDescriptor,
     ScopedStats,
+    ScopeLifecycleTransitionRequest,
     ScopePage,
     ScopeQueryField,
     ScopeSelection,
@@ -794,6 +804,7 @@ from powercontext.http._generated.operations import (
     API_VERSION,
     APPLY_ACCESS_OWNERSHIP,
     APPROVE_CANDIDATE,
+    ARCHIVE_SCOPE,
     BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
     CAPTURE_WORKING_NOTE,
@@ -802,6 +813,7 @@ from powercontext.http._generated.operations import (
     CLEAR_SCOPE_BINDING,
     COMMIT_CONNECTOR_CHECKPOINT,
     COMMIT_HANDOFF,
+    CONFIRM_SCOPE_DELETION,
     CONTINUE_HANDOFF,
     CREATE_ACCESS_BINDING,
     CREATE_ARTIFACT,
@@ -846,6 +858,7 @@ from powercontext.http._generated.operations import (
     GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
+    GET_SCOPE_DELETION,
     GET_SERVER_INFO,
     GET_SKILL,
     GET_SKILL_PACKAGE_MANIFEST,
@@ -880,6 +893,7 @@ from powercontext.http._generated.operations import (
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PREPARE_HANDOFF_HINT,
+    PREVIEW_SCOPE_DELETION,
     PROPOSE_EXPERIENCE,
     PROPOSE_SKILL,
     PROPOSE_SKILL_PACKAGE,
@@ -897,6 +911,8 @@ from powercontext.http._generated.operations import (
     REJECT_CANDIDATE,
     REMEMBER_MEMORY,
     RENAME_REMOTE_SKILL_TARGET,
+    REOPEN_SCOPE,
+    REPAIR_SCOPE_DELETION_COVERAGE,
     REPLACE_ACCESS_BINDING,
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
@@ -906,6 +922,7 @@ from powercontext.http._generated.operations import (
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
     RESTORE_ARTIFACT,
+    RESUME_SCOPE_DELETION_CLEANUP,
     RETIRE_MEMORY_ENTRY,
     RETRY_TOPIC_MEMORY_PROCESSING,
     REVISE_CANDIDATE,
@@ -1608,6 +1625,13 @@ def create_app(
     _add_route(app, SET_DEFAULT_SCOPE, set_default_scope)
     _add_route(app, GET_SCOPE, get_scope)
     _add_route(app, UPDATE_SCOPE, update_scope)
+    _add_route(app, ARCHIVE_SCOPE, archive_scope)
+    _add_route(app, REOPEN_SCOPE, reopen_scope)
+    _add_route(app, PREVIEW_SCOPE_DELETION, preview_scope_deletion)
+    _add_route(app, CONFIRM_SCOPE_DELETION, confirm_scope_deletion)
+    _add_route(app, GET_SCOPE_DELETION, get_scope_deletion)
+    _add_route(app, RESUME_SCOPE_DELETION_CLEANUP, resume_scope_deletion_cleanup)
+    _add_route(app, REPAIR_SCOPE_DELETION_COVERAGE, repair_scope_deletion_coverage)
     _add_route(app, RESOLVE_SCOPE_SELECTION, resolve_scope_selection)
     _add_route(app, RESOLVE_SCOPE_BINDING, resolve_scope_binding)
     _add_route(app, SET_SCOPE_BINDING, set_scope_binding)
@@ -2631,6 +2655,152 @@ async def get_scope(
     scopes: Annotated[ScopeApplication, Depends(_require_scope_application)],
 ) -> ScopeDescriptor:
     return _scope_descriptor_response(await scopes.get(scope_id))
+
+
+async def _require_confirmed_management(http_request: Request, scope_ids: tuple[str, ...]) -> None:
+    """Require current management authority on every Scope a deletion would affect.
+
+    The confirmation must present the digest it actually saw, so the set is the
+    caller's own statement; this re-check refuses any member the caller cannot
+    manage right now, and it grants no write or ownership.
+    """
+
+    access = access_control_for_mode(
+        http_request.app.state.access_control,
+        mode=http_request.app.state.access_mode,
+    )
+    if access is None:
+        return
+    principal = _require_principal()
+    checks = tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in scope_ids)
+    if checks:
+        await access.require_all(principal, checks, context=_access_audit_context("scope_deletion_confirm"))
+
+
+def _require_scope_deletions(http_request: Request):
+    application = _require_application(http_request)
+    deletions = getattr(application, "scope_deletions", None)
+    if deletions is None:
+        # The composed runtime builds this after its projection owners, so an
+        # absent instance means this deployment cannot clean up every resource it
+        # owns. Refuse rather than instantiating handlers that would skip them.
+        raise ScopeResourceHandlerUnsupportedError("lifecycle", "this deployment composes no deletion owners")
+    return deletions
+
+
+def _scope_deletion_receipt_response(value) -> ScopeDeletionReceipt:
+    return ScopeDeletionReceipt.model_validate(value.model_dump(mode="json"))
+
+
+def _scope_deletion_preview_response(value) -> ScopeDeletionPreview:
+    return ScopeDeletionPreview.model_validate(value.model_dump(mode="json"))
+
+
+async def archive_scope(
+    scope_id: _ScopePathId,
+    request: ScopeLifecycleTransitionRequest,
+    scopes: Annotated[ScopeApplication, Depends(_require_scope_application)],
+) -> ScopeDescriptor:
+    return _scope_descriptor_response(await scopes.archive(scope_id, request.expected_version))
+
+
+async def reopen_scope(
+    scope_id: _ScopePathId,
+    request: ScopeLifecycleTransitionRequest,
+    scopes: Annotated[ScopeApplication, Depends(_require_scope_application)],
+) -> ScopeDescriptor:
+    return _scope_descriptor_response(await scopes.reopen(scope_id, request.expected_version))
+
+
+async def preview_scope_deletion(
+    request: ScopeDeletionPreviewRequest,
+    http_request: Request,
+) -> ScopeDeletionPreview:
+    deletions = _require_scope_deletions(http_request)
+    # The composed application owns the node and depth budget; exceeding it raises
+    # instead of returning a truncated set, so no caller-supplied bound is needed.
+    preview = await deletions.preview(_domain_scope_selection(request.selection))
+    # A preview grants nothing: confirm re-authorizes every actual member.
+    await _require_confirmed_management(http_request, preview.scope_ids)
+    return _scope_deletion_preview_response(preview)
+
+
+async def confirm_scope_deletion(
+    request: ConfirmScopeDeletionRequest,
+    http_request: Request,
+    response: Response,
+) -> ScopeDeletionReceipt:
+    deletions = _require_scope_deletions(http_request)
+    selection = _domain_scope_selection(request.selection)
+    preview = await deletions.preview(selection)
+    if preview.membership_digest != request.confirmed_digest:
+        raise ScopeDeletionConflictError(preview.root_scope_id, "the structural set changed since it was previewed")
+    await _require_confirmed_management(http_request, preview.scope_ids)
+    receipt = await deletions.confirm(selection, request.confirmed_digest, single_scope=request.single_scope)
+    response.status_code = 200 if receipt.complete else 202
+    return _scope_deletion_receipt_response(receipt)
+
+
+async def get_scope_deletion(
+    operation_id: Annotated[str, Path(min_length=1, max_length=64)],
+    http_request: Request,
+) -> ScopeDeletionReceipt:
+    deletions = _require_scope_deletions(http_request)
+    receipt = await deletions.operation(operation_id)
+    if receipt is None:
+        raise ScopeNotFoundError(operation_id)
+    await _require_deletion_management(http_request, receipt)
+    return _scope_deletion_receipt_response(receipt)
+
+
+async def _require_deletion_management(http_request: Request, receipt) -> None:
+    """Require current management authority on the operation's own confirmed members.
+
+    The members come from the persisted operation, never from the request, so a
+    caller cannot narrow what it must be authorized for.
+    """
+
+    access = access_control_for_mode(
+        http_request.app.state.access_control,
+        mode=http_request.app.state.access_mode,
+    )
+    if access is None:
+        return
+    principal = _require_principal()
+    managed = tuple(member.scope_id for member in receipt.members)
+    # The confirmed members are the authority surface. Once cleanup has removed them
+    # their rows cannot be evaluated, and this build records no separate requester,
+    # so the operation is readable only under deployment-level observation rather
+    # than by inventing an owner or snapshot privilege.
+    checks = tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in managed)
+    checks += ((AccessAction.SERVER_OBSERVE, ResourceRef.server(access.deployment_id)),)
+    await access.require_any(principal, checks, context=_access_audit_context("scope_deletion_status"))
+
+
+async def resume_scope_deletion_cleanup(
+    operation_id: Annotated[str, Path(min_length=1, max_length=64)],
+    http_request: Request,
+) -> ScopeDeletionReceipt:
+    deletions = _require_scope_deletions(http_request)
+    existing = await deletions.operation(operation_id)
+    if existing is None:
+        raise ScopeNotFoundError(operation_id)
+    # A failed or interrupted cleanup stays available to a current manager; it is
+    # not a snapshot privilege and does not reopen the members.
+    await _require_deletion_management(http_request, existing)
+    return _scope_deletion_receipt_response(await deletions.cleanup(operation_id))
+
+
+async def repair_scope_deletion_coverage(
+    operation_id: Annotated[str, Path(min_length=1, max_length=64)],
+    http_request: Request,
+) -> ScopeDeletionReceipt:
+    deletions = _require_scope_deletions(http_request)
+    existing = await deletions.operation(operation_id)
+    if existing is None:
+        raise ScopeNotFoundError(operation_id)
+    await _require_deletion_management(http_request, existing)
+    return _scope_deletion_receipt_response(await deletions.repair_coverage(operation_id))
 
 
 async def update_scope(
@@ -6398,6 +6568,62 @@ def _scope_selection_read_access(
     return tuple((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)) for scope_id in scope_ids)
 
 
+def _selection_scope_ids(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Collect the Scope ids a selection literally names, for the pre-check only.
+
+    A structural selection names only its root here. The authoritative member set
+    is resolved by the domain, and the handler re-checks management authority on
+    every confirmed member before acting.
+    """
+
+    selection = payload.get("selection")
+    if not isinstance(selection, Mapping):
+        raise AccessInvalidRequestError("scope-selection")
+    scope_ids = selection.get("scope_ids")
+    if isinstance(scope_ids, list) and scope_ids:
+        if not all(isinstance(item, str) and item for item in scope_ids):
+            raise AccessInvalidRequestError("scope-selection")
+        return tuple(scope_ids)
+    root = selection.get("root_scope_id")
+    if isinstance(root, str) and root:
+        return (root,)
+    raise AccessInvalidRequestError("scope-selection")
+
+
+def _scope_deletion_preview_access(
+    payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    """Preview needs management authority on each Scope the selection names."""
+
+    return tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in _selection_scope_ids(payload))
+
+
+def _scope_deletion_confirm_access(
+    payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    """Confirmation needs management authority; every member is rechecked in the handler."""
+
+    return tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in _selection_scope_ids(payload))
+
+
+def _scope_deletion_operation_access(
+    _payload: Mapping[str, Any],
+    deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    """Declare the boundary for one operation read; the handler rechecks the members.
+
+    The operation id in the path does not identify a Scope, and its confirmed
+    members may already be gone after cleanup, so the declarative requirement is
+    deployment observation. The handler additionally requires current management
+    authority on every recorded member, which is the authority the operation
+    actually acts under.
+    """
+
+    return ((AccessAction.SERVER_OBSERVE, ResourceRef.server(deployment_id)),)
+
+
 def _publish_artifact_access(
     payload: Mapping[str, Any],
     _deployment_id: str,
@@ -6465,6 +6691,9 @@ _NAMED_ACCESS_RESOLVERS: dict[
     "publish_artifact_access": _publish_artifact_access,
     "publish_remote_skill_access": _publish_remote_skill_access,
     "scope_selection_read_access": _scope_selection_read_access,
+    "scope_deletion_preview_access": _scope_deletion_preview_access,
+    "scope_deletion_operation_access": _scope_deletion_operation_access,
+    "scope_deletion_confirm_access": _scope_deletion_confirm_access,
     "skill_candidate_write_access": _skill_candidate_write_access,
     "skill_identity_write_access": _skill_identity_write_access,
     "skill_usage_access": _skill_usage_access,
@@ -7172,6 +7401,47 @@ def _map_base_access_error(error: Exception) -> tuple[int, str, str, dict[str, A
     return None
 
 
+def _map_scope_lifecycle_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
+    """Map lifecycle and deletion refusals to their stable public codes."""
+
+    if isinstance(error, ScopeNotWritableError):
+        return (
+            status.HTTP_409_CONFLICT,
+            "scope_not_writable",
+            "The Scope does not accept ordinary writes in its current lifecycle state.",
+            {"scope_id": error.scope_id, "state": error.state},
+        )
+    if isinstance(error, ScopeLifecycleConflictError):
+        return (
+            status.HTTP_409_CONFLICT,
+            "scope_lifecycle_conflict",
+            "The Scope is not in the lifecycle state this transition requires.",
+            {"scope_id": error.scope_id, "requested": error.requested, "state": error.state},
+        )
+    if isinstance(error, ScopeDeletionConflictError):
+        return (
+            status.HTTP_409_CONFLICT,
+            "scope_deletion_conflict",
+            "The deletion set or its prerequisites do not match the confirmed request.",
+            {"scope_id": error.scope_id, "reason": error.reason},
+        )
+    if isinstance(error, ScopeRangeLimitError):
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "scope_range_limit_exceeded",
+            "The structural range exceeds its declared budget and was refused rather than truncated.",
+            {"limit": error.kind},
+        )
+    if isinstance(error, ScopeResourceHandlerUnsupportedError):
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "scope_resource_handler_unsupported",
+            "The requested cleanup mode cannot be performed by this deployment.",
+            {"handler": error.handler},
+        )
+    return None
+
+
 def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
     if isinstance(error, ArtifactPublicationUnsupportedError):
         return (
@@ -7219,6 +7489,9 @@ def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | 
             "The Scope relationship is invalid.",
             {"relationship": error.relationship, "issue": error.issue},
         )
+    lifecycle = _map_scope_lifecycle_error(error)
+    if lifecycle is not None:
+        return lifecycle
     return None
 
 

@@ -1,0 +1,282 @@
+{
+  "format": "powercontext.mysql-state-layouts.v1",
+  "revisions": {
+    "v1_5_0_007": {
+      "statements": [
+        "CREATE TABLE `pc_scope_deletions` (`operation_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `root_scope_id` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `membership_digest` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `confirmed_scopes` mediumblob NOT NULL, `state` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `requested_at` datetime NOT NULL, PRIMARY KEY (`operation_id`), CONSTRAINT `ck_pc_scope_deletions_state` CHECK (`state` in ('cleanup_pending','complete')))",
+        "CREATE TABLE `pc_scope_deletion_progress` (`operation_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `scope_id` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `handler` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `state` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, `attempts` int(11) NOT NULL DEFAULT '0', `last_error_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL, PRIMARY KEY (`operation_id`, `scope_id`, `handler`), FOREIGN KEY (`operation_id`) REFERENCES `pc_scope_deletions`(`operation_id`) ON UPDATE RESTRICT ON DELETE CASCADE , CONSTRAINT `ck_pc_scope_deletion_progress_state` CHECK (`state` in ('pending','done','failed')), CONSTRAINT `ck_pc_scope_deletion_progress_attempts_nonnegative` CHECK ((`attempts` >= 0)))"
+      ],
+      "changes": [
+        {
+          "pc_scope_deletions": {
+            "columns": {
+              "operation_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "root_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "membership_digest": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "confirmed_scopes": {
+                "type": [
+                  "mediumblob",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "state": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "requested_at": {
+                "type": [
+                  "datetime",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "operation_id",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [],
+            "checks": {
+              "ck_pc_scope_deletions_state": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "state"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "cleanup_pending"
+                    ],
+                    [
+                      "literal",
+                      "complete"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {}
+          }
+        },
+        {
+          "pc_scope_deletion_progress": {
+            "columns": {
+              "operation_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "handler": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "state": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "attempts": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": false,
+                "default": [
+                  "number",
+                  0
+                ],
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "last_error_code": {
+                "type": [
+                  "varchar",
+                  [
+                    "64"
+                  ]
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "operation_id",
+                null,
+                "asc"
+              ],
+              [
+                "scope_id",
+                null,
+                "asc"
+              ],
+              [
+                "handler",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "operation_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_scope_deletions",
+                "referred_columns": [
+                  "operation_id"
+                ],
+                "ondelete": "cascade",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_scope_deletion_progress_state": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "state"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "pending"
+                    ],
+                    [
+                      "literal",
+                      "done"
+                    ],
+                    [
+                      "literal",
+                      "failed"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_scope_deletion_progress_attempts_nonnegative": {
+                "expression": [
+                  "binary",
+                  ">=",
+                  [
+                    "column",
+                    "attempts"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {}
+          }
+        }
+      ]
+    }
+  }
+}

@@ -50,6 +50,26 @@ Scope 选择项目上下文边界。其不透明 ID 用于标识数据，不负�
 团队通过 API、MCP 或宿主集成使用各自的身份与权限。Dashboard 仅用于个人和演示部署，可选用静态 token 鉴权，
 不作为 RBAC 团队入口；团队部署保持 `POWERCONTEXT_SERVER_DASHBOARD_ENABLED=false`。
 
+## 归档与删除 Scope
+
+`POST /v1/scopes/{scope_id}/archive` 只停止该 Scope 的普通写入、本地处理和 Candidate 提交；结构子 Scope 保持各自状态，
+其他 Scope 仍可在有效授权下读取已归档内容，因此归档不等于撤销授权。`POST /v1/scopes/{scope_id}/reopen` 将其恢复为可写并保留
+身份。两者都带版本条件，请传入最近一次读到的 `version`；版本过期返回 `409 scope_version_conflict`，状态不匹配返回
+`409 scope_lifecycle_conflict`。
+
+删除必须显式确认，因为对被删除集合毫无所知的执行不能算显式：
+
+1. `POST /v1/scope-deletions/preview` 解析结构成员并返回 `membership_digest`。后代仅来自 parent 边，不会沿 Context
+   Reference、publication 副本或 Artifact lineage 扩展。节点与深度预算由部署决定，超出时返回 `422
+   scope_range_limit_exceeded`，而不是返回被截断的集合。
+2. 携带该摘要调用 `POST /v1/scope-deletions` 会切断访问并记录操作。集合已变化时返回 `409 scope_deletion_conflict` 而
+   不会重新解析；`single_scope: true` 还会拒绝多于一个成员的集合，以及仍有结构子 Scope 的 Scope。
+3. `GET /v1/scope-deletions/{operation_id}` 报告逐资源进度，`POST /v1/scope-deletions/{operation_id}/cleanup` 继续
+   未完成的工作。清理失败时成员对读取方保持不可用，管理者可重试，且不会重新变为可读。
+
+每个被确认的成员都必须是当前可管理的 Scope，preview 与 confirm 各检查一次；preview 本身不授予任何权限。成员已被清理后
+读取该操作需要部署级观察权限，因为本版本没有记录单独的发起者。
+
 ## 恢复外部所有权写入
 
 `create_server_app` 将内置 Runtime 与业务事务之外的 relationship/audit store 组合时，

@@ -369,6 +369,107 @@ class ScopeExternalReference(BaseModel):
     value: Annotated[StrictStr, Field(max_length=2000, min_length=1, pattern=".*\\S.*")]
 
 
+class ScopeLifecycleTransitionRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    expected_version: Annotated[
+        StrictInt,
+        Field(
+            description="The Scope version the caller last observed. A stale value conflicts instead of overwriting a newer lifecycle state or concurrent metadata change.",
+            ge=1,
+        ),
+    ]
+
+
+class ScopeDeletionMember(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    parent_scope_id: Annotated[StrictStr | None, Field(max_length=256, min_length=1, pattern=".*\\S.*")] = None
+    version: Annotated[
+        StrictInt,
+        Field(
+            description="The member's metadata version at preview time, so a caller can recheck it before confirming.",
+            ge=1,
+        ),
+    ]
+
+
+class OutsideChildrenItem(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+
+
+class ScopeDeletionPreview(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    root_scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    members: list[ScopeDeletionMember]
+    membership_digest: Annotated[
+        StrictStr,
+        Field(
+            description="Stable digest of this exact structural membership and its per-member versions. Confirmation must present it unchanged; a set that moved is refused rather than silently re-resolved.",
+            pattern="^[0-9a-f]{64}$",
+        ),
+    ]
+    outside_children: Annotated[
+        list[OutsideChildrenItem] | None,
+        Field(
+            description="Structural children of a member that lie outside the set. Confirming is refused while this is non-empty, so a deletion cannot leave a member's children behind by accident."
+        ),
+    ] = None
+
+
+class State(StrEnum):
+    PENDING = "pending"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class ScopeResourceProgress(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    handler: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    state: State
+    attempts: Annotated[StrictInt, Field(ge=0)]
+    last_error_code: Annotated[
+        StrictStr | None, Field(description="A stable code, never a payload or exception text.", max_length=64)
+    ] = None
+
+
+class State1(StrEnum):
+    CLEANUP_PENDING = "cleanup_pending"
+    COMPLETE = "complete"
+
+
+class ScopeDeletionReceipt(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    operation_id: Annotated[StrictStr, Field(max_length=64, min_length=1, pattern=".*\\S.*")]
+    root_scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    membership_digest: Annotated[StrictStr, Field(pattern="^[0-9a-f]{64}$")]
+    state: Annotated[
+        State1,
+        Field(
+            description="cleanup_pending keeps every member unavailable and the unfinished work retryable; complete means every required resource handler finished."
+        ),
+    ]
+    members: list[ScopeDeletionMember]
+    progress: list[ScopeResourceProgress]
+
+
+class LifecycleState(StrEnum):
+    WRITABLE = "writable"
+    ARCHIVED = "archived"
+    DELETING = "deleting"
+    DELETED = "deleted"
+
+
 class ContextReference(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
 
@@ -377,6 +478,12 @@ class ScopeDescriptor(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
+    lifecycle_state: Annotated[
+        LifecycleState,
+        Field(
+            description="Authoritative lifecycle of this Scope, read from the same row the write gate locks. Existing Scopes are writable. Archive stops ordinary writes, local processing and Candidate commits in this Scope only, and structural children keep their own state; authorized external reads of archived material continue. A deletion cutoff (deleting, then deleted) removes the Scope from ordinary reads and writes."
+        ),
+    ] = LifecycleState.WRITABLE
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     title: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     summary: Annotated[StrictStr, Field(max_length=2000, min_length=1, pattern=".*\\S.*")]
@@ -859,7 +966,7 @@ class Role(StrEnum):
     STANDBY = "standby"
 
 
-class State(StrEnum):
+class State2(StrEnum):
     RUNNING = "running"
     DEGRADED = "degraded"
     STOPPED = "stopped"
@@ -883,7 +990,7 @@ class ExtractionBackground(BaseModel):
         ),
     ] = None
     state: Annotated[
-        State,
+        State2,
         Field(
             description="Local Supervisor lifecycle and control state, independent of individual worker outcomes. A running Supervisor may be retrying failed workers. External state is unknown."
         ),
@@ -5131,6 +5238,29 @@ class ArtifactRevision(BaseModel):
         StrictInt | None, Field(description="Historical revision restored by this rollback.", ge=1)
     ] = None
     reason: Annotated[StrictStr | None, Field(description="Reason recorded for a rollback.", max_length=1024)] = None
+
+
+class ScopeDeletionPreviewRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    selection: ScopeSelection
+
+
+class ConfirmScopeDeletionRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    selection: ScopeSelection
+    confirmed_digest: Annotated[
+        StrictStr, Field(description="The membership digest the caller actually confirmed.", pattern="^[0-9a-f]{64}$")
+    ]
+    single_scope: Annotated[
+        StrictBool,
+        Field(
+            description="Ask for the single-Scope contract: a Scope that still has structural children, or a set with more than one member, conflicts instead of being removed with them."
+        ),
+    ] = False
 
 
 class HandoffReceiptIdentity(BaseModel):

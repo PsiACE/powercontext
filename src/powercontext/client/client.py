@@ -67,6 +67,7 @@ from powercontext.http import (
     CommitConnectorCheckpointRequest,
     CommitHandoffRequest,
     CommittedHandoff,
+    ConfirmScopeDeletionRequest,
     ConnectionIdentity,
     ConnectorCheckpointState,
     ContextCheckResult,
@@ -185,8 +186,12 @@ from powercontext.http import (
     ScanExternalSkillsRequest,
     ScanExternalSkillsResponse,
     ScopeBinding,
+    ScopeDeletionPreview,
+    ScopeDeletionPreviewRequest,
+    ScopeDeletionReceipt,
     ScopeDescriptor,
     ScopedStats,
+    ScopeLifecycleTransitionRequest,
     ScopePage,
     ScopeQueryField,
     SearchArtifactsRequest,
@@ -231,6 +236,7 @@ from powercontext.http._generated.operations import (
     ACKNOWLEDGE_HANDOFF,
     ACTIVATE_HANDOFF,
     APPROVE_CANDIDATE,
+    ARCHIVE_SCOPE,
     BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
     CAPTURE_WORKING_NOTE,
@@ -239,6 +245,7 @@ from powercontext.http._generated.operations import (
     CLEAR_SCOPE_BINDING,
     COMMIT_CONNECTOR_CHECKPOINT,
     COMMIT_HANDOFF,
+    CONFIRM_SCOPE_DELETION,
     CONTINUE_HANDOFF,
     CREATE_ACCESS_BINDING,
     CREATE_ARTIFACT,
@@ -279,6 +286,7 @@ from powercontext.http._generated.operations import (
     GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
+    GET_SCOPE_DELETION,
     GET_SERVER_INFO,
     GET_SKILL,
     GET_SKILL_PACKAGE_MANIFEST,
@@ -308,6 +316,7 @@ from powercontext.http._generated.operations import (
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PREPARE_HANDOFF_HINT,
+    PREVIEW_SCOPE_DELETION,
     PROPOSE_EXPERIENCE,
     PROPOSE_SKILL,
     PROPOSE_SKILL_PACKAGE,
@@ -325,6 +334,8 @@ from powercontext.http._generated.operations import (
     REJECT_CANDIDATE,
     REMEMBER_MEMORY,
     RENAME_REMOTE_SKILL_TARGET,
+    REOPEN_SCOPE,
+    REPAIR_SCOPE_DELETION_COVERAGE,
     REPLACE_ACCESS_BINDING,
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
@@ -333,6 +344,7 @@ from powercontext.http._generated.operations import (
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
+    RESUME_SCOPE_DELETION_CLEANUP,
     RETIRE_MEMORY_ENTRY,
     RETRY_TOPIC_MEMORY_PROCESSING,
     REVISE_CANDIDATE,
@@ -494,6 +506,41 @@ class PowerContextClient:
         """Replace mutable Scope metadata and relationships."""
 
         return await self._request(UPDATE_SCOPE, request, path_parameters={"scope_id": scope_id})
+
+    async def archive_scope(self, scope_id: str, request: ScopeLifecycleTransitionRequest) -> ScopeDescriptor:
+        """Archive one Scope: stop ordinary writes there, keeping children as they are."""
+
+        return await self._request(ARCHIVE_SCOPE, request, path_parameters={"scope_id": scope_id})
+
+    async def reopen_scope(self, scope_id: str, request: ScopeLifecycleTransitionRequest) -> ScopeDescriptor:
+        """Return one archived Scope to writable."""
+
+        return await self._request(REOPEN_SCOPE, request, path_parameters={"scope_id": scope_id})
+
+    async def preview_scope_deletion(self, request: ScopeDeletionPreviewRequest) -> ScopeDeletionPreview:
+        """Resolve the bounded structural set a deletion would act on."""
+
+        return await self._request(PREVIEW_SCOPE_DELETION, request)
+
+    async def confirm_scope_deletion(self, request: ConfirmScopeDeletionRequest) -> ScopeDeletionReceipt:
+        """Confirm one explicit structural deletion and its immediate cleanup."""
+
+        return await self._request(CONFIRM_SCOPE_DELETION, request)
+
+    async def get_scope_deletion(self, operation_id: str) -> ScopeDeletionReceipt:
+        """Read one durable deletion operation and its cleanup progress."""
+
+        return await self._request(GET_SCOPE_DELETION, path_parameters={"operation_id": operation_id})
+
+    async def resume_scope_deletion_cleanup(self, operation_id: str) -> ScopeDeletionReceipt:
+        """Resume unfinished cleanup for one deletion operation."""
+
+        return await self._request(RESUME_SCOPE_DELETION_CLEANUP, path_parameters={"operation_id": operation_id})
+
+    async def repair_scope_deletion_coverage(self, operation_id: str) -> ScopeDeletionReceipt:
+        """Repair recorded coverage for one deletion operation."""
+
+        return await self._request(REPAIR_SCOPE_DELETION_COVERAGE, path_parameters={"operation_id": operation_id})
 
     async def get_default_scope(self) -> ScopeDescriptor:
         """Read the host's default Scope target."""

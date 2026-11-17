@@ -343,6 +343,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/scopes/{scope_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive one Scope
+         * @description Stop ordinary writes, local processing and Candidate commits in this named Scope. Structural children keep their own state, and other Scopes may still use archived material under a valid source grant, so archiving is not revocation. Grant management and reopening stay available. The transition is revision conditional: a stale expected version conflicts instead of overwriting a newer state.
+         */
+        post: operations["archive_scope"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reopen one archived Scope
+         * @description Return an archived Scope to writable while retaining its identity. Rescheduled background work rechecks current authority and the target baseline. A Scope that is not archived conflicts.
+         */
+        post: operations["reopen_scope"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/scopes/default": {
         parameters: {
             query?: never;
@@ -375,6 +415,106 @@ export interface paths {
         put?: never;
         /** Resolve an observation selection to a frozen Scope set */
         post: operations["resolve_scope_selection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scope-deletions/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview the exact structural set one deletion would act on
+         * @description Resolve the confirmed structural membership within explicit node and depth budgets and return it with a stable membership digest. Structural descendants come from parent edges only: Context References, publication copies and Artifact lineage are never traversed, and nothing here authorizes reading any Scope's content. Exceeding a declared budget refuses the whole preview instead of returning a truncated set. A preview is not authority: confirming still requires current management authority on every confirmed member.
+         */
+        post: operations["preview_scope_deletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scope-deletions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm one explicit structural Scope deletion
+         * @description Re-resolve the set inside the hierarchy boundary and refuse if the structural membership changed since the preview, then cut access and record the operation before removing any owned resource. A single-Scope delete conflicts when the Scope still has structural children instead of removing them with it. An operation that cannot clean up every resource this build owns is refused before the cutoff rather than accepted and reported complete. Cleanup runs immediately and its per-resource progress is returned. Scope relationships, references and lineage are never followed into Scopes outside the confirmed set.
+         */
+        post: operations["confirm_scope_deletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scope-deletions/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one deletion operation and its cleanup progress
+         * @description Inspect the persisted operation identity, confirmed membership, access cutoff and per-resource progress. A failed or interrupted cleanup stays visible and retryable; it never becomes readable again.
+         */
+        get: operations["get_scope_deletion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scope-deletions/{operation_id}/cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume cleanup for one deletion operation
+         * @description Run every unfinished resource handler again and return the recorded progress. Repeat calls resume the same operation; each handler is idempotent per Scope. A manager may retry a failed cleanup, and the members stay unavailable throughout.
+         */
+        post: operations["resume_scope_deletion_cleanup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scope-deletions/{operation_id}/coverage-repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Repair recorded coverage for one deletion operation
+         * @description Additive repair for the coverage this build records: it adds a pending progress row for a required resource owner that was never recorded, and clears only its own coverage blocker. It never reclassifies an operation an earlier build already completed, never clears a foreign failure diagnostic, and changes no confirmed membership.
+         */
+        post: operations["repair_scope_deletion_coverage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3246,7 +3386,66 @@ export interface components {
             kind: string;
             value: string;
         };
+        ScopeLifecycleTransitionRequest: {
+            /** @description The Scope version the caller last observed. A stale value conflicts instead of overwriting a newer lifecycle state or concurrent metadata change. */
+            expected_version: number;
+        };
+        /** @description The node and depth budget is part of the deployment's composed lifecycle configuration, not a per-request knob: an operation that cannot clean up everything it owns must not be admitted merely because a caller asked for a smaller range, so this request carries none. Exceeding the composed budget refuses the whole preview instead of returning a truncated set. */
+        ScopeDeletionPreviewRequest: {
+            selection: components["schemas"]["ScopeSelection"];
+        };
+        ScopeDeletionMember: {
+            scope_id: string;
+            parent_scope_id?: string | null;
+            /** @description The member's metadata version at preview time, so a caller can recheck it before confirming. */
+            version: number;
+        };
+        ScopeDeletionPreview: {
+            root_scope_id: string;
+            members: components["schemas"]["ScopeDeletionMember"][];
+            /** @description Stable digest of this exact structural membership and its per-member versions. Confirmation must present it unchanged; a set that moved is refused rather than silently re-resolved. */
+            membership_digest: string;
+            /** @description Structural children of a member that lie outside the set. Confirming is refused while this is non-empty, so a deletion cannot leave a member's children behind by accident. */
+            outside_children?: string[];
+        };
+        ConfirmScopeDeletionRequest: {
+            selection: components["schemas"]["ScopeSelection"];
+            /** @description The membership digest the caller actually confirmed. */
+            confirmed_digest: string;
+            /**
+             * @description Ask for the single-Scope contract: a Scope that still has structural children, or a set with more than one member, conflicts instead of being removed with them.
+             * @default false
+             */
+            single_scope: boolean;
+        };
+        ScopeResourceProgress: {
+            scope_id: string;
+            handler: string;
+            /** @enum {string} */
+            state: "pending" | "done" | "failed";
+            attempts: number;
+            /** @description A stable code, never a payload or exception text. */
+            last_error_code?: string | null;
+        };
+        ScopeDeletionReceipt: {
+            operation_id: string;
+            root_scope_id: string;
+            membership_digest: string;
+            /**
+             * @description cleanup_pending keeps every member unavailable and the unfinished work retryable; complete means every required resource handler finished.
+             * @enum {string}
+             */
+            state: "cleanup_pending" | "complete";
+            members: components["schemas"]["ScopeDeletionMember"][];
+            progress: components["schemas"]["ScopeResourceProgress"][];
+        };
         ScopeDescriptor: {
+            /**
+             * @description Authoritative lifecycle of this Scope, read from the same row the write gate locks. Existing Scopes are writable. Archive stops ordinary writes, local processing and Candidate commits in this Scope only, and structural children keep their own state; authorized external reads of archived material continue. A deletion cutoff (deleting, then deleted) removes the Scope from ordinary reads and writes.
+             * @default writable
+             * @enum {string}
+             */
+            lifecycle_state: "writable" | "archived" | "deleting" | "deleted";
             scope_id: string;
             title: string;
             summary: string;
@@ -7397,6 +7596,72 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
+    archive_scope: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScopeLifecycleTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description The Scope with its current lifecycle state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDescriptor"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    reopen_scope: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScopeLifecycleTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description The Scope with its current lifecycle state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDescriptor"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     get_default_scope: {
         parameters: {
             query?: never;
@@ -7476,6 +7741,152 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["InvalidRequest"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    preview_scope_deletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScopeDeletionPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The bounded structural set and its membership digest. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeletionPreview"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    confirm_scope_deletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmScopeDeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description The durable deletion operation with its cleanup progress. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeletionReceipt"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    get_scope_deletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The durable deletion operation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeletionReceipt"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    resume_scope_deletion_cleanup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The durable deletion operation after the resumed cleanup. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeletionReceipt"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    repair_scope_deletion_coverage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The durable deletion operation after the repair. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeletionReceipt"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
     };

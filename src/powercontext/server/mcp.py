@@ -65,6 +65,7 @@ from powercontext.http._generated.operations import (
     GET_HANDOFF_REPORT,
     GET_MEMORY_ENTRY,
     GET_SCOPE,
+    GET_SCOPE_DELETION,
     GET_SKILL,
     GET_TOPIC_MEMORY,
     HANDOFF_CURRENT_WORK,
@@ -232,9 +233,11 @@ _MCP_OPERATION_IDS = frozenset({
     RESOLVE_SCOPE_SELECTION.operation_id,
     SET_SCOPE_BINDING.operation_id,
     CLEAR_SCOPE_BINDING.operation_id,
+    GET_SCOPE_DELETION.operation_id,
     PUBLISH_ARTIFACT.operation_id,
     SEARCH_ARTIFACTS.operation_id,
     SEARCH_CROSS_SCOPE_ARTIFACTS.operation_id,
+    GET_SCOPE_DELETION.operation_id,
 })
 _MCP_READ_ONLY_OPERATION_IDS = frozenset({
     "pc_source_capabilities",

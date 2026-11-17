@@ -58,6 +58,31 @@ Teams use the API, MCP, or host integrations with their own identities and permi
 personal and demonstration deployments, with optional static token authentication. It is not a team RBAC interface; leave
 `POWERCONTEXT_SERVER_DASHBOARD_ENABLED=false` in team deployments.
 
+## Archive and delete a Scope
+
+`POST /v1/scopes/{scope_id}/archive` stops ordinary writes, local processing and Candidate commits in that named Scope
+only; structural children keep their own state, and other Scopes can still read archived material under a valid grant.
+Archiving is therefore not revocation. `POST /v1/scopes/{scope_id}/reopen` returns it to writable and keeps its
+identity. Both are revision conditional, so pass the `version` you last observed; a stale value returns
+`409 scope_version_conflict`, and a Scope in the wrong state returns `409 scope_lifecycle_conflict`.
+
+Deletion is explicit and confirmed, because an operation that acts on a set you never saw is not explicit:
+
+1. `POST /v1/scope-deletions/preview` resolves the structural membership and returns it with a `membership_digest`.
+   Descendants come from parent edges only; Context References, publication copies and Artifact lineage are never
+   followed. The node and depth budget belongs to the deployment, so exceeding it returns `422
+   scope_range_limit_exceeded` instead of a truncated set.
+2. `POST /v1/scope-deletions` with that exact digest cuts access and records the operation. A set that moved is refused
+   with `409 scope_deletion_conflict` rather than re-resolved; `single_scope: true` additionally refuses a set with more
+   than one member, or a Scope that still has structural children.
+3. `GET /v1/scope-deletions/{operation_id}` reports per-resource progress, and `POST
+   /v1/scope-deletions/{operation_id}/cleanup` resumes unfinished work. A failed cleanup stays unavailable to readers
+   and retryable by a manager; it never becomes readable again.
+
+Every confirmed member must be one you can currently manage, checked at both preview and confirm. A preview grants no
+authority. Reading an operation whose members are gone needs deployment observation, because this release records no
+separate requester.
+
 ## Recover external ownership writes
 
 When `create_server_app` composes the built-in Runtime with relationship/audit stores outside its business transaction,

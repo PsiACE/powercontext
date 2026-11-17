@@ -762,6 +762,99 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
             },
         },
+        "/v1/scopes/{scope_id}/archive": {
+            "post": {
+                "tags": ["scopes"],
+                "summary": "Archive one Scope",
+                "description": "Stop ordinary writes, local "
+                "processing and Candidate "
+                "commits in this named Scope. "
+                "Structural children keep "
+                "their own state, and other "
+                "Scopes may still use "
+                "archived material under a "
+                "valid source grant, so "
+                "archiving is not revocation. "
+                "Grant management and "
+                "reopening stay available. "
+                "The transition is revision "
+                "conditional: a stale "
+                "expected version conflicts "
+                "instead of overwriting a "
+                "newer state.",
+                "operationId": "archive_scope",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ScopeLifecycleTransitionRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The Scope with its current lifecycle state.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScopeDescriptor"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/reopen": {
+            "post": {
+                "tags": ["scopes"],
+                "summary": "Reopen one archived Scope",
+                "description": "Return an archived Scope to "
+                "writable while retaining its "
+                "identity. Rescheduled "
+                "background work rechecks "
+                "current authority and the "
+                "target baseline. A Scope that "
+                "is not archived conflicts.",
+                "operationId": "reopen_scope",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ScopeLifecycleTransitionRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The Scope with its current lifecycle state.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScopeDescriptor"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
         "/v1/scopes/default": {
             "get": {
                 "tags": ["scopes"],
@@ -835,6 +928,268 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "422": {"$ref": "#/components/responses/InvalidRequest"},
                 },
                 "x-powercontext-access": {"resolver": "scope_selection_read_access"},
+            }
+        },
+        "/v1/scope-deletions/preview": {
+            "post": {
+                "tags": ["scopes"],
+                "summary": "Preview the exact structural set one deletion would act on",
+                "description": "Resolve the confirmed "
+                "structural membership within "
+                "explicit node and depth "
+                "budgets and return it with a "
+                "stable membership digest. "
+                "Structural descendants come "
+                "from parent edges only: "
+                "Context References, "
+                "publication copies and "
+                "Artifact lineage are never "
+                "traversed, and nothing here "
+                "authorizes reading any Scope's "
+                "content. Exceeding a declared "
+                "budget refuses the whole "
+                "preview instead of returning a "
+                "truncated set. A preview is "
+                "not authority: confirming "
+                "still requires current "
+                "management authority on every "
+                "confirmed member.",
+                "operationId": "preview_scope_deletion",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ScopeDeletionPreviewRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "The bounded structural set and its membership digest.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ScopeDeletionPreview"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {"resolver": "scope_deletion_preview_access"},
+            }
+        },
+        "/v1/scope-deletions": {
+            "post": {
+                "tags": ["scopes"],
+                "summary": "Confirm one explicit structural Scope deletion",
+                "description": "Re-resolve the set inside the "
+                "hierarchy boundary and refuse if the "
+                "structural membership changed since "
+                "the preview, then cut access and "
+                "record the operation before removing "
+                "any owned resource. A single-Scope "
+                "delete conflicts when the Scope still "
+                "has structural children instead of "
+                "removing them with it. An operation "
+                "that cannot clean up every resource "
+                "this build owns is refused before the "
+                "cutoff rather than accepted and "
+                "reported complete. Cleanup runs "
+                "immediately and its per-resource "
+                "progress is returned. Scope "
+                "relationships, references and lineage "
+                "are never followed into Scopes outside "
+                "the confirmed set.",
+                "operationId": "confirm_scope_deletion",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ConfirmScopeDeletionRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "202": {
+                        "description": "The durable deletion operation with its cleanup progress.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ScopeDeletionReceipt"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {"resolver": "scope_deletion_confirm_access"},
+            }
+        },
+        "/v1/scope-deletions/{operation_id}": {
+            "get": {
+                "tags": ["scopes"],
+                "summary": "Read one deletion operation and its cleanup progress",
+                "description": "Inspect the persisted "
+                "operation identity, "
+                "confirmed membership, "
+                "access cutoff and "
+                "per-resource progress. A "
+                "failed or interrupted "
+                "cleanup stays visible "
+                "and retryable; it never "
+                "becomes readable again.",
+                "operationId": "get_scope_deletion",
+                "x-powercontext-access": {"resolver": "scope_deletion_operation_access"},
+                "parameters": [
+                    {
+                        "name": "operation_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The durable deletion operation.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ScopeDeletionReceipt"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scope-deletions/{operation_id}/cleanup": {
+            "post": {
+                "tags": ["scopes"],
+                "summary": "Resume cleanup for one deletion operation",
+                "description": "Run every "
+                "unfinished "
+                "resource "
+                "handler again "
+                "and return the "
+                "recorded "
+                "progress. "
+                "Repeat calls "
+                "resume the same "
+                "operation; each "
+                "handler is "
+                "idempotent per "
+                "Scope. A "
+                "manager may "
+                "retry a failed "
+                "cleanup, and "
+                "the members "
+                "stay "
+                "unavailable "
+                "throughout.",
+                "operationId": "resume_scope_deletion_cleanup",
+                "x-powercontext-access": {"resolver": "scope_deletion_operation_access"},
+                "parameters": [
+                    {
+                        "name": "operation_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The durable deletion operation after the resumed cleanup.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ScopeDeletionReceipt"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scope-deletions/{operation_id}/coverage-repair": {
+            "post": {
+                "tags": ["scopes"],
+                "summary": "Repair recorded coverage for one deletion operation",
+                "description": "Additive "
+                "repair "
+                "for the "
+                "coverage "
+                "this "
+                "build "
+                "records: "
+                "it adds "
+                "a "
+                "pending "
+                "progress "
+                "row for "
+                "a "
+                "required "
+                "resource "
+                "owner "
+                "that "
+                "was "
+                "never "
+                "recorded, "
+                "and "
+                "clears "
+                "only "
+                "its own "
+                "coverage "
+                "blocker. "
+                "It "
+                "never "
+                "reclassifies "
+                "an "
+                "operation "
+                "an "
+                "earlier "
+                "build "
+                "already "
+                "completed, "
+                "never "
+                "clears "
+                "a "
+                "foreign "
+                "failure "
+                "diagnostic, "
+                "and "
+                "changes "
+                "no "
+                "confirmed "
+                "membership.",
+                "operationId": "repair_scope_deletion_coverage",
+                "x-powercontext-access": {"resolver": "scope_deletion_operation_access"},
+                "parameters": [
+                    {
+                        "name": "operation_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The durable deletion operation after the repair.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ScopeDeletionReceipt"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
             }
         },
         "/v1/scope-bindings/resolve": {
@@ -8009,8 +8364,329 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["kind", "value"],
             },
+            "ScopeLifecycleTransitionRequest": {
+                "properties": {
+                    "expected_version": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "The "
+                        "Scope "
+                        "version "
+                        "the "
+                        "caller "
+                        "last "
+                        "observed. "
+                        "A "
+                        "stale "
+                        "value "
+                        "conflicts "
+                        "instead "
+                        "of "
+                        "overwriting "
+                        "a "
+                        "newer "
+                        "lifecycle "
+                        "state "
+                        "or "
+                        "concurrent "
+                        "metadata "
+                        "change.",
+                    }
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["expected_version"],
+            },
+            "ScopeDeletionPreviewRequest": {
+                "properties": {"selection": {"$ref": "#/components/schemas/ScopeSelection"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["selection"],
+                "description": "The node and depth "
+                "budget is part of the "
+                "deployment's composed "
+                "lifecycle "
+                "configuration, not a "
+                "per-request knob: an "
+                "operation that cannot "
+                "clean up everything it "
+                "owns must not be "
+                "admitted merely "
+                "because a caller asked "
+                "for a smaller range, "
+                "so this request "
+                "carries none. "
+                "Exceeding the composed "
+                "budget refuses the "
+                "whole preview instead "
+                "of returning a "
+                "truncated set.",
+            },
+            "ScopeDeletionMember": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "parent_scope_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                    "version": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "The "
+                        "member's "
+                        "metadata "
+                        "version "
+                        "at "
+                        "preview "
+                        "time, "
+                        "so "
+                        "a "
+                        "caller "
+                        "can "
+                        "recheck "
+                        "it "
+                        "before "
+                        "confirming.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "version"],
+            },
+            "ScopeDeletionPreview": {
+                "properties": {
+                    "root_scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "members": {"items": {"$ref": "#/components/schemas/ScopeDeletionMember"}, "type": "array"},
+                    "membership_digest": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "Stable "
+                        "digest "
+                        "of "
+                        "this "
+                        "exact "
+                        "structural "
+                        "membership "
+                        "and "
+                        "its "
+                        "per-member "
+                        "versions. "
+                        "Confirmation "
+                        "must "
+                        "present "
+                        "it "
+                        "unchanged; "
+                        "a "
+                        "set "
+                        "that "
+                        "moved "
+                        "is "
+                        "refused "
+                        "rather "
+                        "than "
+                        "silently "
+                        "re-resolved.",
+                    },
+                    "outside_children": {
+                        "items": {"type": "string", "maxLength": 256, "minLength": 1},
+                        "type": "array",
+                        "description": "Structural "
+                        "children "
+                        "of "
+                        "a "
+                        "member "
+                        "that "
+                        "lie "
+                        "outside "
+                        "the "
+                        "set. "
+                        "Confirming "
+                        "is "
+                        "refused "
+                        "while "
+                        "this "
+                        "is "
+                        "non-empty, "
+                        "so "
+                        "a "
+                        "deletion "
+                        "cannot "
+                        "leave "
+                        "a "
+                        "member's "
+                        "children "
+                        "behind "
+                        "by "
+                        "accident.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["root_scope_id", "members", "membership_digest"],
+            },
+            "ConfirmScopeDeletionRequest": {
+                "properties": {
+                    "selection": {"$ref": "#/components/schemas/ScopeSelection"},
+                    "confirmed_digest": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "The membership digest the caller actually confirmed.",
+                    },
+                    "single_scope": {
+                        "type": "boolean",
+                        "description": "Ask "
+                        "for "
+                        "the "
+                        "single-Scope "
+                        "contract: "
+                        "a "
+                        "Scope "
+                        "that "
+                        "still "
+                        "has "
+                        "structural "
+                        "children, "
+                        "or "
+                        "a "
+                        "set "
+                        "with "
+                        "more "
+                        "than "
+                        "one "
+                        "member, "
+                        "conflicts "
+                        "instead "
+                        "of "
+                        "being "
+                        "removed "
+                        "with "
+                        "them.",
+                        "default": False,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["selection", "confirmed_digest"],
+            },
+            "ScopeResourceProgress": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "handler": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "state": {"type": "string", "enum": ["pending", "done", "failed"]},
+                    "attempts": {"type": "integer", "minimum": 0.0},
+                    "last_error_code": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "description": "A stable code, never a payload or exception text.",
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "handler", "state", "attempts"],
+            },
+            "ScopeDeletionReceipt": {
+                "properties": {
+                    "operation_id": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": ".*\\S.*"},
+                    "root_scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "membership_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "state": {
+                        "type": "string",
+                        "enum": ["cleanup_pending", "complete"],
+                        "description": "cleanup_pending "
+                        "keeps "
+                        "every "
+                        "member "
+                        "unavailable "
+                        "and "
+                        "the "
+                        "unfinished "
+                        "work "
+                        "retryable; "
+                        "complete "
+                        "means "
+                        "every "
+                        "required "
+                        "resource "
+                        "handler "
+                        "finished.",
+                    },
+                    "members": {"items": {"$ref": "#/components/schemas/ScopeDeletionMember"}, "type": "array"},
+                    "progress": {"items": {"$ref": "#/components/schemas/ScopeResourceProgress"}, "type": "array"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["operation_id", "root_scope_id", "membership_digest", "state", "members", "progress"],
+            },
             "ScopeDescriptor": {
                 "properties": {
+                    "lifecycle_state": {
+                        "type": "string",
+                        "enum": ["writable", "archived", "deleting", "deleted"],
+                        "description": "Authoritative "
+                        "lifecycle "
+                        "of "
+                        "this "
+                        "Scope, "
+                        "read "
+                        "from "
+                        "the "
+                        "same "
+                        "row "
+                        "the "
+                        "write "
+                        "gate "
+                        "locks. "
+                        "Existing "
+                        "Scopes "
+                        "are "
+                        "writable. "
+                        "Archive "
+                        "stops "
+                        "ordinary "
+                        "writes, "
+                        "local "
+                        "processing "
+                        "and "
+                        "Candidate "
+                        "commits "
+                        "in "
+                        "this "
+                        "Scope "
+                        "only, "
+                        "and "
+                        "structural "
+                        "children "
+                        "keep "
+                        "their "
+                        "own "
+                        "state; "
+                        "authorized "
+                        "external "
+                        "reads "
+                        "of "
+                        "archived "
+                        "material "
+                        "continue. "
+                        "A "
+                        "deletion "
+                        "cutoff "
+                        "(deleting, "
+                        "then "
+                        "deleted) "
+                        "removes "
+                        "the "
+                        "Scope "
+                        "from "
+                        "ordinary "
+                        "reads "
+                        "and "
+                        "writes.",
+                        "default": "writable",
+                    },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "title": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "summary": {"type": "string", "maxLength": 2000, "minLength": 1, "pattern": ".*\\S.*"},

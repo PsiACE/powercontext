@@ -2362,6 +2362,10 @@ pub enum Timezone {
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeDescriptor {
+    /// Authoritative lifecycle of this Scope, read from the same row the write gate locks. Existing Scopes are writable. Archive stops ordinary writes, local processing and Candidate commits in this Scope only, and structural children keep their own state; authorized external reads of archived material continue. A deletion cutoff (deleting, then deleted) removes the Scope from ordinary reads and writes.
+    #[ts(optional)]
+    #[serde(rename = "lifecycle_state", skip_serializing_if = "Option::is_none")]
+    pub lifecycle_state: Option<LifecycleState>,
     #[serde(rename = "scope_id")]
     pub scope_id: String,
     #[serde(rename = "title")]
@@ -2396,6 +2400,7 @@ impl ScopeDescriptor {
         version: i64,
     ) -> ScopeDescriptor {
         ScopeDescriptor {
+            lifecycle_state: None,
             scope_id,
             title,
             summary,
@@ -2405,6 +2410,20 @@ impl ScopeDescriptor {
             version,
         }
     }
+}
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, TS, Default,
+)]
+pub enum LifecycleState {
+    #[serde(rename = "writable")]
+    #[default]
+    Writable,
+    #[serde(rename = "archived")]
+    Archived,
+    #[serde(rename = "deleting")]
+    Deleting,
+    #[serde(rename = "deleted")]
+    Deleted,
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -3010,6 +3029,7 @@ pub fn declarations(config: &ts_rs::Config) -> Vec<String> {
         <GetStatsRequest as ts_rs::TS>::decl(config),
         <HealthResponse as ts_rs::TS>::decl(config),
         <InventoryStatistics as ts_rs::TS>::decl(config),
+        <LifecycleState as ts_rs::TS>::decl(config),
         <Location as ts_rs::TS>::decl(config),
         <MatchedBy as ts_rs::TS>::decl(config),
         <MemoryEntryInventoryStatistics as ts_rs::TS>::decl(config),

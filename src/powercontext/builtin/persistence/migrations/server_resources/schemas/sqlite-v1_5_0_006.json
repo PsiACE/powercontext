@@ -1,0 +1,5 @@
+{
+  "statements": [
+    "ALTER TABLE pc_scopes ADD COLUMN lifecycle_state VARCHAR(16) NOT NULL DEFAULT 'writable'"
+  ]
+}

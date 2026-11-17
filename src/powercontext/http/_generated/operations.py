@@ -60,6 +60,7 @@ from powercontext.http._generated.models import (
     CommitConnectorCheckpointRequest,
     CommitHandoffRequest,
     CommittedHandoff,
+    ConfirmScopeDeletionRequest,
     ConnectionIdentity,
     ConnectorCheckpointState,
     ContextCheckResult,
@@ -197,8 +198,12 @@ from powercontext.http._generated.models import (
     ScanExternalSkillsRequest,
     ScanExternalSkillsResponse,
     ScopeBinding,
+    ScopeDeletionPreview,
+    ScopeDeletionPreviewRequest,
+    ScopeDeletionReceipt,
     ScopeDescriptor,
     ScopedStats,
+    ScopeLifecycleTransitionRequest,
     ScopePage,
     SearchArtifactsRequest,
     SearchArtifactsResponse,
@@ -834,6 +839,56 @@ UPDATE_SCOPE = Operation[UpdateScopeRequest, ScopeDescriptor](
     access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_scope_admin_access"),
 )
 
+ARCHIVE_SCOPE = Operation[ScopeLifecycleTransitionRequest, ScopeDescriptor](
+    method="POST",
+    path="/v1/scopes/{scope_id}/archive",
+    operation_id="archive_scope",
+    request_type=ScopeLifecycleTransitionRequest,
+    request_location="body",
+    path_parameters=("scope_id",),
+    response_type=ScopeDescriptor,
+    success_status=200,
+    summary="Archive one Scope",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The Scope with its current lifecycle state."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_scope_admin_access"),
+)
+
+REOPEN_SCOPE = Operation[ScopeLifecycleTransitionRequest, ScopeDescriptor](
+    method="POST",
+    path="/v1/scopes/{scope_id}/reopen",
+    operation_id="reopen_scope",
+    request_type=ScopeLifecycleTransitionRequest,
+    request_location="body",
+    path_parameters=("scope_id",),
+    response_type=ScopeDescriptor,
+    success_status=200,
+    summary="Reopen one archived Scope",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The Scope with its current lifecycle state."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_scope_admin_access"),
+)
+
 GET_DEFAULT_SCOPE = Operation[None, ScopeDescriptor](
     method="GET",
     path="/v1/scopes/default",
@@ -900,6 +955,134 @@ RESOLVE_SCOPE_SELECTION = Operation[ResolveScopeSelectionRequest, ScopePage](
         422: {"$ref": "#/components/responses/InvalidRequest"},
     },
     access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="scope_selection_read_access"),
+)
+
+PREVIEW_SCOPE_DELETION = Operation[ScopeDeletionPreviewRequest, ScopeDeletionPreview](
+    method="POST",
+    path="/v1/scope-deletions/preview",
+    operation_id="preview_scope_deletion",
+    request_type=ScopeDeletionPreviewRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ScopeDeletionPreview,
+    success_status=200,
+    summary="Preview the exact structural set one deletion would act on",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The bounded structural set and its membership digest."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="scope_deletion_preview_access"),
+)
+
+CONFIRM_SCOPE_DELETION = Operation[ConfirmScopeDeletionRequest, ScopeDeletionReceipt](
+    method="POST",
+    path="/v1/scope-deletions",
+    operation_id="confirm_scope_deletion",
+    request_type=ConfirmScopeDeletionRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ScopeDeletionReceipt,
+    success_status=202,
+    summary="Confirm one explicit structural Scope deletion",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        202: {"description": "The durable deletion operation with its cleanup progress."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="scope_deletion_confirm_access"),
+)
+
+GET_SCOPE_DELETION = Operation[None, ScopeDeletionReceipt](
+    method="GET",
+    path="/v1/scope-deletions/{operation_id}",
+    operation_id="get_scope_deletion",
+    request_type=None,
+    request_location=None,
+    path_parameters=("operation_id",),
+    response_type=ScopeDeletionReceipt,
+    success_status=200,
+    summary="Read one deletion operation and its cleanup progress",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The durable deletion operation."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action=None, resource=None, scope_id_field=None, resolver="scope_deletion_operation_access"
+    ),
+)
+
+RESUME_SCOPE_DELETION_CLEANUP = Operation[None, ScopeDeletionReceipt](
+    method="POST",
+    path="/v1/scope-deletions/{operation_id}/cleanup",
+    operation_id="resume_scope_deletion_cleanup",
+    request_type=None,
+    request_location=None,
+    path_parameters=("operation_id",),
+    response_type=ScopeDeletionReceipt,
+    success_status=200,
+    summary="Resume cleanup for one deletion operation",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The durable deletion operation after the resumed cleanup."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action=None, resource=None, scope_id_field=None, resolver="scope_deletion_operation_access"
+    ),
+)
+
+REPAIR_SCOPE_DELETION_COVERAGE = Operation[None, ScopeDeletionReceipt](
+    method="POST",
+    path="/v1/scope-deletions/{operation_id}/coverage-repair",
+    operation_id="repair_scope_deletion_coverage",
+    request_type=None,
+    request_location=None,
+    path_parameters=("operation_id",),
+    response_type=ScopeDeletionReceipt,
+    success_status=200,
+    summary="Repair recorded coverage for one deletion operation",
+    tags=("scopes",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The durable deletion operation after the repair."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action=None, resource=None, scope_id_field=None, resolver="scope_deletion_operation_access"
+    ),
 )
 
 RESOLVE_SCOPE_BINDING = Operation[ResolveScopeBindingRequest, ScopeDescriptor](
