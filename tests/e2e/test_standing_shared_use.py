@@ -2270,3 +2270,295 @@ def test_pinned_run_concludes_with_its_reviewed_commit_and_survives_reopen(tmp_p
                     assert durable.candidate_id == completed.candidate.candidate_id
 
     asyncio.run(scenario())
+
+
+def test_failed_conclusion_link_recovers_on_read_without_regenerating(tmp_path: Path) -> None:
+    """A bookkeeping failure after the durable finish is repaired by a supported read.
+
+    The business result is already final, so the failure must not be reported to the
+    caller or re-trigger generation. Reopening and reading the finished run through the
+    public path records the missing D linkage from persisted state, and generation,
+    Candidate count and the committed address all stay exactly as they were.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'recover.db'}")
+        calls: list[int] = []
+
+        class Gen:
+            config_id = "recover-fixture"
+
+            async def generate(self, value):
+                calls.append(1)
+                used = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+                return GenerationResult(
+                    output=DreamPlan(
+                        outcome="proposed",
+                        reason="Reconciled the two channels from the pinned evidence.",
+                        intent="create",
+                        proposal=ExperienceContent(
+                            situation="A timed-out write may already have committed.",
+                            action="Replay only on the new channel with an idempotency key.",
+                            outcome="The replay created no duplicate record.",
+                            lesson="Check transaction status on the old channel first.",
+                        ),
+                        evidence_ids=used,
+                    ),
+                    usage=InferenceUsage(requests=1),
+                )
+
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=Gen(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "recover-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                local = await runtime.sources.for_scope(orders).capture(
+                    CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+
+                # Inject exactly one bookkeeping failure: the first conclusion write blows up
+                # after the Dream run itself has already been persisted as finished.
+                service = runtime.share_rules
+                assert service is not None
+                original = service.record_outcome
+                failures = {"count": 0}
+
+                async def flaky(*args, **kwargs):
+                    if failures["count"] == 0 and kwargs.get("dream_run_id"):
+                        failures["count"] += 1
+                        raise RuntimeError  # injected bookkeeping failure
+                    return await original(*args, **kwargs)
+
+                service.record_outcome = flaky  # type: ignore[method-assign]
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                request = CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(),
+                    scoped=(
+                        ScopedEvidence(scope_id=orders, source=local.source_ref),
+                        ScopedEvidence(scope_id=alice, source=foreign.source_ref),
+                    ),
+                    share_run_id=pinned.run_id,
+                    idempotency_key="recover",
+                )
+                with run_as(RUNNER):
+                    admitted = await dream.create(request)
+                await process_pending(runtime)
+                # Read the terminal state straight from the repository, so this phase never
+                # invokes the repair path and the missed link survives into the reopen.
+                async with runtime.profiles.database.transaction() as raw:
+                    from powercontext.builtin.persistence.dream import DreamRepository
+
+                    completed = (await DreamRepository().get(raw, orders, admitted.run_id)).run
+                assert completed.outcome == "proposed", (completed.status, completed.error)
+                assert completed.candidate is not None
+                assert failures["count"] == 1
+                assert len(calls) == 1
+                # The durable D state shows the link was genuinely never written.
+                missed = await sharing.get_run(pinned.run_id)
+                assert missed.dream_run_id is None
+                assert missed.candidate_id is None
+                assert missed.outcome == "pending"
+
+            # Reopen with a healthy writer and read the finished run through the public path.
+            async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as reopened_access:
+                reopened = StandingAccess(reopened_access)
+                dream_adapter2 = DreamAccess(reopened_access)
+                async with open_dream_runtime(
+                    BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                    dream_generator=Gen(),
+                    share_rule_authorizer=reopened.authorize_origin,
+                    share_rule_target_check=reopened.authorize_target,
+                    share_rule_acceptance_validator=reopened.validate_acceptance,
+                    dream_authorizer=dream_adapter2.authorize,
+                    dream_authorization_context=reopened_access.defer_decision_audit,
+                ) as again:
+                    reopened.attach(again)
+                    dream_adapter2.bind_shared_use(again)
+                    reader = again.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                    with run_as(RUNNER):
+                        repaired = await reader.get(GetDreamRunRequest(run_id=admitted.run_id))
+                    assert repaired.outcome == "proposed"
+                    linked = await _sharing(again, orders).get_run(pinned.run_id)
+                    # Recovery wrote the binding from persisted state, with no generation.
+                    assert linked.dream_run_id == admitted.run_id
+                    assert linked.candidate_id == completed.candidate.candidate_id
+                    assert len(calls) == 1
+
+                    # Approving afterwards concludes with the real address, still without
+                    # generating again or creating a second Candidate.
+                    with run_as(RUNNER):
+                        approved = await again.review.for_scope(orders).approve(
+                            ApproveCandidateRequest(
+                                candidate_id=completed.candidate.candidate_id,
+                                expected_version=completed.candidate.version,
+                            )
+                        )
+                    concluded = await _sharing(again, orders).get_run(pinned.run_id)
+                    assert concluded.outcome == "committed"
+                    assert concluded.committed is not None
+                    assert concluded.committed.artifact == approved.result_artifact
+                    assert len(calls) == 1
+                    async with again.profiles.database.transaction() as connection:
+                        from sqlalchemy import select as _select
+
+                        from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE
+
+                        rows = list(
+                            (
+                                await connection.execute(
+                                    _select(CANDIDATE_HEADS_TABLE.c.candidate_id).where(
+                                        CANDIDATE_HEADS_TABLE.c.scope_id == orders
+                                    )
+                                )
+                            ).scalars()
+                        )
+                    assert len(rows) == 1
+
+    asyncio.run(scenario())
+
+
+def test_approval_commit_survives_a_conclusion_failure_and_recovers_on_read(tmp_path: Path) -> None:
+    """A bookkeeping failure after a real approval commit must not misreport it.
+
+    The Artifact commit is already durable, so the caller still receives the approved
+    result, the pinned run simply stays un-concluded, and a later supported read of the
+    finished run repairs the link with the exact address. Nothing regenerates.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'approvefail.db'}")
+        calls: list[int] = []
+
+        class Gen:
+            config_id = "approvefail-fixture"
+
+            async def generate(self, value):
+                calls.append(1)
+                used = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+                return GenerationResult(
+                    output=DreamPlan(
+                        outcome="proposed",
+                        reason="Reconciled the two channels from the pinned evidence.",
+                        intent="create",
+                        proposal=ExperienceContent(
+                            situation="A timed-out write may already have committed.",
+                            action="Replay only on the new channel with an idempotency key.",
+                            outcome="The replay created no duplicate record.",
+                            lesson="Check transaction status on the old channel first.",
+                        ),
+                        evidence_ids=used,
+                    ),
+                    usage=InferenceUsage(requests=1),
+                )
+
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=Gen(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "af-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                local = await runtime.sources.for_scope(orders).capture(
+                    CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                with run_as(RUNNER):
+                    admitted = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=(
+                                ScopedEvidence(scope_id=orders, source=local.source_ref),
+                                ScopedEvidence(scope_id=alice, source=foreign.source_ref),
+                            ),
+                            share_run_id=pinned.run_id,
+                            idempotency_key="approve-fail",
+                        )
+                    )
+                await process_pending(runtime)
+                completed = await dream.get(GetDreamRunRequest(run_id=admitted.run_id))
+                assert completed.outcome == "proposed"
+                assert completed.candidate is not None
+
+                # Fail only the committed write, which happens after the real approval.
+                service = runtime.share_rules
+                assert service is not None
+                original = service.record_outcome
+                failed = {"count": 0}
+
+                async def flaky(*args, **kwargs):
+                    if failed["count"] == 0 and kwargs.get("committed") is not None:
+                        failed["count"] += 1
+                        raise RuntimeError  # injected commit bookkeeping failure
+                    return await original(*args, **kwargs)
+
+                service.record_outcome = flaky  # type: ignore[method-assign]
+
+                with run_as(RUNNER):
+                    approved = await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=completed.candidate.candidate_id,
+                            expected_version=completed.candidate.version,
+                        )
+                    )
+                # The commit is real and reported to the caller despite the failure.
+                assert approved.result_artifact is not None
+                assert failed["count"] == 1
+                assert len(calls) == 1
+                unconcluded = await sharing.get_run(pinned.run_id)
+                assert unconcluded.outcome == "pending"
+
+                # A supported read of the finished run repairs the link with the exact address.
+                with run_as(RUNNER):
+                    await dream.get(GetDreamRunRequest(run_id=admitted.run_id))
+                repaired = await sharing.get_run(pinned.run_id)
+                assert repaired.outcome == "committed"
+                assert repaired.committed is not None
+                assert repaired.committed.artifact == approved.result_artifact
+                assert len(calls) == 1
+
+    asyncio.run(scenario())

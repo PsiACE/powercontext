@@ -108,6 +108,7 @@ from powercontext.builtin.review.models import Candidate, CandidateStatus
 from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime.processing_contracts import processing_error_code
 from powercontext.builtin.runtime.processing_execution import InvocationAlreadyHandled, ScopeInvocation
+from powercontext.builtin.sharing.models import ShareRun
 from powercontext.builtin.sharing.service import ShareRuleService
 from powercontext.builtin.tags import TagPreconditionError
 
@@ -303,7 +304,52 @@ class DreamService:
     async def get(self, scope_id: str, principal_id: str, run_id: str) -> DreamRun:
         await self._authorize(scope_id, principal_id, "read")
         async with self._transaction() as connection:
-            return (await self.repository.get(connection, scope_id, run_id)).run
+            record = await self.repository.get(connection, scope_id, run_id)
+        run = record.run
+        if run.terminal and record.share_run_id is not None:
+            # A supported read repairs a link a transient failure missed. The repair uses the
+            # persisted Candidate result too, so an approval that committed but failed to book
+            # its conclusion recovers with the exact address. Replay is a D no-op.
+            await self._reconcile_from_persisted(run, record)
+        return run
+
+    async def _reconcile_from_persisted(self, run: DreamRun, record: DreamRecord) -> None:
+        """Repair this run's conclusion from durable Dream and Candidate state alone."""
+
+        committed: ArtifactRef | None = None
+        candidate_id = None if run.candidate is None else run.candidate.candidate_id
+        if candidate_id is not None:
+            try:
+                async with self.database.connection() as connection:
+                    candidate = await self._candidate_lookup(connection, run.scope_id, candidate_id)
+            except Exception:
+                candidate = None
+            if candidate is not None and candidate.result_artifact is not None:
+                committed = candidate.result_artifact
+        try:
+            await self.reconcile_share_conclusion(run, committed=committed, candidate_id=candidate_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Share run conclusion reconciliation failed",
+                extra={
+                    "event": "dream.share_conclusion.reconcile_failed",
+                    "operation": run.operation,
+                    "unit": "stage",
+                    "outcome": "failure",
+                    "scope": run.scope_id,
+                    "exception_type": type(error).__name__,
+                },
+            )
+
+    async def _candidate_lookup(self, connection, scope_id: str, candidate_id: str):
+        """Read a Dream Candidate's persisted result through the owning repository."""
+
+        review = self.review(scope_id, connection)
+        return await review.get_candidate(candidate_id, connection=connection)
 
     async def list(self, scope_id: str, principal_id: str, request: ListDreamRunsRequest) -> DreamRunPage:
         await self._authorize(scope_id, principal_id, "read")
@@ -618,33 +664,75 @@ class DreamService:
         Runs without a binding (local, legacy) are untouched.
         """
 
+        # Everything below runs after the owning write is durable, so a failure here is
+        # reported and repaired later instead of changing this run's result.
+        try:
+            await self.reconcile_share_conclusion(run)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Share run conclusion reconciliation failed",
+                extra={
+                    "event": "dream.share_conclusion.reconcile_failed",
+                    "operation": run.operation,
+                    "unit": "stage",
+                    "outcome": "failure",
+                    "scope": run.scope_id,
+                    "exception_type": type(error).__name__,
+                },
+            )
+
+    async def reconcile_share_conclusion(
+        self,
+        run: DreamRun,
+        *,
+        committed: ArtifactRef | None = None,
+        candidate_id: str | None = None,
+    ) -> ShareRun | None:
+        """Record or repair this run's conclusion from its persisted authoritative state.
+
+        Safe to call repeatedly: D's one-way and idempotent rules make a second identical
+        attempt a no-op, so a supported read of a finished run repairs a link a transient
+        failure missed. It never generates, never approves, and never changes the result.
+        """
+
         if not run.scope_id or self.sharing is None:
-            return
+            return None
         async with self.database.connection() as connection:
             record = await self.repository.get(connection, run.scope_id, run.run_id)
-        bound = record.share_run_id
-        if bound is None:
-            return
+        if record.share_run_id is None:
+            return None
         service = self.sharing()
         if service is None:
-            return
+            return None
+        resolved_candidate = candidate_id
+        if resolved_candidate is None and run.candidate is not None:
+            resolved_candidate = run.candidate.candidate_id
         token = None
         if self.bind_executor is not None:
-            # Background work has no session; the recorded executor is the identity D's
-            # target check must see.
+            # Background work and reconciled reads have no session; the recorded executor
+            # is the identity D's target check must see.
             token = self.bind_executor(record.principal_id)
         try:
-            # Audit is deferred so the decision's own writes never contend with an open
-            # business transaction.
             async with self.authorization_context():
-                await record_conclusion(
+                stored = await record_conclusion(
                     service,
                     scope_id=run.scope_id,
-                    share_run_id=bound,
+                    share_run_id=record.share_run_id,
                     dream_run_id=run.run_id,
-                    candidate_id=None if run.candidate is None else run.candidate.candidate_id,
+                    candidate_id=resolved_candidate,
                     outcome=conclusion_for(run.outcome),
+                    committed=committed,
+                    operation=run.operation,
                 )
+            if stored is not None and stored.dream_run_id not in {None, run.run_id}:
+                # D has no atomic claim yet, so verify the binding it now holds and report a
+                # different owner instead of treating this execution as concluded.
+                raise DreamError("shared_use_run")
+            return stored
         finally:
             if token is not None and self.clear_executor is not None:
                 self.clear_executor(token)

@@ -4554,28 +4554,50 @@ class BuiltinRuntime:
         if not approved.candidate_id.startswith("cand_dream_") or self.share_rules is None:
             return
         run_id = approved.candidate_id.removeprefix("cand_dream_")
-        async with self.primary_database.connection() as connection:
-            record = await DreamRepository().get(connection, scope_id, run_id)
-        if record.share_run_id is None:
-            return
-        if committed and approved.result_artifact is not None:
+        # The commit is already durable, so every step here is best-effort: cancellation
+        # propagates, but a bookkeeping error is logged and the client still receives the
+        # real approved/rejected result. A later read or replay reconciles it.
+        try:
+            async with self.primary_database.connection() as connection:
+                record = await DreamRepository().get(connection, scope_id, run_id)
+            if record.share_run_id is None:
+                return
+            if committed and approved.result_artifact is not None:
+                await record_conclusion(
+                    self.share_rules,
+                    scope_id=scope_id,
+                    share_run_id=record.share_run_id,
+                    dream_run_id=run_id,
+                    candidate_id=approved.candidate_id,
+                    committed=approved.result_artifact,
+                    operation=record.run.operation,
+                )
+                return
             await record_conclusion(
                 self.share_rules,
                 scope_id=scope_id,
                 share_run_id=record.share_run_id,
                 dream_run_id=run_id,
                 candidate_id=approved.candidate_id,
-                committed=approved.result_artifact,
+                outcome="rejected",
+                operation=record.run.operation,
             )
-            return
-        await record_conclusion(
-            self.share_rules,
-            scope_id=scope_id,
-            share_run_id=record.share_run_id,
-            dream_run_id=run_id,
-            candidate_id=approved.candidate_id,
-            outcome="rejected",
-        )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Approved Candidate conclusion was not recorded",
+                extra={
+                    "event": "dream.share_conclusion.approval_failed",
+                    "operation": "review_candidate",
+                    "unit": "stage",
+                    "outcome": "failure",
+                    "scope": scope_id,
+                    "exception_type": type(error).__name__,
+                },
+            )
 
     def configure_dream_shared_use(
         self,
