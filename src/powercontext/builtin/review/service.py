@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias, TypeVar, cast
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -260,6 +260,7 @@ class ReviewService:
         reason: str | None,
         candidate_id: str | None = None,
         on_commit: CandidateCommitHook | None = None,
+        origins: tuple[RecordedOrigin, ...] = (),
     ) -> Candidate[SkillContent]:
         """Persist a human or integration supplied managed Skill proposal."""
 
@@ -277,6 +278,7 @@ class ReviewService:
                 reason=reason,
                 candidate_id=candidate_id,
                 on_commit=on_commit,
+                origins=_validate_origins(self._scope_id, origins),
             )
         return _skill_candidate(candidate)
 
@@ -815,7 +817,7 @@ class ReviewService:
             )
             if isinstance(candidate.proposal, SkillContent) and candidate.proposal.package is not None:
                 await self._canonical_skill_proposal(connection, candidate.proposal)
-            draft = _candidate_draft(candidate)
+            draft = _candidate_draft(candidate, self)
             if candidate.target is None:
                 artifact = await self._artifacts.create(
                     connection,
@@ -1544,11 +1546,17 @@ def _validate_approval_lineage(candidate: ReviewedCandidate) -> None:
         raise InvalidCandidateError("sources", "managed Skill replacement requires bounded Source evidence")
 
 
-def _candidate_draft(candidate: ReviewedCandidate) -> ReviewedDraft:
+def _candidate_draft(candidate: ReviewedCandidate, service: ReviewService) -> ReviewedDraft:
     values: dict[str, object] = {
         "content": candidate.proposal,
-        "sources": candidate.sources,
-        "artifacts": candidate.artifacts,
+        # Another Scope's references are provenance for this revision, not rows in this
+        # Scope's lineage columns: the Family write validates local references only.
+        "sources": _local_lineage(candidate.sources, service._admitted_source_keys),
+        "artifacts": _local_lineage(
+            candidate.artifacts,
+            service._admitted_artifact_keys,
+            target=candidate.target,
+        ),
         # A committed revision keeps every admitted origin, not only the cited subset.
         "origins": candidate.origins,
     }
@@ -1557,6 +1565,20 @@ def _candidate_draft(candidate: ReviewedCandidate) -> ReviewedDraft:
     if candidate.family == Skill.family and isinstance(candidate.proposal, SkillContent):
         return SkillDraft.model_validate(values)
     raise InvalidCandidateError("family", candidate.family)
+
+
+LineageReference = TypeVar("LineageReference", SourceRef, ArtifactRef)
+
+
+def _local_lineage(
+    references: tuple[LineageReference, ...],
+    admitted: frozenset[str],
+    *,
+    target: ArtifactRef | None = None,
+) -> tuple[LineageReference, ...]:
+    """Keep the local references of a committed revision, always retaining its target."""
+
+    return tuple(ref for ref in references if ref == target or ref.model_dump_json() not in admitted)
 
 
 def _validate_origins(scope_id: str, origins: tuple[RecordedOrigin, ...]) -> tuple[RecordedOrigin, ...]:

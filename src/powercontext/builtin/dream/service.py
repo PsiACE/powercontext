@@ -886,6 +886,7 @@ class DreamService:
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
+                origins=_recorded_origins(resolved),
             )
         elif isinstance(plan.proposal, ProfileWriteContent) and record.run.operation in {
             "revise_profile",

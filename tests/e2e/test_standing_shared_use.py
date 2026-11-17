@@ -2695,28 +2695,70 @@ def test_one_pending_pinned_run_has_exactly_one_dream_execution(tmp_path: Path) 
     asyncio.run(scenario())
 
 
-def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_path: Path) -> None:
-    """Operation-level maintenance from agreed foreign evidence, through Review.
+class _ScriptedPlan:
+    """One scripted generation plan, citing every projected evidence node."""
 
-    An existing Profile is revised and a Skill revision is produced from another
-    Scope's pinned Source and Artifact revision, using the operations' own target
-    rules. Committed revisions keep exact recorded origins. Fixture generator only.
+    def __init__(self, config_id: str, plan) -> None:
+        self.config_id = config_id
+        self.plan = plan
+
+    async def generate(self, value):
+        cited = tuple(
+            item.evidence_id for item in value.evidence.evidence if item.kind in {"source", "experience", "skill"}
+        )
+        return GenerationResult(
+            output=self.plan.model_copy(update={"evidence_ids": cited}),
+            usage=InferenceUsage(requests=1),
+        )
+
+
+def _pinned_selection(run) -> tuple[ScopedEvidence, ...]:
+    """Select exactly the foreign inputs one pinned run recorded, in any Scope."""
+
+    selected: list[ScopedEvidence] = []
+    for item in run.inputs:
+        if item.source_ref is not None:
+            selected.append(ScopedEvidence(scope_id=item.origin_scope_id, source=item.source_ref))
+        elif item.artifact is not None:
+            selected.append(ScopedEvidence(scope_id=item.origin_scope_id, artifact=item.artifact.artifact))
+    return tuple(selected)
+
+
+async def _foreign_maintenance_fixture(runtime, access, sharing, *, orders: str, alice: str):
+    """One agreed foreign Source plus one agreed foreign Experience revision."""
+
+    source = await runtime.sources.for_scope(alice).capture(
+        CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+    )
+    experience = await runtime.records.for_scope(alice).create_artifact(
+        "experience",
+        ArtifactWrite(
+            content={
+                "situation": "A replay charged twice on the old channel.",
+                "action": "Retry only on the new channel with an idempotency key.",
+                "outcome": "The replay created one record.",
+                "lesson": "Check transaction status before replaying.",
+            }
+        ),
+    )
+    return source, ArtifactRef(family="experience", artifact_id=experience.artifact_id, revision=experience.revision)
+
+
+def test_foreign_evidence_derives_and_revises_one_skill(tmp_path: Path) -> None:
+    """Derive a Skill from agreed foreign evidence, then revise that exact Skill.
+
+    Each Dream execution binds its own pinned run, so the one-binding-one-execution
+    invariant holds. The committed identity and revision are asserted, with the foreign
+    Experience recorded as provenance rather than as a local lineage row.
     """
 
     async def scenario() -> None:
-        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'maintain.db'}")
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'skill.db'}")
         plans = {
-            "profile": DreamPlan(
+            "derive": DreamPlan(
                 outcome="proposed",
-                reason="An agreed external incident report corrects the channel guidance.",
-                intent="correct",
-                proposal=ProfileWriteContent(content="# Profile\n\nRetry on the new channel only."),
-                evidence_ids=("placeholder",),
-            ),
-            "skill": DreamPlan(
-                outcome="proposed",
-                reason="The pinned trace supports a bounded retry rule.",
-                intent="correct",
+                reason="Agreed external evidence supports a bounded retry rule.",
+                intent="derive",
                 proposal=SkillContent(
                     name="retry-idempotent-writes",
                     description="Retry writes with a tested deduplication contract.",
@@ -2725,11 +2767,23 @@ def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_
                 ),
                 evidence_ids=("placeholder",),
             ),
+            "revise": DreamPlan(
+                outcome="proposed",
+                reason="A later agreed report narrows the retry rule to the new channel.",
+                intent="correct",
+                proposal=SkillContent(
+                    name="retry-idempotent-writes",
+                    description="Retry writes only on the new channel.",
+                    instructions="Check commit status, then replay with the original key.",
+                    validation=("A replay creates no duplicate record.",),
+                ),
+                evidence_ids=("placeholder",),
+            ),
         }
-        current = {"plan": plans["profile"]}
+        active = {"plan": plans["derive"]}
 
         class Gen:
-            config_id = "maintain-fixture"
+            config_id = "skill-maintenance"
 
             async def generate(self, value):
                 cited = tuple(
@@ -2738,7 +2792,7 @@ def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_
                     if item.kind in {"source", "experience", "skill"}
                 )
                 return GenerationResult(
-                    output=current["plan"].model_copy(update={"evidence_ids": cited}),
+                    output=active["plan"].model_copy(update={"evidence_ids": cited}),
                     usage=InferenceUsage(requests=1),
                 )
 
@@ -2758,7 +2812,153 @@ def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_
                 dream_adapter.bind_shared_use(runtime)
                 alice, bob, orders = await _three_scopes(runtime)
                 await _seed(access, alice, bob, orders)
-                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "maint-target-reader")
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "skill-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None, artifact_families=("experience",)))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                _, foreign_ref = await _foreign_maintenance_fixture(
+                    runtime, access, sharing, orders=orders, alice=alice
+                )
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+
+                # Derive: one pinned run, Experience evidence, no target.
+                with run_as(RUNNER):
+                    derive_run = await sharing.resolve(rule.rule_id)
+
+                with run_as(RUNNER):
+                    accepted = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="derive_skill",
+                            artifacts=(foreign_ref,),
+                            scoped=_pinned_selection(derive_run),
+                            share_run_id=derive_run.run_id,
+                            idempotency_key="derive-skill",
+                        )
+                    )
+                await process_pending(runtime)
+                derived = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                assert derived.outcome == "proposed", (derived.status, derived.error)
+                with run_as(RUNNER):
+                    first = await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=derived.candidate.candidate_id,
+                            expected_version=derived.candidate.version,
+                        )
+                    )
+                skill_ref = first.result_artifact
+                assert skill_ref is not None
+                assert (skill_ref.family, skill_ref.revision) == ("skill", 1)
+                # The executor needs current write authority on the Skill it revises.
+                await access.establish_artifact_owner(
+                    ResourceRef.artifact(orders, family="skill", artifact_id=skill_ref.artifact_id),
+                    RUNNER,
+                    idempotency_key="skill-owner",
+                    context=AUDIT,
+                )
+                async with runtime.profiles.database.transaction() as readback:
+                    committed = await runtime.profiles.artifacts.get(readback, orders, skill_ref)
+                assert committed.content.name == "retry-idempotent-writes"
+                # The foreign Experience is provenance, not a local citation.
+                assert committed.lineage.artifacts == ()
+                assert {(o.scope_id, o.artifact.family if o.artifact else None) for o in committed.lineage.origins} >= {
+                    (alice, "experience")
+                }
+
+                # Revise: a second execution, its own pinned run, the exact Skill target.
+                active["plan"] = plans["revise"]
+                with run_as(RUNNER):
+                    revise_run = await sharing.resolve(rule.rule_id)
+                with run_as(RUNNER):
+                    revising = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="revise_skill",
+                            artifacts=(skill_ref, foreign_ref),
+                            scoped=_pinned_selection(revise_run),
+                            target=skill_ref,
+                            share_run_id=revise_run.run_id,
+                            idempotency_key="revise-skill",
+                        )
+                    )
+                await process_pending(runtime)
+                revised = await dream.get(GetDreamRunRequest(run_id=revising.run_id))
+                assert revised.outcome == "proposed", (revised.status, revised.error)
+                with run_as(RUNNER):
+                    second = await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=revised.candidate.candidate_id,
+                            expected_version=revised.candidate.version,
+                        )
+                    )
+                final_ref = second.result_artifact
+                assert final_ref is not None
+                # Same Skill identity, next revision.
+                assert (final_ref.family, final_ref.artifact_id, final_ref.revision) == (
+                    "skill",
+                    skill_ref.artifact_id,
+                    2,
+                )
+                async with runtime.profiles.database.transaction() as readback:
+                    latest = await runtime.profiles.artifacts.get(readback, orders, final_ref)
+                assert latest.content.description == "Retry writes only on the new channel."
+                # The exact target Skill is the revision's own baseline lineage; the foreign
+                # Experience stays provenance, not a local citation.
+                assert latest.lineage.artifacts == (skill_ref,)
+                assert {(o.scope_id, o.artifact.family if o.artifact else None) for o in latest.lineage.origins} >= {
+                    (alice, "experience")
+                }
+
+    asyncio.run(scenario())
+
+
+def test_foreign_evidence_revises_an_existing_profile_only(tmp_path: Path) -> None:
+    """Profile-only: an existing Profile is revised from agreed foreign evidence.
+
+    Skill maintenance is covered separately by the derive/revise Skill workflow; this
+    case stays deliberately Profile-only and asserts its committed revision.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'profile.db'}")
+        plan = DreamPlan(
+            outcome="proposed",
+            reason="An agreed external report corrects the channel guidance.",
+            intent="correct",
+            proposal=ProfileWriteContent(content="# Profile\n\nRetry on the new channel only."),
+            evidence_ids=("placeholder",),
+        )
+
+        class Gen:
+            config_id = "profile-maintenance"
+
+            async def generate(self, value):
+                cited = tuple(
+                    item.evidence_id for item in value.evidence.evidence if item.kind in {"source", "experience"}
+                )
+                return GenerationResult(
+                    output=plan.model_copy(update={"evidence_ids": cited}),
+                    usage=InferenceUsage(requests=1),
+                )
+
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=Gen(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "prof-target-reader")
                 await runtime.profiles.put_policy(orders, generation_enabled=True, expected_version=0)
                 existing = await runtime.records.for_scope(orders).create_artifact(
                     "profile", ArtifactWrite(content={"content": "# Profile\n\nRetry on the old channel."})
@@ -2766,11 +2966,10 @@ def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_
                 profile_ref = ArtifactRef(
                     family="profile", artifact_id=existing.artifact_id, revision=existing.revision
                 )
-                # The executor needs current write authority on the target it maintains.
                 await access.establish_artifact_owner(
                     ResourceRef.artifact(orders, family="profile", artifact_id="profile"),
                     RUNNER,
-                    idempotency_key="maint-profile-owner",
+                    idempotency_key="prof-owner",
                     context=AUDIT,
                 )
                 sharing = _sharing(runtime, orders)
@@ -2778,41 +2977,19 @@ def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_
                     rule = await sharing.create(_rule(alice, None, artifact_families=("experience",)))
                 await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
                 await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
-                await runtime.sources.for_scope(alice).capture(
-                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
-                )
-                experience = await runtime.records.for_scope(alice).create_artifact(
-                    "experience",
-                    ArtifactWrite(
-                        content={
-                            "situation": "A replay charged twice on the old channel.",
-                            "action": "Retry only on the new channel with an idempotency key.",
-                            "outcome": "The replay created one record.",
-                            "lesson": "Check transaction status before replaying.",
-                        }
-                    ),
-                )
-                foreign_ref = ArtifactRef(
-                    family="experience", artifact_id=experience.artifact_id, revision=experience.revision
+                _, foreign_ref = await _foreign_maintenance_fixture(
+                    runtime, access, sharing, orders=orders, alice=alice
                 )
                 with run_as(RUNNER):
                     pinned = await sharing.resolve(rule.rule_id)
 
                 dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
-                scoped = (
-                    ScopedEvidence(scope_id=alice, artifact=foreign_ref),
-                    *(
-                        ScopedEvidence(scope_id=item.origin_scope_id, source=item.source_ref)
-                        for item in pinned.inputs
-                        if item.source_ref is not None
-                    ),
-                )
                 with run_as(RUNNER):
                     accepted = await dream.create(
                         CreateDreamRunRequest(
                             operation="revise_profile",
                             artifacts=(profile_ref, foreign_ref),
-                            scoped=scoped,
+                            scoped=_pinned_selection(pinned),
                             target=profile_ref,
                             share_run_id=pinned.run_id,
                             idempotency_key="maintain-profile",
@@ -2828,15 +3005,173 @@ def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_
                             expected_version=completed.candidate.version,
                         )
                     )
-                assert approved.result_artifact is not None
-                assert approved.result_artifact.revision == 2
+                result = approved.result_artifact
+                assert result is not None
+                # Same Profile identity, next revision.
+                assert (result.family, result.artifact_id, result.revision) == ("profile", "profile", 2)
                 async with runtime.profiles.database.transaction() as readback:
-                    committed = await runtime.profiles.artifacts.get(readback, orders, approved.result_artifact)
-                # The foreign Artifact stays provenance, not a local citation.
+                    committed = await runtime.profiles.artifacts.get(readback, orders, result)
+                assert committed.content.content.strip() == "# Profile\n\nRetry on the new channel only."
                 assert committed.lineage.sources == ()
                 assert {(o.scope_id, o.artifact.family if o.artifact else None) for o in committed.lineage.origins} >= {
                     (alice, "experience")
                 }
-                assert "new channel only" in committed.content.content
+
+    asyncio.run(scenario())
+
+
+def test_skill_maintenance_refuses_a_stale_target_and_a_revoked_origin(tmp_path: Path) -> None:
+    """Two refusals through the owning operation boundary, in one compact scenario.
+
+    A Skill revision whose target is no longer the head is refused by the Family's
+    conditional write, and a migration whose origin right is withdrawn is refused before
+    any model call. Neither creates a new revision.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'refuse.db'}")
+        plan = DreamPlan(
+            outcome="proposed",
+            reason="Agreed external evidence supports a bounded retry rule.",
+            intent="derive",
+            proposal=SkillContent(
+                name="retry-idempotent-writes",
+                description="Retry writes with a tested deduplication contract.",
+                instructions="Check commit status, then replay with the original key.",
+                validation=("A replay creates no duplicate record.",),
+            ),
+            evidence_ids=("placeholder",),
+        )
+        calls: list[int] = []
+
+        class Gen:
+            config_id = "skill-refusal"
+
+            async def generate(self, value):
+                calls.append(1)
+                cited = tuple(
+                    item.evidence_id
+                    for item in value.evidence.evidence
+                    if item.kind in {"source", "experience", "skill"}
+                )
+                return GenerationResult(
+                    output=plan.model_copy(update={"evidence_ids": cited}),
+                    usage=InferenceUsage(requests=1),
+                )
+
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=Gen(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                seeded = await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "refuse-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None, artifact_families=("experience",)))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                _, foreign_ref = await _foreign_maintenance_fixture(
+                    runtime, access, sharing, orders=orders, alice=alice
+                )
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+
+                # 1. A target that is not the head is refused by the conditional write.
+                with run_as(RUNNER):
+                    derive_run = await sharing.resolve(rule.rule_id)
+                with run_as(RUNNER):
+                    accepted = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="derive_skill",
+                            artifacts=(foreign_ref,),
+                            scoped=_pinned_selection(derive_run),
+                            share_run_id=derive_run.run_id,
+                            idempotency_key="refuse-derive",
+                        )
+                    )
+                await process_pending(runtime)
+                derived = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                assert derived.outcome == "proposed", (derived.status, derived.error)
+                with run_as(RUNNER):
+                    first = await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=derived.candidate.candidate_id,
+                            expected_version=derived.candidate.version,
+                        )
+                    )
+                skill_ref = first.result_artifact
+                assert skill_ref is not None
+                await access.establish_artifact_owner(
+                    ResourceRef.artifact(orders, family="skill", artifact_id=skill_ref.artifact_id),
+                    RUNNER,
+                    idempotency_key="refuse-skill-owner",
+                    context=AUDIT,
+                )
+                # Move the Skill head behind the revision a stale Candidate still names.
+                with run_as(CAROL):
+                    await runtime.records.for_scope(orders).replace_artifact(
+                        "skill",
+                        skill_ref.artifact_id,
+                        f'"revision:{skill_ref.revision}"',
+                        ArtifactWrite(
+                            content={
+                                "name": "retry-idempotent-writes",
+                                "description": "Advanced by a maintainer.",
+                                "instructions": "Check commit status, then replay with the original key.",
+                                "validation": ["A replay creates no duplicate record."],
+                            }
+                        ),
+                    )
+                with run_as(RUNNER):
+                    stale_run = await sharing.resolve(rule.rule_id)
+                with run_as(RUNNER), pytest.raises(DreamError):
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="revise_skill",
+                            artifacts=(skill_ref, foreign_ref),
+                            scoped=_pinned_selection(stale_run),
+                            target=skill_ref,
+                            share_run_id=stale_run.run_id,
+                            idempotency_key="refuse-stale",
+                        )
+                    )
+
+                # 2. Withdrawing the executor's origin right refuses before any generation.
+                before = len(calls)
+                with run_as(RUNNER):
+                    revoked_run = await sharing.resolve(rule.rule_id)
+                await access.revoke_binding(
+                    ADMIN,
+                    seeded["runner_alice"].binding_id,
+                    expected_version=seeded["runner_alice"].version,
+                    idempotency_key="refuse-origin-right",
+                    context=AUDIT,
+                )
+                with run_as(RUNNER), pytest.raises(DreamError):
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="revise_skill",
+                            artifacts=(skill_ref, foreign_ref),
+                            scoped=_pinned_selection(revoked_run),
+                            target=skill_ref,
+                            share_run_id=revoked_run.run_id,
+                            idempotency_key="refuse-revoked",
+                        )
+                    )
+                assert len(calls) == before
+                # The Skill still holds exactly the maintainer's revision as its head.
+                async with runtime.profiles.database.transaction() as readback:
+                    head = await runtime.profiles.artifacts.latest(readback, orders, "skill", skill_ref.artifact_id)
+                assert head.revision == 2
 
     asyncio.run(scenario())
