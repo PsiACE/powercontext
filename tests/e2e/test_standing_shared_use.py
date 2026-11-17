@@ -1879,3 +1879,261 @@ def test_foreign_and_local_sources_with_the_same_key_do_not_masquerade(tmp_path:
                     )
 
     asyncio.run(scenario())
+
+
+def test_origin_read_right_revoked_after_generation_blocks_candidate_persist(tmp_path: Path) -> None:
+    """One handoff already happened, so revoking the executor's origin read must stop the
+    run before a Candidate is stored.
+
+    The rule itself stays active and the acceptance records stay in place: only the
+    executing principal's authority at the origin is withdrawn, which is exactly the
+    current-truth check the pre-persist recheck owes. The approval-phase denial proven
+    elsewhere is not a substitute for this.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'persist.db'}")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            runner_origin_binding = ""
+            calls: list[int] = []
+
+            class RevokingGenerator:
+                """Fixture: returns a valid plan, then withdraws the executor's origin read."""
+
+                config_id = "revoke-before-persist"
+
+                async def generate(self, value):
+                    nonlocal runner_origin_binding
+                    calls.append(1)
+                    used = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+                    # The barrier sits after the handoff and before the Candidate is stored.
+                    assert runner_origin_binding
+                    await access.revoke_binding(
+                        ADMIN,
+                        runner_origin_binding,
+                        expected_version=1,
+                        idempotency_key="revoke-origin-read",
+                        context=AUDIT,
+                    )
+                    return GenerationResult(
+                        output=DreamPlan(
+                            outcome="proposed",
+                            reason="Reconciled the two channels from the pinned evidence.",
+                            intent="create",
+                            proposal=ExperienceContent(
+                                situation="A timed-out write may already have committed.",
+                                action="Replay only on the new channel with an idempotency key.",
+                                outcome="The replay created no duplicate record.",
+                                lesson="Check transaction status on the old channel first.",
+                            ),
+                            evidence_ids=used,
+                        ),
+                        usage=InferenceUsage(requests=1),
+                    )
+
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=RevokingGenerator(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+
+                alice, bob, orders = await _three_scopes(runtime)
+                seeded = await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "persist-target-reader")
+                runner_origin_binding = seeded["runner_alice"].binding_id
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                local = await runtime.sources.for_scope(orders).capture(
+                    CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                with run_as(RUNNER):
+                    admitted = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=(
+                                ScopedEvidence(scope_id=orders, source=local.source_ref),
+                                ScopedEvidence(scope_id=alice, source=foreign.source_ref),
+                            ),
+                            share_run_id=pinned.run_id,
+                            idempotency_key="revoke-before-candidate",
+                        )
+                    )
+                with run_as(CAROL):
+                    await sharing.record_outcome(pinned.run_id, dream_run_id=admitted.run_id)
+                await process_pending(runtime)
+
+                completed = await dream.get(GetDreamRunRequest(run_id=admitted.run_id))
+                # The rule is still active; only the executor's origin authority is gone.
+                still_active = await sharing.get_run(pinned.run_id)
+                assert still_active.state == "pinned"
+                # Exactly one handoff happened, and no Candidate was stored from it.
+                assert len(calls) == 1
+                assert completed.status == "failed", (completed.status, completed.error)
+                # Refused by the agreed-use recheck specifically, not by an incidental
+                # later failure: the pre-persist gate is what must stop this run.
+                assert completed.error in {"shared_use_unavailable", "access_unavailable"}, completed.error
+                assert completed.candidate is None
+                assert completed.outcome is None
+
+                # The run produced no pending Candidate either.
+                async with runtime.profiles.database.transaction() as connection:
+                    from sqlalchemy import select as _select
+
+                    from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE
+
+                    rows = (
+                        await connection.execute(
+                            _select(CANDIDATE_HEADS_TABLE.c.candidate_id).where(
+                                CANDIDATE_HEADS_TABLE.c.scope_id == orders
+                            )
+                        )
+                    ).scalars()
+                    assert list(rows) == []
+
+    asyncio.run(scenario())
+
+
+def test_foreign_refine_experience_replays_its_bound_run_without_regenerating(tmp_path: Path) -> None:
+    """A repeated foreign request returns the same accepted run and one Candidate.
+
+    Same key with the same binding and selection is a replay: no second handoff, no
+    second Candidate, no second Artifact. The same key with a different pinned run or a
+    different foreign selection is a conflict and never rebinds the accepted run.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'replay.db'}")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            calls: list[int] = []
+
+            class CountingGenerator:
+                config_id = "foreign-replay-fixture"
+
+                async def generate(self, value):
+                    calls.append(1)
+                    used = tuple(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+                    return GenerationResult(
+                        output=DreamPlan(
+                            outcome="proposed",
+                            reason="Reconciled the two channels from the pinned evidence.",
+                            intent="create",
+                            proposal=ExperienceContent(
+                                situation="A timed-out write may already have committed.",
+                                action="Replay only on the new channel with an idempotency key.",
+                                outcome="The replay created no duplicate record.",
+                                lesson="Check transaction status on the old channel first.",
+                            ),
+                            evidence_ids=used,
+                        ),
+                        usage=InferenceUsage(requests=1),
+                    )
+
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=CountingGenerator(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "replay-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                foreign = await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                local = await runtime.sources.for_scope(orders).capture(
+                    CaptureSource(source_id="retry-trace", content="The new channel retries safely.", metadata={})
+                )
+                with run_as(RUNNER):
+                    first_run = await sharing.resolve(rule.rule_id)
+                    second_run = await sharing.resolve(rule.rule_id)
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                selection = (
+                    ScopedEvidence(scope_id=orders, source=local.source_ref),
+                    ScopedEvidence(scope_id=alice, source=foreign.source_ref),
+                )
+                request = CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(),
+                    scoped=selection,
+                    share_run_id=first_run.run_id,
+                    idempotency_key="foreign-replay",
+                )
+                with run_as(RUNNER):
+                    accepted = await dream.create(request)
+                    replayed = await dream.create(request)
+                assert replayed.run_id == accepted.run_id
+                with run_as(CAROL):
+                    await sharing.record_outcome(first_run.run_id, dream_run_id=accepted.run_id)
+                await process_pending(runtime)
+                completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                assert completed.outcome == "proposed", (completed.status, completed.error)
+                assert len(calls) == 1
+
+                # A further replay after completion returns the same run and generates nothing.
+                with run_as(RUNNER):
+                    again = await dream.create(request)
+                assert again.run_id == accepted.run_id
+                assert len(calls) == 1
+                async with runtime.profiles.database.transaction() as connection:
+                    from sqlalchemy import select as _select
+
+                    from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE
+
+                    candidates = list(
+                        (
+                            await connection.execute(
+                                _select(CANDIDATE_HEADS_TABLE.c.candidate_id).where(
+                                    CANDIDATE_HEADS_TABLE.c.scope_id == orders
+                                )
+                            )
+                        ).scalars()
+                    )
+                assert len(candidates) == 1
+
+                # Same key, different pinned run: a conflict, never a rebind.
+                with run_as(RUNNER), pytest.raises(DreamError) as other_run:
+                    await dream.create(request.model_copy(update={"share_run_id": second_run.run_id}))
+                assert other_run.value.code == "idempotency_conflict"
+
+                # Same key, different foreign selection: also a conflict.
+                with run_as(RUNNER), pytest.raises(DreamError) as other_selection:
+                    await dream.create(
+                        request.model_copy(
+                            update={"scoped": (ScopedEvidence(scope_id=alice, source=foreign.source_ref),)}
+                        )
+                    )
+                assert other_selection.value.code == "idempotency_conflict"
+
+    asyncio.run(scenario())
