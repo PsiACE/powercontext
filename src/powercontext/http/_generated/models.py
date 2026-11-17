@@ -5280,18 +5280,6 @@ class DreamSourceReference(BaseModel):
     locator: SourceLocator | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-class CreateDreamRunRequest(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    tag_target: TagDreamTarget | None = None
-    operation: DreamOperation
-    artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
-    sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
-    target: ArtifactReference | None = None
-    idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
-
-
 class DreamScopedEvidence(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -6257,6 +6245,33 @@ class CreateSubjectSourceResponse(BaseModel):
     subject_type: SubjectType
     subject_scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     sources: Annotated[list[SourceRecord], Field(max_length=2, min_length=2)]
+
+
+class CreateDreamRunRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    tag_target: TagDreamTarget | None = None
+    operation: DreamOperation
+    scoped: Annotated[
+        list[DreamScopedEvidence],
+        Field(
+            description="Evidence admitted with its owning Scope, exactly as one pinned share run allows. Only refine_experience and initialize_profile admit another Scope's material, and only when the request names the share_run_id that pinned the same selection. Local runs omit this: a run whose selection belongs to the run Scope needs no agreement and keeps its exact digest.",
+            validate_default=True,
+        ),
+    ] = []
+    share_run_id: Annotated[
+        StrictStr | None,
+        Field(
+            description="Durable agreement run this request binds to. Required exactly when scoped names another Scope; absent for a pure local run. The agreement owns the rule, version, exact inputs and use; nothing in this request is consent.",
+            max_length=64,
+            pattern=".*\\S.*",
+        ),
+    ] = None
+    artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
+    sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
+    target: ArtifactReference | None = None
+    idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
 
 
 class DreamInputManifest(BaseModel):

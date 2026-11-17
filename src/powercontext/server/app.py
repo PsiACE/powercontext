@@ -425,6 +425,7 @@ from powercontext.builtin.scope import (
 from powercontext.builtin.scope import (
     ScopeSelection as DomainScopeSelection,
 )
+from powercontext.builtin.scope.errors import ScopeDeletionUnauthorizedError
 from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.builtin.sources import (
     ObservedInvocation,
@@ -2689,7 +2690,10 @@ def _require_scope_deletions(http_request: Request):
 
 
 def _scope_deletion_receipt_response(value) -> ScopeDeletionReceipt:
-    return ScopeDeletionReceipt.model_validate(value.model_dump(mode="json"))
+    # The receipt's requester attestation is domain-internal: it records who was
+    # authorized, not something a caller supplies or reads back as the current
+    # actor. It stays out of the published shape.
+    return ScopeDeletionReceipt.model_validate(value.model_dump(mode="json", exclude={"attestation"}))
 
 
 def _scope_deletion_preview_response(value) -> ScopeDeletionPreview:
@@ -2712,6 +2716,38 @@ async def reopen_scope(
     return _scope_descriptor_response(await scopes.reopen(scope_id, request.expected_version))
 
 
+def _deletion_authority(request: Request, operation: str):
+    """Return the authenticated requester and the Access check the domain calls.
+
+    The owning domain decides which members must be managed and how a terminal
+    operation falls back to its recorded requester; this only supplies the actual
+    principal and the real Access check. Supplying both is required: the composed
+    application declares ``trusted_local``, so omitting them on an enforced HTTP
+    request would take the in-process path instead of checking authority.
+    """
+
+    access = access_control_for_mode(
+        request.app.state.access_control,
+        mode=request.app.state.access_mode,
+    )
+    if access is None:
+        # Access is disabled for this deployment, so the domain's trusted-local
+        # contract applies and no fabricated principal is introduced.
+        return None, None
+    principal = _require_principal()
+
+    async def authorize(checks) -> None:
+        if not checks:
+            return
+        await access.require_all(
+            principal,
+            tuple(checks),
+            context=_access_audit_context(operation),
+        )
+
+    return principal, authorize
+
+
 async def preview_scope_deletion(
     request: ScopeDeletionPreviewRequest,
     http_request: Request,
@@ -2720,7 +2756,8 @@ async def preview_scope_deletion(
     # The composed application owns the node and depth budget; exceeding it raises
     # instead of returning a truncated set, so no caller-supplied bound is needed.
     preview = await deletions.preview(_domain_scope_selection(request.selection))
-    # A preview grants nothing: confirm re-authorizes every actual member.
+    # A preview grants nothing: it is bounded membership, and the caller still has
+    # to be able to manage every Scope it would confirm.
     await _require_confirmed_management(http_request, preview.scope_ids)
     return _scope_deletion_preview_response(preview)
 
@@ -2734,8 +2771,14 @@ async def confirm_scope_deletion(
     preview = await deletions.preview(selection)
     if preview.membership_digest != request.confirmed_digest:
         raise ScopeDeletionConflictError(preview.root_scope_id, "the structural set changed since it was previewed")
-    await _require_confirmed_management(http_request, preview.scope_ids)
-    receipt = await deletions.confirm(selection, request.confirmed_digest, single_scope=request.single_scope)
+    requester, authorize = _deletion_authority(http_request, "scope_deletion_confirm")
+    receipt = await deletions.confirm(
+        selection,
+        request.confirmed_digest,
+        single_scope=request.single_scope,
+        requester=requester,
+        authorize=authorize,
+    )
     # The operation is accepted and durable; its own receipt says whether cleanup
     # already finished, so the response stays the declared 202 either way.
     return _scope_deletion_receipt_response(receipt)
@@ -2746,34 +2789,11 @@ async def get_scope_deletion(
     http_request: Request,
 ) -> ScopeDeletionReceipt:
     deletions = _require_scope_deletions(http_request)
-    receipt = await deletions.operation(operation_id)
+    requester, authorize = _deletion_authority(http_request, "scope_deletion_status")
+    receipt = await deletions.operation(operation_id, requester=requester, authorize=authorize)
     if receipt is None:
         raise ScopeNotFoundError(operation_id)
-    await _require_deletion_management(http_request, receipt)
     return _scope_deletion_receipt_response(receipt)
-
-
-async def _require_deletion_management(http_request: Request, receipt) -> None:
-    """Require current management authority on the operation's own confirmed members.
-
-    The members come from the persisted operation, never from the request, so a
-    caller cannot narrow what it must be authorized for.
-    """
-
-    access = access_control_for_mode(
-        http_request.app.state.access_control,
-        mode=http_request.app.state.access_mode,
-    )
-    if access is None:
-        return
-    principal = _require_principal()
-    managed = tuple(member.scope_id for member in receipt.members)
-    # The confirmed members are the authority surface, and every one of them is
-    # required. Deployment observation is not destructive authority over another
-    # Scope's deletion, so it is never an alternative to member management.
-    checks = tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in managed)
-    if checks:
-        await access.require_all(principal, checks, context=_access_audit_context("scope_deletion_status"))
 
 
 async def resume_scope_deletion_cleanup(
@@ -2781,13 +2801,14 @@ async def resume_scope_deletion_cleanup(
     http_request: Request,
 ) -> ScopeDeletionReceipt:
     deletions = _require_scope_deletions(http_request)
-    existing = await deletions.operation(operation_id)
+    requester, authorize = _deletion_authority(http_request, "scope_deletion_cleanup")
+    existing = await deletions.operation(operation_id, requester=requester, authorize=authorize)
     if existing is None:
         raise ScopeNotFoundError(operation_id)
     # A failed or interrupted cleanup stays available to a current manager; it is
     # not a snapshot privilege and does not reopen the members.
-    await _require_deletion_management(http_request, existing)
-    return _scope_deletion_receipt_response(await deletions.cleanup(operation_id))
+    receipt = await deletions.cleanup(operation_id, requester=requester, authorize=authorize)
+    return _scope_deletion_receipt_response(receipt)
 
 
 async def repair_scope_deletion_coverage(
@@ -2795,11 +2816,12 @@ async def repair_scope_deletion_coverage(
     http_request: Request,
 ) -> ScopeDeletionReceipt:
     deletions = _require_scope_deletions(http_request)
-    existing = await deletions.operation(operation_id)
+    requester, authorize = _deletion_authority(http_request, "scope_deletion_coverage_repair")
+    existing = await deletions.operation(operation_id, requester=requester, authorize=authorize)
     if existing is None:
         raise ScopeNotFoundError(operation_id)
-    await _require_deletion_management(http_request, existing)
-    return _scope_deletion_receipt_response(await deletions.repair_coverage(operation_id))
+    receipt = await deletions.repair_coverage(operation_id, requester=requester, authorize=authorize)
+    return _scope_deletion_receipt_response(receipt)
 
 
 async def update_scope(
@@ -7423,6 +7445,14 @@ def _map_scope_lifecycle_error(error: Exception) -> tuple[int, str, str, dict[st
             "scope_deletion_conflict",
             "The deletion set or its prerequisites do not match the confirmed request.",
             {"scope_id": error.scope_id, "reason": error.reason},
+        )
+    if isinstance(error, ScopeDeletionUnauthorizedError):
+        # The refusal names no member the caller may not see; a single safe code.
+        return (
+            status.HTTP_403_FORBIDDEN,
+            "scope_deletion_unauthorized",
+            "The caller holds no current authority over every Scope this operation confirmed.",
+            None,
         )
     if isinstance(error, ScopeRangeLimitError):
         return (

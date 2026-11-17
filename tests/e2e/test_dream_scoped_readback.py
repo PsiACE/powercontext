@@ -187,14 +187,15 @@ def test_scoped_dream_run_reads_back_through_http_and_sdk(tmp_path: Path) -> Non
                         assert listed_run.input_manifest is not None
                         assert listed_run.input_manifest.scoped == sdk_manifest.scoped
 
-                    # A foreign or scoped HTTP create stays unsupported before any model runs.
+                    # Naming another Scope without a pinned agreement stays refused
+                    # before any model work: the wire field exists, consent does not.
                     rejected = await client.post(
                         f"/v1/scopes/{scope_id}/dream",
                         json={
                             "operation": "refine_experience",
                             "scoped": [
                                 {
-                                    "scope_id": scope_id,
+                                    "scope_id": "scp_other_scope",
                                     "source": {"source_type": "content", "source_id": "retry-trace"},
                                 }
                             ],
@@ -202,6 +203,7 @@ def test_scoped_dream_run_reads_back_through_http_and_sdk(tmp_path: Path) -> Non
                         },
                     )
                     assert rejected.status_code == 422, rejected.text
+                    assert rejected.json()["error"]["code"] == "unsupported_shared_use"
 
     asyncio.run(scenario())
 

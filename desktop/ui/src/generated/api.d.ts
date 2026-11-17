@@ -3571,6 +3571,13 @@ export interface components {
         CreateDreamRunRequest: {
             tag_target?: components["schemas"]["TagDreamTarget"];
             operation: components["schemas"]["DreamOperation"];
+            /**
+             * @description Evidence admitted with its owning Scope, exactly as one pinned share run allows. Only refine_experience and initialize_profile admit another Scope's material, and only when the request names the share_run_id that pinned the same selection. Local runs omit this: a run whose selection belongs to the run Scope needs no agreement and keeps its exact digest.
+             * @default []
+             */
+            scoped: components["schemas"]["DreamScopedEvidence"][];
+            /** @description Durable agreement run this request binds to. Required exactly when scoped names another Scope; absent for a pure local run. The agreement owns the rule, version, exact inputs and use; nothing in this request is consent. */
+            share_run_id?: string | null;
             /** @default [] */
             artifacts: components["schemas"]["ArtifactReference"][];
             /** @default [] */

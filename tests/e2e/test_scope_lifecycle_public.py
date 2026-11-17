@@ -52,6 +52,7 @@ ADMIN = PrincipalRef(type="service", id="lifecycle-admin")
 MANAGER = PrincipalRef(type="user", id="lifecycle-manager")
 READER = PrincipalRef(type="user", id="lifecycle-reader")
 OBSERVER = PrincipalRef(type="user", id="lifecycle-observer")
+PARTIAL = PrincipalRef(type="user", id="lifecycle-partial")
 AUDIT = AccessAuditContext(transport="http", operation="lifecycle", request_id="lifecycle")
 DEPLOYMENT_ID = "lifecycle-public"
 
@@ -239,6 +240,66 @@ def test_scope_archive_and_confirmed_deletion_over_public_contract(tmp_path: Pat
                 for item in status.json()["progress"]:
                     assert item["handler"]
                     assert "last_error_code" in item
+
+                # A live two-member operation, where PARTIAL manages only one member.
+                parent2 = await runtime.scopes.create(
+                    ScopeDraft(title="Parent2", summary="p", idempotency_key="parent2")
+                )
+                child2 = await runtime.scopes.create(
+                    ScopeDraft(title="Child2", summary="c", parent_scope_id=parent2.scope_id, idempotency_key="child2")
+                )
+                for scope_id, subject, role, key in (
+                    (parent2.scope_id, MANAGER, AccessRole.SCOPE_ADMIN, "m2-parent"),
+                    (parent2.scope_id, PARTIAL, AccessRole.SCOPE_ADMIN, "p2-parent"),
+                    (child2.scope_id, MANAGER, AccessRole.SCOPE_ADMIN, "m2-child"),
+                    (parent2.scope_id, MANAGER, AccessRole.SCOPE_CONTRIBUTOR, "m2-contrib"),
+                    (child2.scope_id, MANAGER, AccessRole.SCOPE_CONTRIBUTOR, "m2-contrib-child"),
+                ):
+                    await access.create_binding(
+                        ADMIN,
+                        CreateBinding(
+                            subject=subject,
+                            resource=ResourceRef.scope(scope_id),
+                            role=role,
+                            idempotency_key=f"{key}-{scope_id}",
+                        ),
+                        context=AUDIT,
+                    )
+                live_preview = await http.post(
+                    "/v1/scope-deletions/preview",
+                    json={"selection": {"mode": "subtree", "root_scope_id": parent2.scope_id}},
+                )
+                assert live_preview.status_code == 200, live_preview.text
+                # PARTIAL manages only the parent, so confirming the two-member
+                # subtree is refused while both members are still live. This is the
+                # member-AND rule: one member's manager cannot act for the other.
+                partial_app, partial_headers = app_for(PARTIAL)
+                async with (
+                    partial_app.router.lifespan_context(partial_app),
+                    httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=partial_app),
+                        base_url="http://testserver",
+                        headers=partial_headers,
+                    ) as partial_http,
+                ):
+                    partial_confirm = await partial_http.post(
+                        "/v1/scope-deletions",
+                        json={
+                            "selection": {"mode": "subtree", "root_scope_id": parent2.scope_id},
+                            "confirmed_digest": live_preview.json()["membership_digest"],
+                        },
+                    )
+                    assert partial_confirm.status_code == 403, partial_confirm.text
+
+                live = await http.post(
+                    "/v1/scope-deletions",
+                    json={
+                        "selection": {"mode": "subtree", "root_scope_id": parent2.scope_id},
+                        "confirmed_digest": live_preview.json()["membership_digest"],
+                    },
+                )
+                assert live.status_code == 202, live.text
+                live_operation = live.json()["operation_id"]
 
                 # Cutoff is effective: the Scope no longer serves ordinary reads.
                 gone = await http.get(f"/v1/scopes/{root.scope_id}")

@@ -8222,6 +8222,26 @@ components:
           nullable: true
         operation:
           $ref: '#/components/schemas/DreamOperation'
+        scoped:
+          type: array
+          default: []
+          description: >-
+            Evidence admitted with its owning Scope, exactly as one pinned share run allows. Only
+            refine_experience and initialize_profile admit another Scope's material, and only when the
+            request names the share_run_id that pinned the same selection. Local runs omit this: a run
+            whose selection belongs to the run Scope needs no agreement and keeps its exact digest.
+          items:
+            $ref: '#/components/schemas/DreamScopedEvidence'
+        share_run_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '.*\S.*'
+          description: >-
+            Durable agreement run this request binds to. Required exactly when scoped names another
+            Scope; absent for a pure local run. The agreement owns the rule, version, exact inputs and
+            use; nothing in this request is consent.
+
         artifacts:
           default: []
           items:

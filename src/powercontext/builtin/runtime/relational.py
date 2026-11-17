@@ -759,6 +759,10 @@ class RelationalContexts:
                 atomic_memory_index=self.atomic_memory_index,
                 experience_index=self.experience_index,
             ),
+            # This composition is an in-process caller whose access decisions are
+            # made by the Runtime/Server that owns it; the deletion service still
+            # refuses an unattested operation at terminal readback.
+            trusted_local=True,
         )
         self._scope_states: dict[str, _ScopeState] = {}
 
