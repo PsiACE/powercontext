@@ -729,11 +729,13 @@ def test_a_run_cannot_be_completed_after_its_rule_is_invalidated(tmp_path: Path)
 
 
 def test_database_left_at_the_previous_revision_is_refused_before_serving(tmp_path: Path) -> None:
-    """A database that predates the standing-rule storage must not be served as if it had it.
+    """Storage lacking the standing-rule relations must not be served as if it had them.
 
-    This is the supported boundary a real operator meets: storage created before these relations
-    existed. Starting the Server on it must refuse with a clean migration instruction before any SQL can
-    fail on a missing table, rather than advertising a capability whose first call would raise.
+    This is the boundary a real operator meets: the relations are absent while the rest of the layout is
+    intact. Starting the Server must refuse with a clean migration instruction before any SQL can fail on
+    a missing table, rather than advertising a capability whose first call would raise. The revision marker
+    is moved back only because the relations were removed; the fixture does not reconstruct a complete
+    earlier revision.
     """
 
     import asyncio
