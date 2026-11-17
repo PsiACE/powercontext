@@ -37,6 +37,7 @@ from dataclasses import dataclass
 import rfc8785
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
+from typing_extensions import override
 
 from powercontext.builtin.authz.models import AccessAction, ResourceRef
 from powercontext.builtin.persistence.database import AsyncDatabase
@@ -70,6 +71,27 @@ from powercontext.builtin.scope.resources import (
 _CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz"
 
 
+class TrustedEmbedding:
+    """A composition's own declaration that it handles authorization above this service.
+
+    This is intentionally an object the owner passes at construction, not a
+    per-call argument, so a single call cannot elect to trust itself. A trusted
+    embedding records **no** requester on its operations: it is genuinely
+    unattested, and terminal readback therefore stays closed to it.
+    """
+
+    __slots__ = ("owner",)
+
+    def __init__(self, owner: str) -> None:
+        if not owner.strip():
+            raise ValueError("a trusted embedding must name its owner")  # noqa: TRY003
+        self.owner = owner
+
+    @override
+    def __repr__(self) -> str:
+        return f"TrustedEmbedding({self.owner!r})"
+
+
 class ScopeDeletionApplication:
     """Preview, confirm and clean up one explicit structural Scope deletion."""
 
@@ -82,7 +104,7 @@ class ScopeDeletionApplication:
         repository: ScopeRepository | None = None,
         handlers: tuple[ScopeResourceHandler, ...] | None = None,
         limits: ScopeRangeLimits | None = None,
-        trusted_local: bool = False,
+        trusted_embedding: TrustedEmbedding | None = None,
     ) -> None:
         self._database = database
         self._scopes = scopes
@@ -91,11 +113,10 @@ class ScopeDeletionApplication:
         # Bounded resolution contract: exceeding either budget refuses the whole
         # operation instead of acting on a truncated set.
         self._limits = ScopeRangeLimits() if limits is None else limits
-        # Mirror the Runtime's existing trust contract: a local in-process caller
-        # may declare that authorization is intentionally handled by its owner,
-        # exactly as `ExecutionContext.trusted_local` already does elsewhere. The
-        # default is not trusted, so an unauthenticated caller fails closed.
-        self._trusted_local = trusted_local
+        # A trusted *embedding* is a declaration the owning composition makes
+        # about itself, not a per-call argument and not a Server access mode. With
+        # none declared, every call needs a real requester and authorizer.
+        self._trusted_embedding = trusted_embedding
 
     async def preview(self, selection: ScopeSelection, /) -> ScopeDeletionPreview:
         """Return the exact bounded structural set and its digest. This grants no authority."""
@@ -204,7 +225,9 @@ class ScopeDeletionApplication:
         """Run every unfinished handler; repeat calls resume and complete the operation."""
 
         record = await self._receipt(operation_id)
-        await self._authorize_members(record.members, requester=requester, authorize=authorize)
+        await self._authorize_members(
+            record.members, requester=requester, authorize=authorize, attestation=record.attestation
+        )
         if record.state == "complete":
             return record
         for progress in record.unfinished:
@@ -299,7 +322,9 @@ class ScopeDeletionApplication:
         if record is None:
             raise ScopeNotFoundError(operation_id)
         receipt = await self._receipt(operation_id)
-        await self._authorize_members(receipt.members, requester=requester, authorize=authorize)
+        await self._authorize_members(
+            receipt.members, requester=requester, authorize=authorize, attestation=receipt.attestation
+        )
         if receipt.state == "complete":
             # A legitimately completed operation is idempotent and is not reopened.
             return receipt
@@ -340,7 +365,9 @@ class ScopeDeletionApplication:
             receipt = await self._receipt(operation_id)
         except ScopeNotFoundError:
             return None
-        await self._authorize_members(receipt.members, requester=requester, authorize=authorize)
+        await self._authorize_members(
+            receipt.members, requester=requester, authorize=authorize, attestation=receipt.attestation
+        )
         return receipt
 
     async def state_of(self, scope_id: str, /) -> ScopeDescriptor:
@@ -398,35 +425,50 @@ class ScopeDeletionApplication:
         *,
         requester=None,
         authorize=None,
-    ) -> ScopeDeletionAttestation:
+        attestation: ScopeDeletionAttestation | None = None,
+    ) -> ScopeDeletionAttestation | None:
         """Require current management authority on **every** applicable member.
 
         One gate for confirm, cleanup, repair and status so a single member's
         manager can never read or resume another manager's operation. The checks
         are AND-ed per member, and observation is deliberately not among them.
 
-        While a member's row still exists its *live* authority decides, so a
-        revocation takes effect before further destructive work. Once every member
-        is gone there is no Scope left to check, and the operation's own attested
-        requester is the only subject — a bounded terminal-readback choice, not a
-        global role and not a grant over any content.
+        Authority is admitted **per invocation**, not once per operation: every
+        call to ``confirm``, ``cleanup``, ``repair_coverage`` and ``operation``
+        re-checks the caller's current rights before it does anything. A
+        revocation therefore stops the *next* call — including a retry after a
+        failed cleanup — but it does not interrupt work already admitted inside a
+        running call, because cleanup is resumable and non-atomic by contract and
+        each handler may already have committed its own transaction. Nothing here
+        promises an atomic mid-call cutoff, and the membership digest inside the
+        write transaction is a set-equality check, not an authorization snapshot.
+
+        Once every member is gone there is no Scope left to check, and the
+        operation's own attested requester is the only subject — a bounded
+        terminal-readback choice, not a global role and not a grant over any
+        content.
         """
 
         if requester is None or authorize is None:
-            # A local owner that declared itself trusted keeps the pre-existing
-            # in-process contract; it still records no fabricated requester, so its
-            # operations stay unattested and terminal readback stays closed to it.
-            if self._trusted_local:
-                return ScopeDeletionAttestation(requester_type="service", requester_id="local", checks=())
-            # No authenticated subject was supplied. Only an operation whose
-            # members are all gone may proceed on its recorded attestation; a live
-            # member must be checked against a real principal.
-            if any(await self._live_member_ids(members)):
-                raise ScopeDeletionUnauthorizedError("<live>", "an authenticated requester is required")
-            recorded = await self._attested_requester(members)
-            if recorded is None:
-                raise ScopeDeletionUnauthorizedError("<legacy>", "operation records no requester")
-            return recorded
+            # Half a check is never a check. A presented principal with no
+            # authorizer — or an authorizer with no principal — is a refused
+            # request, not a reason to trust the caller: neither argument may
+            # downgrade the other.
+            if (requester is None) != (authorize is None):
+                raise ScopeDeletionUnauthorizedError(
+                    "<half>", "both an authenticated requester and its authorizer are required"
+                )
+            # Both are absent. Only an explicit trusted embedding declared by the
+            # owning composition may proceed here, and it records no requester at
+            # all rather than inventing one.
+            if requester is None and authorize is None and self._trusted_embedding is not None:
+                return None
+            # An attested operation does not authenticate its caller. Reading or
+            # resuming it still requires a principal that matches the record, so
+            # with no subject there is nothing to compare and this is refused.
+            raise ScopeDeletionUnauthorizedError(
+                "<anonymous>", "an authenticated requester is required to reach this operation"
+            )
 
         live = await self._live_member_ids(members)
         if live:
@@ -446,11 +488,13 @@ class ScopeDeletionApplication:
                 requester,
                 tuple((AccessAction.SCOPE_ADMIN.value, scope_id) for scope_id in live),
             )
-        # Every member is already gone: fall back to the recorded requester only.
-        recorded = await self._attested_requester(members)
-        if recorded is None or not recorded.names(requester):
+        # Every member is already gone, so there is no live Scope to authorize.
+        # The operation's own recorded requester is the only subject, and the
+        # caller must actually *be* that principal: the presence of an attestation
+        # is evidence, not authentication.
+        if attestation is None or not attestation.names(requester):
             raise ScopeDeletionUnauthorizedError("<terminal>", "operation is not visible to this requester")
-        return recorded
+        return attestation
 
     async def _live_member_ids(self, members: tuple[ScopeDeletionMember, ...], /) -> tuple[str, ...]:
         """The confirmed members whose Scope row still exists, in confirmed order."""
@@ -459,18 +503,6 @@ class ScopeDeletionApplication:
             targets = await self._repository.deletion_targets(connection, tuple(member.scope_id for member in members))
         present = {row[0] for row in targets}
         return tuple(member.scope_id for member in members if member.scope_id in present)
-
-    async def _attested_requester(self, members: tuple[ScopeDeletionMember, ...], /) -> ScopeDeletionAttestation | None:
-        """Read the requester attestation of the operation covering these members."""
-
-        async with self._database.transaction() as connection:
-            operation = await self._repository.deletion_covering(
-                connection, tuple(member.scope_id for member in members)
-            )
-        if operation is None:
-            return None
-        _, attestation = _decode_record(operation)
-        return attestation
 
     def _handler(self, name: str) -> ScopeResourceHandler:
         for handler in self._handlers:

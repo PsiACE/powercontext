@@ -729,29 +729,6 @@ class ScopeRepository:
             .values(last_error_code=error_code)
         )
 
-    async def deletion_covering(self, connection: AsyncConnection, scope_ids: tuple[str, ...], /):
-        """Return the raw confirmed-scopes payload of the operation covering a member.
-
-        Used only to read an operation's own recorded attestation once its members
-        are gone; it never grants authority and never re-resolves membership.
-        """
-        from powercontext.builtin.persistence.tables import SCOPE_DELETIONS_TABLE
-
-        if not scope_ids:
-            return None
-        rows = (
-            (
-                await connection.execute(
-                    select(SCOPE_DELETIONS_TABLE.c.confirmed_scopes).where(
-                        SCOPE_DELETIONS_TABLE.c.root_scope_id.in_(scope_ids)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return None if not rows else rows[0]
-
     async def deletion(self, connection: AsyncConnection, operation_id: str, /):
         from powercontext.builtin.persistence.tables import (
             SCOPE_DELETION_PROGRESS_TABLE,

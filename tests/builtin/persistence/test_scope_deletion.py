@@ -32,6 +32,7 @@ from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_runtime
 from powercontext.builtin.scope import ScopeApplication, ScopeDeletionApplication, ScopeDraft, ScopeSelection
+from powercontext.builtin.scope.deletion import TrustedEmbedding
 from powercontext.builtin.scope.errors import (
     ScopeDeletionBindingRepairError,
     ScopeDeletionConflictError,
@@ -116,7 +117,7 @@ async def _family(tmp_path, *, handlers=None):
             opened.database,
             scopes,
             handlers=await _resolve_handlers(opened, handlers),
-            trusted_local=True,
+            trusted_embedding=TrustedEmbedding("test-fixture"),
         )
         root = await scopes.create(ScopeDraft(title="Orders", summary="Project", idempotency_key="root"))
         child = await scopes.create(
@@ -758,7 +759,7 @@ def test_deep_exact_chain_finalizes_without_recursion_and_retry_converges(tmp_pa
                     ScopeProjectionHandler(atomic, experience),
                 ),
                 limits=ScopeRangeLimits(max_nodes=depth),
-                trusted_local=True,
+                trusted_embedding=TrustedEmbedding("test-fixture"),
             )
 
             root = await scopes.create(ScopeDraft(title="root", summary="Project", idempotency_key="root"))
@@ -920,7 +921,10 @@ def test_coverage_is_checked_per_member_not_unioned_across_members(tmp_path) -> 
 
     async def scenario() -> None:
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-        from powercontext.builtin.scope.deletion import encode_legacy_confirmed_scopes, recorded_coverage
+        from powercontext.builtin.scope.deletion import (
+            encode_legacy_confirmed_scopes,
+            recorded_coverage,
+        )
         from powercontext.builtin.scope.models import ScopeDeletionMember
         from powercontext.builtin.scope.repository import ScopeRepository
 
@@ -1000,7 +1004,10 @@ def test_repair_preserves_a_rows_own_failure_diagnostic(tmp_path) -> None:
 
     async def scenario() -> None:
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-        from powercontext.builtin.scope.deletion import MISSING_COVERAGE_CODE, encode_legacy_confirmed_scopes
+        from powercontext.builtin.scope.deletion import (
+            MISSING_COVERAGE_CODE,
+            encode_legacy_confirmed_scopes,
+        )
         from powercontext.builtin.scope.models import ScopeDeletionMember
         from powercontext.builtin.scope.repository import ScopeRepository
 
@@ -1146,8 +1153,8 @@ async def _access_for(profile):
     return stack, access
 
 
-async def _grant(access, principal, scope_id: str, role, *, granter=None) -> None:
-    """Create one binding through the canonical service, as an authorized granter."""
+async def _grant(access, principal, scope_id: str, role, *, granter=None):
+    """Create one binding through the canonical service; returns the stored binding."""
 
     from powercontext.builtin.authz.service import AccessAuditContext, CreateBinding
 
@@ -1399,6 +1406,293 @@ def test_legacy_operation_without_a_requester_is_never_admitted(tmp_path) -> Non
                 # And without any requester at all.
                 with pytest.raises(ScopeDeletionUnauthorizedError):
                     await deletion.cleanup("del_legacy0001")
+            finally:
+                await stack.aclose()
+
+    _run(scenario)
+
+
+def test_missing_either_argument_fails_closed_and_never_fabricates_a_requester(tmp_path) -> None:
+    """Half a check is not a check, and no synthetic principal is ever recorded.
+
+    A presented principal with no authorizer used to fall through to local trust
+    and record `service:local`, which any transport principal could then claim.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'half.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                # No trusted embedding declared: this is the enforced shape.
+                deletion = ScopeDeletionApplication(
+                    profile.database, scopes, handlers=await _complete_handlers(profile)
+                )
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="hf"))
+                selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+                preview = await deletion.preview(selection)
+                digest = preview.membership_digest
+
+                # Both absent, with no trusted embedding: refused.
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.confirm(selection, digest)
+
+                # A principal without its authorizer: refused, never downgraded.
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.confirm(selection, digest, requester=OUTSIDER)
+                # An authorizer without a principal: refused too.
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.confirm(selection, digest, authorize=_checker(access, OUTSIDER))
+
+                # Nothing was cut off and no operation was recorded.
+                assert (await deletion.state_of(scope.scope_id)).lifecycle_state == "writable"
+
+                # The same half-check must also be refused on a service that DID
+                # declare a trusted embedding: a presented principal may never be
+                # downgraded to local trust, which is how `service:local` used to
+                # be fabricated.
+                trusted = ScopeDeletionApplication(
+                    profile.database,
+                    scopes,
+                    handlers=await _complete_handlers(profile),
+                    trusted_embedding=TrustedEmbedding("half-check"),
+                )
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await trusted.confirm(selection, digest, requester=OUTSIDER)
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await trusted.confirm(selection, digest, authorize=_checker(access, OUTSIDER))
+
+                # With both, a real member manager is admitted and no synthetic
+                # identity appears in the record.
+                await _grant(access, MANAGER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                receipt = await deletion.confirm(
+                    selection, digest, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert receipt.complete
+                assert receipt.attestation is not None
+                assert (receipt.attestation.requester_type, receipt.attestation.requester_id) != (
+                    "service",
+                    "local",
+                )
+                assert receipt.attestation.checks  # real checks, not an empty placeholder
+            finally:
+                await stack.aclose()
+
+    _run(scenario)
+
+
+def test_trusted_embedding_records_no_requester_at_all(tmp_path) -> None:
+    """A declared trusted embedding is genuinely unattested, not `service:local`."""
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'trusted.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            scopes = ScopeApplication(profile.database)
+            trusted = ScopeDeletionApplication(
+                profile.database,
+                scopes,
+                handlers=await _complete_handlers(profile),
+                trusted_embedding=TrustedEmbedding("probe"),
+            )
+            scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="tr"))
+            selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+            preview = await trusted.preview(selection)
+            receipt = await trusted.confirm(selection, preview.membership_digest)
+            assert receipt.complete
+            # No fabricated identity and no fabricated checks.
+            assert receipt.attestation is None
+
+            # The trusted embedding may read its own local operation, because it
+            # declared that it owns authorization. That is a deliberate local
+            # contract, not an attested one: the record still carries no subject,
+            # so passing half a check is refused rather than silently trusted.
+            assert (await trusted.operation(receipt.operation_id)) is not None
+            with pytest.raises(ScopeDeletionUnauthorizedError):
+                await trusted.operation(receipt.operation_id, requester=OUTSIDER)
+
+    _run(scenario)
+
+
+def test_terminal_readback_requires_a_matching_principal_not_just_an_attestation(tmp_path) -> None:
+    """An attestation is evidence; only the recorded principal may read it."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'strict.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                deletion = ScopeDeletionApplication(
+                    profile.database, scopes, handlers=await _complete_handlers(profile)
+                )
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="st"))
+                await _grant(access, MANAGER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+                preview = await deletion.preview(selection)
+                receipt = await deletion.confirm(
+                    selection, preview.membership_digest, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert receipt.complete
+
+                # No identity at all after the members are gone: refused.
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.operation(receipt.operation_id)
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.cleanup(receipt.operation_id)
+
+                # A principal that is not the recorded one: refused.
+                for other in (OUTSIDER, OBSERVER):
+                    with pytest.raises(ScopeDeletionUnauthorizedError):
+                        await deletion.operation(
+                            receipt.operation_id, requester=other, authorize=_checker(access, other)
+                        )
+                # The recorded principal still reads it, with no Scope resurrected.
+                readback = await deletion.operation(
+                    receipt.operation_id, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert readback is not None and readback.complete
+                with pytest.raises(ScopeNotFoundError):
+                    await deletion.state_of(scope.scope_id)
+            finally:
+                await stack.aclose()
+
+    _run(scenario)
+
+
+def test_terminal_authority_uses_the_exact_operation_not_a_member_guess(tmp_path) -> None:
+    """Two operations over one member set keep their own requesters.
+
+    Terminal authority used to be resolved by `root_scope_id IN members` and
+    `rows[0]`, so one operation's attested requester could read another's.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+        from powercontext.builtin.scope.deletion import encode_legacy_confirmed_scopes
+        from powercontext.builtin.scope.models import ScopeDeletionAttestation, ScopeDeletionMember
+        from powercontext.builtin.scope.repository import ScopeRepository
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'exact-op.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                deletion = ScopeDeletionApplication(
+                    profile.database, scopes, handlers=await _complete_handlers(profile)
+                )
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="eo"))
+                await _grant(access, MANAGER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                await _grant(access, OUTSIDER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+
+                selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+                preview = await deletion.preview(selection)
+                first = await deletion.confirm(
+                    selection, preview.membership_digest, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert first.complete
+
+                # A second operation over the same member set, attested to another
+                # manager. Recorded through the repository because the first confirm
+                # already removed the rows; the *query* is what is under test.
+                repository = ScopeRepository()
+                members = (ScopeDeletionMember(scope_id=scope.scope_id, parent_scope_id=None, version=1),)
+                async with profile.database.transaction() as connection:
+                    await repository.record_deletion(
+                        connection,
+                        "del_second001",
+                        scope.scope_id,
+                        "1" * 64,
+                        _encode_attested(
+                            members,
+                            ScopeDeletionAttestation(
+                                requester_type="user",
+                                requester_id=OUTSIDER.id,
+                                checks=(("scope.admin", scope.scope_id),),
+                            ),
+                        ),
+                    )
+                del encode_legacy_confirmed_scopes
+
+                # Each operation answers to its OWN requester, by operation id.
+                assert (
+                    await deletion.operation("del_second001", requester=OUTSIDER, authorize=_checker(access, OUTSIDER))
+                ) is not None
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.operation("del_second001", requester=MANAGER, authorize=_checker(access, MANAGER))
+                # And the first operation stays with its original requester.
+                assert (
+                    await deletion.operation(first.operation_id, requester=MANAGER, authorize=_checker(access, MANAGER))
+                ) is not None
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.operation(
+                        first.operation_id, requester=OUTSIDER, authorize=_checker(access, OUTSIDER)
+                    )
+            finally:
+                await stack.aclose()
+
+    _run(scenario)
+
+
+def _encode_attested(members, attestation) -> bytes:
+    from powercontext.builtin.scope.deletion import _encode_record
+
+    return _encode_record(tuple(members), attestation)
+
+
+def test_revocation_between_calls_stops_the_next_call_not_admitted_work(tmp_path) -> None:
+    """The supported boundary is per-invocation admission, and this pins it.
+
+    Revoking after `confirm` returns prevents the *next* call. It does not claim
+    to interrupt handlers already running inside one call — cleanup is resumable
+    and each handler commits its own transaction, so a mid-call cutoff is not
+    promised and is not simulated here.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.models import AccessRole
+        from powercontext.builtin.authz.service import AccessAuditContext
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'boundary.db'}")
+        async with SQLiteProfile.open(database, tables=BUILTIN_TABLES) as profile:
+            stack, access = await _access_for_database(profile)
+            try:
+                scopes = ScopeApplication(profile.database)
+                failing = _FailingHandler()
+                owners = await _complete_handlers(profile)
+                deletion = ScopeDeletionApplication(profile.database, scopes, handlers=(*owners, failing))
+                scope = await scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="bd"))
+                binding = await _grant(access, MANAGER, scope.scope_id, AccessRole.SCOPE_ADMIN, granter=GRANTER)
+                selection = ScopeSelection(mode="exact", scope_ids=(scope.scope_id,))
+                preview = await deletion.preview(selection)
+                receipt = await deletion.confirm(
+                    selection, preview.membership_digest, requester=MANAGER, authorize=_checker(access, MANAGER)
+                )
+                assert not receipt.complete
+
+                # The work admitted inside confirm is recorded, not rolled back.
+                assert receipt.progress
+
+                await access.revoke_binding(
+                    GRANTER,
+                    binding.binding_id,
+                    expected_version=binding.version,
+                    idempotency_key="revoke-boundary",
+                    context=AccessAuditContext(transport="uds", operation="revoke"),
+                )
+
+                # The next call is refused: admission is per invocation.
+                failing.fail = False
+                with pytest.raises(ScopeDeletionUnauthorizedError):
+                    await deletion.cleanup(receipt.operation_id, requester=MANAGER, authorize=_checker(access, MANAGER))
+                # The member stays unavailable, and the recorded progress is intact.
+                assert (await deletion.state_of(scope.scope_id)).lifecycle_state == "deleting"
+                reread = await deletion._receipt(receipt.operation_id)
+                assert {item.handler for item in reread.progress} == {item.handler for item in receipt.progress}
             finally:
                 await stack.aclose()
 
