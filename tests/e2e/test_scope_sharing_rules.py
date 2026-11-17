@@ -52,6 +52,7 @@ from powercontext.builtin.sharing import (
     ShareRuleServiceUnavailable,
     ShareRuleTerms,
     ShareRun,
+    ShareRunAlreadyBoundError,
     ShareRunLimits,
     ShareRunStateError,
 )
@@ -1505,3 +1506,194 @@ def test_both_readers_fail_closed_when_the_recorded_audience_consent_is_absent(
             assert per_run.origins_covered
 
     asyncio.run(second())
+
+
+def test_one_pinned_run_binds_to_one_dream_execution(tmp_path: Path) -> None:
+    """A pending run accepts one execution binding; a different one fails closed."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "claim.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+
+            claimed = await sharing.claim_run(run.run_id, dream_run_id="dr_first", candidate_id="cand_first")
+            assert claimed.dream_run_id == "dr_first"
+            assert claimed.outcome == "pending"
+
+            # The same binding replays idempotently.
+            replay = await sharing.claim_run(run.run_id, dream_run_id="dr_first", candidate_id="cand_first")
+            assert replay.dream_run_id == "dr_first"
+
+            # A different execution cannot take the run, even before it concludes.
+            with pytest.raises(ShareRunAlreadyBoundError):
+                await sharing.claim_run(run.run_id, dream_run_id="dr_second")
+            # Finishing cannot rebind either — the loser is refused, not billed twice.
+            with pytest.raises(ShareRunAlreadyBoundError):
+                await sharing.record_outcome(run.run_id, outcome="no_change", dream_run_id="dr_second")
+            assert (await sharing.get_run(run.run_id)).dream_run_id == "dr_first"
+
+            # The bound execution concludes normally, and its result is one-way.
+            concluded = await sharing.record_outcome(
+                run.run_id, outcome="no_change", dream_run_id="dr_first", candidate_id="cand_first"
+            )
+            assert concluded.outcome == "no_change"
+            assert concluded.dream_run_id == "dr_first"
+            with pytest.raises(ShareRunAlreadyBoundError):
+                await sharing.record_outcome(run.run_id, outcome="no_change", dream_run_id="dr_other")
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_competing_claims_across_runtimes_yield_one_winner(tmp_path: Path) -> None:
+    """Two database instances racing for one run must not both bind it."""
+
+    import asyncio
+
+    async def prepare() -> tuple[str, str]:
+        async with sharing_runtime(tmp_path / "race.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+            return target, run.run_id
+
+    target, run_id = asyncio.run(prepare())
+
+    async def claim(runtime, dream_run_id: str) -> str:
+        sharing = runtime.sharing.for_scope(target)
+        try:
+            await sharing.claim_run(run_id, dream_run_id=dream_run_id)
+        except ShareRunAlreadyBoundError:
+            return "lost"
+        return "won"
+
+    async def compete() -> list[str]:
+        async with (
+            open_builtin_runtime(config(tmp_path / "race.db")) as first,
+            open_builtin_runtime(config(tmp_path / "race.db")) as second,
+        ):
+            return list(
+                await asyncio.gather(
+                    claim(first, "dr_left"),
+                    claim(second, "dr_right"),
+                )
+            )
+
+    results = asyncio.run(compete())
+    assert sorted(results) == ["lost", "won"]
+
+    async def verify() -> str:
+        async with open_builtin_runtime(config(tmp_path / "race.db")) as runtime:
+            bound = (await runtime.sharing.for_scope(target).get_run(run_id)).dream_run_id
+            assert bound in {"dr_left", "dr_right"}
+            return bound
+
+    assert asyncio.run(verify()) in {"dr_left", "dr_right"}
+
+
+def test_a_concluded_run_keeps_its_execution_identity_and_address(tmp_path: Path) -> None:
+    """Finishing without optional fields must not erase identity or the revision."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "concluded.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            local = await runtime.sources.for_scope(target).capture(
+                CaptureSource(source_id="local", content="A local note.", metadata={})
+            )
+            candidate = await runtime.experience.for_scope(target).propose(
+                ProposeExperienceRequest(proposal=experience("Bounded lesson."), sources=(local.source_ref,))
+            )
+            approved = await runtime.review.for_scope(target).approve(
+                ApproveCandidateRequest(candidate_id=candidate.candidate_id, expected_version=candidate.version)
+            )
+            committed = approved.result_artifact
+            assert committed is not None
+
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+
+            await sharing.claim_run(run.run_id, dream_run_id="dr_final", candidate_id="cand_final")
+            recorded = await sharing.record_outcome(run.run_id, committed=committed)
+            assert recorded.outcome == "committed"
+
+            # Replaying with no optional argument keeps identity, links and address.
+            replay = await sharing.record_outcome(run.run_id)
+            assert replay.dream_run_id == "dr_final"
+            assert replay.candidate_id == "cand_final"
+            assert replay.committed is not None and replay.committed.artifact == committed
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_an_invalidated_rule_refuses_a_claim(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "claim-invalid.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+            await sharing.invalidate(rule.rule_id, 1)
+
+            with pytest.raises(ShareRuleInvalidatedError):
+                await sharing.claim_run(run.run_id, dream_run_id="dr_late")
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_a_pending_run_cannot_be_taken_over_by_a_second_execution(tmp_path: Path) -> None:
+    """Finishing a pending run must not let a different execution adopt it.
+
+    Without an admission-time binding, two admitted executions could each finish the
+    same pending run and the last write would own it.
+    """
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "takeover.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+            assert run.outcome == "pending"
+
+            # Execution A binds at admission, before any generation.
+            await sharing.claim_run(run.run_id, dream_run_id="dr_A")
+
+            # Execution B attempts to finish the same still-pending run.
+            with pytest.raises(ShareRunAlreadyBoundError):
+                await sharing.record_outcome(run.run_id, outcome="needs_evidence", dream_run_id="dr_B")
+
+            stored = await sharing.get_run(run.run_id)
+            assert stored.dream_run_id == "dr_A"
+            assert stored.outcome == "pending"
+
+            # A itself may still conclude the run.
+            concluded = await sharing.record_outcome(run.run_id, outcome="needs_evidence", dream_run_id="dr_A")
+            assert concluded.dream_run_id == "dr_A"
+
+    import asyncio
+
+    asyncio.run(scenario())
