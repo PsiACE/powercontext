@@ -33,7 +33,7 @@ import httpx
 import pytest
 from starlette.middleware import Middleware
 
-from powercontext.builtin.authz import AccessRole, CreateBinding, PrincipalRef, ResourceRef
+from powercontext.builtin.authz import AccessRole, PrincipalRef
 from powercontext.builtin.authz.composition import open_builtin_access_control
 from powercontext.builtin.authz.service import AccessAuditContext
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
@@ -43,7 +43,6 @@ from powercontext.http import (
     AcceptShareRuleRequest,
     CreateShareRunRequest,
     ShareRuleDraft,
-    ShareRuleTerms,
     UpdateShareRuleRequest,
 )
 from powercontext.server.app import ServerApplication, create_app
@@ -51,8 +50,8 @@ from powercontext.server.authentication import StaticBearerAuthenticationProvide
 from powercontext.server.dream_access import DreamAccess
 from powercontext.server.middleware import AuthenticationMiddleware
 from powercontext.server.standing_access import StandingAccess
-from tests.e2e.dream_support import open_dream_runtime, process_pending
-from tests.e2e.test_standing_shared_use import ADMIN, ALICE, CAROL, RUNNER, _bind, _seed, _three_scopes
+from tests.e2e.dream_support import open_dream_runtime
+from tests.e2e.test_standing_shared_use import ADMIN, ALICE, BOB, CAROL, RUNNER, _bind, _seed, _three_scopes
 
 AUDIT = AccessAuditContext(transport="test", operation="seed")
 DEPLOYMENT_ID = "standing-public"
@@ -100,10 +99,18 @@ def test_standing_rule_workflow_over_public_contract(tmp_path: Path) -> None:
                 alice, bob, orders = await _three_scopes(runtime)
                 await _seed(access, alice, bob, orders)
                 await _bind(access, RUNNER, orders, AccessRole.SCOPE_REVIEWER, "runner-reviewer")
+                # The target's own admin also holds current read at ONE origin, which
+                # is the mixed case: that origin is released to her, the other withheld.
+                await _bind(access, CAROL, alice, AccessRole.SCOPE_VIEWER, "carol-alice-reader")
                 await runtime.profiles.put_policy(orders, generation_enabled=True, expected_version=0)
                 foreign = await runtime.sources.for_scope(alice).capture(
                     CaptureSource(source_id="move", content="I moved to Shenzhen permanently.", metadata={})
                 )
+                await runtime.sources.for_scope(bob).capture(
+                    CaptureSource(source_id="move", content="The old channel charged twice.", metadata={})
+                )
+                # `foreign` is the exact material the pinned run must reference.
+                assert foreign.source_ref.source_id == "move"
 
                 def app_for(principal: PrincipalRef) -> tuple[Any, dict[str, str]]:
                     token = f"{principal.id}-token"
@@ -118,7 +125,7 @@ def test_standing_rule_workflow_over_public_contract(tmp_path: Path) -> None:
                     return app, {"Authorization": f"Bearer {token}"}
 
                 draft = ShareRuleDraft.model_validate({
-                    "selection": {"mode": "exact", "scope_ids": [alice]},
+                    "selection": {"mode": "exact", "scope_ids": [alice, bob]},
                     "source_types": ["content"],
                     "terms": {"use": "project-conclusion", "audience": "project-members"},
                 })
@@ -139,10 +146,12 @@ def test_standing_rule_workflow_over_public_contract(tmp_path: Path) -> None:
                     rule = await carol.create_share_rule(orders, draft)
                     assert rule.version == 1 and rule.status == "active"
                     assert rule.terms.use == "project-conclusion"
-                    # The rule metadata never discloses an origin address.
-                    assert alice not in json.dumps(rule.model_dump(mode="json")).replace(
-                        json.dumps(orders), ""
-                    ) or True
+                    # The rule version this admin published carries the declared range
+                    # and bound terms. It discloses no origin body or digest: those
+                    # belong to a run, and to a reader authorized at that origin.
+                    rule_body = rule.model_dump(mode="json")
+                    assert "inputs" not in rule_body and "digest" not in json.dumps(rule_body)
+                    assert rule_body["terms"]["use"] == "project-conclusion"
                     accepted_target = await carol.accept_share_rule(
                         orders, rule.rule_id, 1, AcceptShareRuleRequest.model_validate({"side": "target"})
                     )
@@ -181,7 +190,43 @@ def test_standing_rule_workflow_over_public_contract(tmp_path: Path) -> None:
                         }),
                     )
                     assert origin_acceptance.actor == "user:alice"
-                    assert alice in [item.root for item in origin_acceptance.covered_scope_ids]
+                    assert {item.root for item in origin_acceptance.covered_scope_ids} == {alice}
+                    # Claiming coverage she does not hold is refused, not recorded.
+                    with pytest.raises(ServerResponseError):
+                        await alice_client.accept_share_rule(
+                            orders,
+                            rule.rule_id,
+                            1,
+                            AcceptShareRuleRequest.model_validate({
+                                "side": "origin",
+                                "covered_scope_ids": [alice, bob],
+                            }),
+                        )
+
+                # The second origin's owner accepts its own side; a two-origin rule
+                # is only fully accepted when each origin's authority spoke for itself.
+                bob_app, bob_headers = app_for(BOB)
+                async with (
+                    bob_app.router.lifespan_context(bob_app),
+                    httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=bob_app),
+                        base_url="http://testserver",
+                        headers=bob_headers,
+                    ) as bob_http,
+                    PowerContextClient(
+                        "http://testserver", http_client=bob_http, trust_transport_security=True
+                    ) as bob_client,
+                ):
+                    bob_acceptance = await bob_client.accept_share_rule(
+                        orders,
+                        rule.rule_id,
+                        1,
+                        AcceptShareRuleRequest.model_validate({
+                            "side": "origin",
+                            "covered_scope_ids": [bob],
+                        }),
+                    )
+                    assert bob_acceptance.actor == "user:bob"
 
                 # The target side pins a run from material that currently exists.
                 async with (
@@ -212,13 +257,47 @@ def test_standing_rule_workflow_over_public_contract(tmp_path: Path) -> None:
                     # A target-only reader keeps the run's facts but not the origin's
                     # identity: acceptance existing is not permission to read it.
                     # The origin is withheld explicitly, not merely omitted by luck.
-                    assert all(item.withheld for item in run.inputs), run.inputs
+                    # The target reader holds read at one origin and not the other, so
+                    # exactly that one is released and the other carries no identity.
+                    released_here = {item.origin_scope_id for item in run.inputs if not item.withheld}
+                    withheld_here = [item for item in run.inputs if item.withheld]
+                    assert released_here == {alice}, run.inputs
+                    assert withheld_here, run.inputs
+                    for item in withheld_here:
+                        assert item.origin_scope_id is None and item.digest is None and item.source_ref is None
+                    # The withheld origin never appears anywhere in the payload.
                     body = json.dumps(run.model_dump(mode="json"))
-                    from powercontext.builtin.evidence.models import content_digest as _digest
+                    assert bob not in body, body
+                    assert bob not in [item.root for item in run.origins or ()]
 
-                    assert alice not in body, body
-                    foreign_digest = _digest(json.dumps(None).encode())
-                    assert all(item.digest != foreign_digest for item in run.inputs)
+                # The target admin also reads ONE origin. That is the mixed case the
+                # projection must publish: the origin she may open is released, the
+                # other stays withheld, in one schema-valid payload.
+                async with (
+                    carol_app.router.lifespan_context(carol_app),
+                    httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=carol_app),
+                        base_url="http://testserver",
+                        headers=carol_headers,
+                    ) as mixed_http,
+                    PowerContextClient(
+                        "http://testserver", http_client=mixed_http, trust_transport_security=True
+                    ) as mixed,
+                ):
+                    mixed_run = await mixed.get_share_run(orders, run.run_id)
+                    released = [item for item in mixed_run.inputs or () if not item.withheld]
+                    held = [item for item in mixed_run.inputs or () if item.withheld]
+                    assert released, mixed_run.inputs
+                    assert held, mixed_run.inputs
+                    assert all(item.origin_scope_id == alice for item in released), released
+                    assert all(item.origin_scope_id is None and item.digest is None for item in held), held
+                    # The withheld origin is dropped from the run's origin list while
+                    # the released one remains.
+                    assert [item.root for item in mixed_run.origins or ()] == [alice], mixed_run.origins
+                    listed_mixed = await mixed.list_share_runs(orders, rule.rule_id)
+                    assert any(item.run_id == run.run_id for item in listed_mixed.items)
+                    retried_mixed = await mixed.retry_share_run(orders, run.run_id)
+                    assert retried_mixed.rule_version == run.rule_version
 
             # The pinned binding authorizes the foreign first-Profile run.
             async with open_dream_runtime(

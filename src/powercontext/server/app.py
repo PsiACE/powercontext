@@ -2905,13 +2905,38 @@ def _share_acceptance_response(value) -> ShareAcceptance:
     return ShareAcceptance.model_validate(value.model_dump(mode="json"))
 
 
+# The published input projects to exactly these keys. `materialization` is
+# internal execution detail and never published; the address fields are published
+# only when the reader may open that origin.
+_SHARE_INPUT_ALLOWED = ("kind", "origin_scope_id", "role", "paths", "digest", "source_ref", "artifact")
+_SHARE_INPUT_WITHHELD = ("kind", "role", "paths")
+
+
+def _share_input_payload(item: Mapping[str, Any], *, allowed: bool) -> dict[str, Any]:
+    """Project one pinned input to its schema-valid published shape.
+
+    Both branches use this so the allowed and withheld forms share one contract
+    rather than one having to satisfy the other's absence rules.
+    """
+
+    if allowed:
+        projected = {key: item[key] for key in _SHARE_INPUT_ALLOWED if key in item}
+        projected["withheld"] = False
+        return projected
+    # The count, kind and role stay so a reader can see support existed without
+    # learning whose it is; the address, reference and digest do not.
+    projected = {key: item[key] for key in _SHARE_INPUT_WITHHELD if key in item}
+    projected.update({"withheld": True, "origin_scope_id": None, "digest": None, "source_ref": None, "artifact": None})
+    return projected
+
+
 async def _share_run_response(http_request: Request, scope_id: str, run) -> ShareRun:
-    """Publish a run while withholding origin addresses the caller cannot read.
+    """Publish a run, releasing each origin only to a reader who may open it.
 
     The run's identity, rule version, terms, budget and outcome are the target
     Scope's own record. Each input names material in another Scope, so its
-    reference and digest are released only when the caller currently holds
-    authority at that origin: acceptance existing is not permission to read it.
+    identity, reference and digest are published only under the caller's current
+    authority there: acceptance existing is not permission to read it.
     """
 
     payload = run.model_dump(mode="json")
@@ -2924,27 +2949,23 @@ async def _share_run_response(http_request: Request, scope_id: str, run) -> Shar
     principal = _require_principal()
     reader = _share_run_reader(access)
     visible: list[dict[str, Any]] = []
+    readable: set[str] = set()
     for item in payload.get("inputs", ()):
         origin = item.get("origin_scope_id")
-        allowed = False
-        if isinstance(origin, str):
-            decision = await reader(principal, origin)
-            allowed = decision
-        if not allowed:
-            # Keep the count and role, drop the address, reference and digest.
-            item = {key: value for key, value in item.items() if key in {"kind", "origin_scope_id", "role", "paths"}}
-            item.pop("origin_scope_id", None)
-            item["withheld"] = True
-        visible.append(item)
+        allowed = await reader(principal, origin) if isinstance(origin, str) else False
+        if allowed and isinstance(origin, str):
+            readable.add(origin)
+        visible.append(_share_input_payload(item, allowed=allowed))
     payload["inputs"] = visible
-    # The run also lists the origins it reached and their watermarks. Those name
-    # the same Scopes, so they follow the same authority: a withheld origin is
-    # dropped from the list rather than replaced with a placeholder.
-    readable = {item["origin_scope_id"] for item in visible if not item.get("withheld") and item.get("origin_scope_id")}
-    payload["origins"] = [scope_id for scope_id in payload.get("origins", ()) if scope_id in readable]
+    # The run also lists the origins it reached and their watermarks, which name
+    # the same Scopes; a withheld origin is dropped from both rather than replaced.
+    payload["origins"] = [scope for scope in payload.get("origins", ()) if scope in readable]
     payload["source_watermarks"] = [
         mark for mark in payload.get("source_watermarks", ()) if mark.get("origin_scope_id") in readable
     ]
+    payload["baseline"] = payload.get("baseline") if readable else None
+    payload["baseline_digest"] = payload.get("baseline_digest") if readable else None
+    payload["committed"] = payload.get("committed") if readable else None
     return ShareRun.model_validate(payload)
 
 

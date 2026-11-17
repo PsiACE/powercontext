@@ -299,7 +299,7 @@ def test_scope_archive_and_confirmed_deletion_over_public_contract(tmp_path: Pat
                     },
                 )
                 assert live.status_code == 202, live.text
-                live_operation = live.json()["operation_id"]
+                assert live.json()["operation_id"]
 
                 # Cutoff is effective: the Scope no longer serves ordinary reads.
                 gone = await http.get(f"/v1/scopes/{root.scope_id}")
