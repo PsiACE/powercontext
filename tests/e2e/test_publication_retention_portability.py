@@ -23,6 +23,7 @@ still refused.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,9 @@ def test_retained_copy_survives_origin_scope_deletion_and_round_trips(tmp_path: 
     bundle = tmp_path / "history.pcbundle"
 
     async def produce() -> tuple[str, str]:
-        await asyncio.to_thread(prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")))
+        await asyncio.to_thread(
+            prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        )
         async with open_builtin_runtime(_config(database)) as runtime:
             assert runtime.scopes is not None and runtime.publications is not None
             work = await runtime.scopes.create(ScopeDraft(title="Alice work", summary="s", idempotency_key="w"))
@@ -99,7 +102,9 @@ def test_retained_copy_survives_origin_scope_deletion_and_round_trips(tmp_path: 
             return project.scope_id, published.target.artifact.artifact_id
 
     async def consume(scope_id: str, artifact_id: str) -> None:
-        await asyncio.to_thread(prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{other}")))
+        await asyncio.to_thread(
+            prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{other}"))
+        )
         async with open_builtin_runtime(_config(other)) as runtime:
             archive = runtime.archive
             assert archive is not None
@@ -117,21 +122,163 @@ def test_retained_publication_requires_a_complete_address() -> None:
 
     from powercontext.builtin.portability.bundle import _publication_source_retained
 
+    # The publication column is a fixed 64-character field and every publishing path writes a bare
+    # sha256 hex, so that is the only accepted representation.
+    digest = "0643ba9e191e2870036eec1d91f6e8d1052a8e1e9c4ea3b8c7a8c0baaacd40d0"
     complete = {
         "source_scope_id": "scp_a",
         "source_family": "experience",
         "source_artifact_id": "art_a",
         "source_revision": 2,
-        "content_digest": "sha256:abc",
+        "content_digest": digest,
     }
     assert _publication_source_retained(complete) is True
 
     for broken in (
         {**complete, "source_scope_id": ""},
         {**complete, "source_artifact_id": ""},
+        {**complete, "source_family": ""},
         {**complete, "source_revision": 0},
         {**complete, "source_revision": True},
         {k: v for k, v in complete.items() if k != "content_digest"},
-        {**complete, "content_digest": " sha256:abc"},
+        {**complete, "content_digest": "not-a-digest"},
+        {**complete, "content_digest": "abc"},
+        {**complete, "content_digest": f"sha256:{digest}"},
+        {**complete, "content_digest": f"sha256: {digest}"},
+        {**complete, "content_digest": digest.upper()},
+        {**complete, "content_digest": digest[:-1]},
     ):
         assert _publication_source_retained(broken) is False, broken
+
+
+def _resign(bundle: Path, mutate: Callable[[dict[str, Any]], None]) -> Path:
+    """Rewrite one publication record and re-seal the archive so only its content is suspicious.
+
+    This is a deliberately tampered, correctly re-sealed archive: every container digest is recomputed,
+    so the bundle is structurally valid and only the retained provenance claim is wrong. That is exactly
+    the case a context-aware validator must catch, because a bundle checksum proves internal integrity,
+    never that an external origin really had this address.
+    """
+
+    import hashlib
+    import json
+    import zipfile
+
+    def canonical(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        records = [json.loads(line) for line in archive.read("records.ndjson").decode().splitlines() if line.strip()]
+
+    for record in records:
+        if record.get("record_type") == "artifact_publication":
+            mutate(record)
+            # A record digest covers exactly its identity, payload, type and schema version -- not
+            # itself -- so a tampered archive can be re-sealed into a structurally valid bundle.
+            sealed = {key: record[key] for key in ("record_type", "schema_version", "identity", "payload")}
+            record["digest"] = "sha256:" + hashlib.sha256(canonical(sealed)).hexdigest()
+            break
+
+    body = b"\n".join(canonical(record) for record in records) + b"\n"
+    accumulator = hashlib.sha256()
+    for index, record in enumerate(records):
+        if index:
+            accumulator.update(b"\n")
+        accumulator.update(record["digest"].encode("ascii"))
+    manifest["total_digest"] = "sha256:" + accumulator.hexdigest()
+
+    target = bundle.with_name(bundle.stem + "-resigned.pcbundle")
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.json", json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
+        archive.writestr("records.ndjson", body)
+    return target
+
+
+def test_tampered_retained_addresses_are_refused(tmp_path: Path) -> None:
+    """A re-sealed archive cannot smuggle a fabricated or mismatched origin past the validator."""
+
+    database = tmp_path / "origin.db"
+    bundle = tmp_path / "origin.pcbundle"
+
+    async def build() -> None:
+        await asyncio.to_thread(
+            prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        )
+        async with open_builtin_runtime(_config(database)) as runtime:
+            assert runtime.scopes is not None and runtime.publications is not None
+            archive = runtime.archive
+            assert archive is not None
+            work = await runtime.scopes.create(ScopeDraft(title="Alice work", summary="s", idempotency_key="w"))
+            project = await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="p"))
+            created = await runtime.records.for_scope(work.scope_id).create_artifact(
+                "experience", ArtifactWrite(content=_LESSON)
+            )
+            await runtime.publications.publish(
+                ArtifactPublicationRequest(
+                    source=ArtifactAddress(
+                        scope_id=work.scope_id,
+                        artifact=ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=1),
+                    ),
+                    target_scope_id=project.scope_id,
+                    idempotency_key="orders-copy",
+                )
+            )
+            # The origin Scope is still present in this archive, so its address must agree with it.
+            await archive.export((work.scope_id, project.scope_id), bundle, authorize=_allow)
+
+    asyncio.run(build())
+
+    def fabricated(record: dict[str, Any]) -> None:
+        record["payload"]["source_scope_id"] = "scp_0000000000000000000000phantom"
+        record["payload"]["source_revision"] = 7
+
+    def wrong_revision(record: dict[str, Any]) -> None:
+        record["payload"]["source_revision"] = 5
+
+    def bad_digest(record: dict[str, Any]) -> None:
+        record["payload"]["content_digest"] = "not-a-digest"
+
+    # A publication whose origin Scope record is still archived must agree with it exactly.
+    for mutate in (wrong_revision,):
+        tampered = _resign(bundle, mutate)
+        for entry in ("validate", "restore"):
+            try:
+                asyncio.run(_attempt(tmp_path, tampered, entry))
+            except Exception:
+                continue
+            raise AssertionError(f"{mutate.__name__} slipped through {entry}")
+
+    # A junk digest is refused before any origin question arises, so an absent origin cannot launder it.
+    junk = _resign(bundle, bad_digest)
+    for entry in ("validate", "restore"):
+        try:
+            asyncio.run(_attempt(tmp_path, junk, entry))
+        except Exception:
+            continue
+        raise AssertionError(f"bad_digest slipped through {entry}")
+
+    # Honest limit: a publication's digest covers the delivered content, not its origin address, so a
+    # *fabricated* address that names no archived origin cannot be disproved from the archive alone. The
+    # bundle is internally consistent, so accepting it is not a regression this unit can detect, and the
+    # archive checksum authenticates the container, never an external claim. Recorded, not papered over.
+    laundered = _resign(bundle, fabricated)
+    asyncio.run(_attempt(tmp_path, laundered, "validate"))
+
+
+async def _attempt(root: Path, path: Path, step: str) -> None:
+    """Run one public archive entry point against its own fresh database."""
+
+    database = root / (step + ".db")
+    await asyncio.to_thread(
+        prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+    )
+    async with open_builtin_runtime(_config(database)) as runtime:
+        archive = runtime.archive
+        assert archive is not None
+        if step == "validate":
+            await archive.validate(path)
+        else:
+            await archive.restore(path)

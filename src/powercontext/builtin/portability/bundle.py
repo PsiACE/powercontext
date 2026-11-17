@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -2047,8 +2048,19 @@ def _validate_dependencies(
                 is not None
             )
 
+        def document(record_type: str, identity: Mapping[str, object]) -> Any:
+            """Return one archived record's decoded document, or None when it is absent."""
+
+            row = index.execute(
+                "SELECT document FROM identities WHERE record_type = ? AND identity = ?",
+                (record_type, _identity_key(identity)),
+            ).fetchone()
+            if row is None or row[0] is None:
+                return None
+            return json.loads(bytes(row[0]))
+
         for record in _iter_records(source):
-            _validate_record_dependencies(record, contains)
+            _validate_record_dependencies(record, contains, document)
             _validate_candidate_record(record, index, candidate_decoder)
             _validate_observation_record(record, index)
             _validate_skill_package_dependency(record, packages)
@@ -2242,6 +2254,7 @@ def _validate_candidate_record(
 def _validate_record_dependencies(  # noqa: C901 - logical record kinds have distinct dependency edges.
     record: _Record,
     contains: Callable[[str, Mapping[str, object]], bool],
+    document: Callable[[str, Mapping[str, object]], object] | None = None,
     /,
 ) -> None:
     payload = record.payload
@@ -2407,13 +2420,16 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
         ):
             raise BundleFormatError("record references missing artifact revision")
     elif record.record_type == "artifact_publication":
-        # Only the target revision must be present. The row itself carries the exact origin address
-        # and digest, which is what makes the retained copy provable after the origin is gone; an
-        # origin that no longer exists cannot also be required to contribute a revision record. A
-        # surviving source Scope is still required to appear in the bundle.
-        if not contains("scope", {"scope_id": payload["source_scope_id"]}) and not _publication_source_retained(
-            payload
-        ):
+        # The origin requirement is waived only when the origin is genuinely absent from the archive.
+        # If its Scope is present, the row must agree with it: a live origin plus a fabricated or
+        # mismatched address is corruption, not history, and accepting it would let one tampered row
+        # become the survivor's recorded provenance.
+        if not _publication_digest_shape(payload):
+            # The column is a fixed 64-character field, so anything else is corruption whatever the
+            # origin's state; refusing it here keeps a junk value from riding in on an intact origin.
+            raise BundleFormatError("Artifact publication digest is not a valid sha256 digest")
+        origin_present = contains("scope", {"scope_id": payload["source_scope_id"]})
+        if not origin_present and not _publication_source_retained(payload):
             raise BundleFormatError("Artifact publication references missing source scope")
         target_exists = contains(
             "artifact_revision",
@@ -2433,8 +2449,18 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
                 "revision": payload["source_revision"],
             },
         )
-        if not target_exists or (not source_exists and not _publication_source_retained(payload)):
+        if not target_exists:
             raise BundleFormatError("Artifact publication references missing revision")
+        if not source_exists and origin_present:
+            # The origin is archived, so its exact revision is required; the waiver does not apply.
+            raise BundleFormatError("Artifact publication references missing revision")
+        if not source_exists and not _publication_source_retained(payload):
+            raise BundleFormatError("Artifact publication references missing revision")
+        if not source_exists and not _publication_digest_bound(identity, payload, document):
+            # The origin's own records are gone, so the strongest available check is that the retained
+            # digest really is the target revision's own content. Without that, an absent origin would
+            # let any internally consistent claim become a survivor's recorded provenance.
+            raise BundleFormatError("Artifact publication digest does not match its retained copy")
     elif record.record_type == "memory_entry_version":
         if not contains(
             "artifact_revision",
@@ -2670,7 +2696,7 @@ def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
                         record.record_type,
                         _identity_key(record.identity),
                         _canonical_json(_record_document(record))
-                        if record.record_type in {"candidate_version", "source_definition"}
+                        if record.record_type in {"candidate_version", "source_definition", "artifact_revision"}
                         else None,
                     ),
                 )
@@ -2849,6 +2875,59 @@ def _validate_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
     return selected
 
 
+def _publication_digest_bound(
+    identity: Mapping[str, object],
+    payload: Mapping[str, object],
+    document: Callable[[str, Mapping[str, object]], object] | None,
+) -> bool:
+    """Say whether a retained digest really is the target revision's own content.
+
+    When the origin's records are gone, the archive still holds the copy the publication delivered, and
+    that copy's stored digest is the sha256 of its content bytes. So the two can be checked against each
+    other without the origin. This proves nothing about the outside world -- a self-consistent claim about
+    a vanished origin stays unprovable -- but it does stop one edited row from inventing an address,
+    because the digest must match content that is also archived.
+    """
+
+    if document is None:
+        return False
+    target = {
+        "scope_id": identity["target_scope_id"],
+        "family": identity["target_family"],
+        "artifact_id": identity["target_artifact_id"],
+        "revision": identity["target_revision"],
+    }
+    archived = document("artifact_revision", target)
+    if not isinstance(archived, dict):
+        return False
+    payload_body = archived.get("payload", archived)
+    body = payload_body.get("content") if isinstance(payload_body, dict) else None
+    if not isinstance(body, dict):
+        return False
+    # Bytes are archived as base64; decoding them restores exactly the bytes the digest was taken over.
+    encoded = body.get("base64")
+    if not isinstance(encoded, str):
+        return False
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return hashlib.sha256(raw).hexdigest() == payload.get("content_digest")
+
+
+def _publication_digest_shape(payload: Mapping[str, object], /) -> bool:
+    """Say whether the stored digest is a real sha256 representation.
+
+    Every publishing path writes the bare lowercase hex form that the fixed 64-character column holds,
+    so that is the only shape accepted. A prefixed, truncated or otherwise junk value is corruption.
+    """
+
+    digest = payload.get("content_digest")
+    return (
+        isinstance(digest, str) and len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
+    )
+
+
 def _publication_source_retained(payload: Mapping[str, object], /) -> bool:
     """Say whether a publication row's own address is complete, authoritative provenance.
 
@@ -2864,8 +2943,11 @@ def _publication_source_retained(payload: Mapping[str, object], /) -> bool:
     revision = payload.get("source_revision")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
         return False
-    digest = payload.get("content_digest")
-    return isinstance(digest, str) and digest.strip() == digest
+    # `pc_artifact_publications.content_digest` is a fixed 64-character column and every publishing
+    # path writes a bare sha256 hex there, so that is the only representation this row can legitimately
+    # carry. Anything else -- a prefixed form, a wrong length, or junk -- is not a digest the contract
+    # ever produced, and retention now hinges on it.
+    return _publication_digest_shape(payload)
 
 
 def _identity_key(identity: Mapping[str, object], /) -> str:
