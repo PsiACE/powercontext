@@ -57,7 +57,7 @@ from powercontext.builtin.sharing import (
     ShareRunStateError,
 )
 from powercontext.builtin.sharing.application import ScopedShareApplication
-from powercontext.builtin.sharing.service import ShareAuthorizer
+from powercontext.builtin.sharing.service import ShareAuthorizer, ShareOriginCheck
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY
 
 
@@ -79,11 +79,18 @@ def config(database: Path) -> BuiltinConfig:
 
 @asynccontextmanager
 async def sharing_runtime(
-    database: Path, *, authorize_origin: ShareAuthorizer | None = None
+    database: Path,
+    *,
+    authorize_origin: ShareAuthorizer | None = None,
+    authorize_target: ShareOriginCheck | None = None,
 ) -> AsyncIterator[tuple[BuiltinRuntime, str, str]]:
     """Open the real Runtime and create one target Scope and one origin Scope."""
 
-    async with open_builtin_runtime(config(database), share_rule_authorizer=authorize_origin) as runtime:
+    async with open_builtin_runtime(
+        config(database),
+        share_rule_authorizer=authorize_origin,
+        share_rule_target_authorizer=authorize_target,
+    ) as runtime:
         scopes = runtime.scopes
         # A composed Runtime always has the Scope application; assert rather than cast
         # so the rest of the scenarios use the real, known type.
@@ -1693,6 +1700,88 @@ def test_a_pending_run_cannot_be_taken_over_by_a_second_execution(tmp_path: Path
             # A itself may still conclude the run.
             concluded = await sharing.record_outcome(run.run_id, outcome="needs_evidence", dream_run_id="dr_A")
             assert concluded.dream_run_id == "dr_A"
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_the_checked_claim_requires_current_target_authority(tmp_path: Path) -> None:
+    """An unauthorized caller must not bind or deny a run through the wrapper."""
+
+    async def scenario() -> None:
+        denied: list[str] = []
+
+        class TargetDenied(PermissionError):
+            """The configured target authorizer refused this caller."""
+
+        async def authorize_target(scope_id: str) -> None:
+            if scope_id in denied:
+                raise TargetDenied
+
+        async with sharing_runtime(tmp_path / "authority.db", authorize_target=authorize_target) as (
+            runtime,
+            target,
+            origin,
+        ):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+
+            # Authorized: the wrapper binds, and a replay is idempotent.
+            bound = await sharing.claim_run(run.run_id, dream_run_id="dr_ok")
+            assert bound.dream_run_id == "dr_ok"
+            assert (await sharing.claim_run(run.run_id, dream_run_id="dr_ok")).dream_run_id == "dr_ok"
+
+            # An outsider cannot write a binding.
+            denied.append(target)
+            with pytest.raises(TargetDenied):
+                await sharing.claim_run(run.run_id, dream_run_id="dr_outsider")
+            assert (await sharing.get_run(run.run_id)).dream_run_id == "dr_ok"
+
+            # Revoked authority is refused on the next claim attempt.
+            denied.clear()
+            assert (await sharing.claim_run(run.run_id, dream_run_id="dr_ok")).dream_run_id == "dr_ok"
+            denied.append(target)
+            with pytest.raises(TargetDenied):
+                await sharing.claim_run(run.run_id, dream_run_id="dr_ok")
+
+    import asyncio
+
+    asyncio.run(scenario())
+
+
+def test_a_concluded_run_rejects_a_contradictory_candidate(tmp_path: Path) -> None:
+    """The candidate binding is exclusive too; a mismatch is a conflict, not silence."""
+
+    async def scenario() -> None:
+        async with sharing_runtime(tmp_path / "candidate.db") as (runtime, target, origin):
+            sharing = runtime.sharing.for_scope(target)
+            await runtime.sources.for_scope(origin).capture(
+                CaptureSource(source_id="fact", content="A fact.", metadata={})
+            )
+            rule = await sharing.create(exact_rule(origin))
+            await agree(sharing, rule.rule_id)
+            run = await sharing.resolve(rule.rule_id)
+
+            await sharing.claim_run(run.run_id, dream_run_id="dr_x", candidate_id="cand_a")
+            await sharing.record_outcome(run.run_id, outcome="no_change", dream_run_id="dr_x", candidate_id="cand_a")
+
+            # Exact replay is idempotent, and omission keeps the stored fields.
+            replay = await sharing.record_outcome(run.run_id, dream_run_id="dr_x", candidate_id="cand_a")
+            assert replay.candidate_id == "cand_a"
+            assert (await sharing.record_outcome(run.run_id)).candidate_id == "cand_a"
+
+            # A contradictory candidate cannot be claimed or concluded silently.
+            with pytest.raises(ShareRunAlreadyBoundError):
+                await sharing.claim_run(run.run_id, dream_run_id="dr_x", candidate_id="cand_b")
+            with pytest.raises(ShareRunAlreadyBoundError):
+                await sharing.record_outcome(run.run_id, outcome="no_change", candidate_id="cand_b")
+            assert (await sharing.get_run(run.run_id)).candidate_id == "cand_a"
 
     import asyncio
 
