@@ -1959,6 +1959,11 @@ async def _validate_selected_scopes(connection: AsyncConnection, scopes: tuple[s
     ).scalars()
     if any(str(scope_id) not in selected for scope_id in referenced):
         raise BundleFormatError("selected scope set omits a referenced context scope")
+    # A publication row keeps the exact origin address and digest that justified the copy, and the
+    # consuming Scope's copy was authorized for independent retention. That retained provenance is
+    # authoritative history, not a live pointer: an origin whose Scope has since been deleted must not
+    # make its consumer unexportable. A source Scope that still exists is still required to be in the
+    # selection, so this only relaxes the case where there is nothing left to include.
     publication_sources = (
         await connection.execute(
             select(ARTIFACT_PUBLICATIONS_TABLE.c.source_scope_id).where(
@@ -1966,7 +1971,15 @@ async def _validate_selected_scopes(connection: AsyncConnection, scopes: tuple[s
             )
         )
     ).scalars()
-    if any(str(scope_id) not in selected for scope_id in publication_sources):
+    surviving_sources = set()
+    if candidates := {str(scope_id) for scope_id in publication_sources}:
+        surviving_sources = {
+            str(row)
+            for row in (
+                await connection.execute(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id.in_(candidates)))
+            ).scalars()
+        }
+    if any(source not in selected for source in surviving_sources):
         raise BundleFormatError("selected scope set omits an Artifact publication source scope")
 
 
@@ -2394,7 +2407,13 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
         ):
             raise BundleFormatError("record references missing artifact revision")
     elif record.record_type == "artifact_publication":
-        if not contains("scope", {"scope_id": payload["source_scope_id"]}):
+        # Only the target revision must be present. The row itself carries the exact origin address
+        # and digest, which is what makes the retained copy provable after the origin is gone; an
+        # origin that no longer exists cannot also be required to contribute a revision record. A
+        # surviving source Scope is still required to appear in the bundle.
+        if not contains("scope", {"scope_id": payload["source_scope_id"]}) and not _publication_source_retained(
+            payload
+        ):
             raise BundleFormatError("Artifact publication references missing source scope")
         target_exists = contains(
             "artifact_revision",
@@ -2414,7 +2433,7 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
                 "revision": payload["source_revision"],
             },
         )
-        if not target_exists or not source_exists:
+        if not target_exists or (not source_exists and not _publication_source_retained(payload)):
             raise BundleFormatError("Artifact publication references missing revision")
     elif record.record_type == "memory_entry_version":
         if not contains(
@@ -2828,6 +2847,25 @@ def _validate_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
         raise BundleFormatError("scopes must contain at least one non-empty trimmed scope ID")
     selected = tuple(sorted(set(values)))
     return selected
+
+
+def _publication_source_retained(payload: Mapping[str, object], /) -> bool:
+    """Say whether a publication row's own address is complete, authoritative provenance.
+
+    A retained copy is provable from what the row stores: the exact origin Scope, Family, Artifact id
+    and revision, plus the content digest that was delivered. When those are present and consistent,
+    the absence of the origin's live records is history rather than corruption. Anything missing or
+    malformed is still refused by the caller, so this cannot be used to excuse a truncated record.
+    """
+
+    required = ("source_scope_id", "source_family", "source_artifact_id", "source_revision", "content_digest")
+    if any(payload.get(name) in (None, "") for name in required):
+        return False
+    revision = payload.get("source_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+        return False
+    digest = payload.get("content_digest")
+    return isinstance(digest, str) and digest.strip() == digest
 
 
 def _identity_key(identity: Mapping[str, object], /) -> str:
