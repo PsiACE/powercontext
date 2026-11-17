@@ -26,7 +26,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect
 
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.persistence.sources import SourceRepository
@@ -729,36 +728,53 @@ def test_a_run_cannot_be_completed_after_its_rule_is_invalidated(tmp_path: Path)
     asyncio.run(scenario())
 
 
-def test_managed_database_does_not_advertise_standing_rules_it_cannot_serve(tmp_path: Path) -> None:
-    """Storage without the standing-rule relations must not be treated as serving them.
+def test_database_left_at_the_previous_revision_is_refused_before_serving(tmp_path: Path) -> None:
+    """A database that predates the standing-rule storage must not be served as if it had it.
 
-    The registered chain carries these relations from `v1_5_0_009`, so a managed database built from it
-    advertises the capability. This covers the opposite storage state: when the relations are genuinely
-    absent, nothing may claim the capability is served. The check is on storage, so it never has to look
-    at a Scope.
+    This is the supported boundary a real operator meets: storage created before these relations
+    existed. Starting the Server on it must refuse with a clean migration instruction before any SQL can
+    fail on a missing table, rather than advertising a capability whose first call would raise.
     """
 
     import asyncio
+    import sqlite3
 
-    from sqlalchemy import create_engine
-    from sqlalchemy.ext.asyncio import create_async_engine
+    from powercontext.builtin.persistence.migrations.deployment import deployment_runner
+    from powercontext.builtin.persistence.migrations.models import MigrationError
+    from powercontext.builtin.persistence.migrations.server_readiness import prepare_server_storage
+    from powercontext.server.settings import ServerSettings
 
-    from powercontext.builtin.persistence.database import AsyncDatabase
-    from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE, SCOPES_TABLE, SHARE_TABLES
+    database = tmp_path / "previous.db"
+    settings = ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+    runner = deployment_runner(settings)
+    plan = runner.plan(backup_policy="skip")
+    runner.apply(
+        plan_id=plan.plan_id,
+        accepted=True,
+        maintenance_confirmed=True,
+        backup_policy="skip",
+        accept_no_backup=True,
+    )
 
-    path = tmp_path / "storage.db"
-    engine = create_engine(f"sqlite:///{path}")
-    ARTIFACTS_TABLE.metadata.create_all(engine, tables=[ARTIFACTS_TABLE, SCOPES_TABLE])
-    engine.dispose()
+    # Model storage left at the revision before the relations existed.
+    with sqlite3.connect(database) as connection:
+        for name in (
+            "pc_share_acceptances",
+            "pc_share_runs",
+            "pc_share_rule_versions",
+            "pc_share_rule_heads",
+        ):
+            connection.execute(f"DROP TABLE {name}")
+        connection.execute("UPDATE pc_schema_revision SET version_num = 'v1_5_0_008'")
 
-    async def scenario() -> None:
-        database = AsyncDatabase(create_async_engine(f"sqlite+aiosqlite:///{path}"), owns_engine=True)
-        async with database.transaction() as connection:
-            names = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
-        # The exact condition the Runtime gate decides on: absent relations mean absent capability.
-        assert not {table.name for table in SHARE_TABLES} <= names
+    # Refused with an actionable instruction, before serving anything.
+    with pytest.raises(MigrationError) as refusal:
+        asyncio.run(asyncio.to_thread(lambda: prepare_server_storage(settings)))
+    assert "migration_required" in str(refusal.value)
 
-    asyncio.run(scenario())
+    with sqlite3.connect(database) as connection:
+        names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    assert not any(name.startswith("pc_share") for name in names)
 
 
 def test_a_concluded_run_is_one_way_and_keeps_its_committed_revision(tmp_path: Path) -> None:

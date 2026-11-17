@@ -24,7 +24,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "family": {
@@ -37,7 +37,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "artifact_id": {
@@ -50,15 +50,13 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "revision": {
                 "type": [
                   "int",
-                  [
-                    "11"
-                  ]
+                  []
                 ],
                 "nullable": false,
                 "default": null,
@@ -69,9 +67,7 @@
               "ordinal": {
                 "type": [
                   "int",
-                  [
-                    "11"
-                  ]
+                  []
                 ],
                 "nullable": false,
                 "default": null,
@@ -89,7 +85,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "origin_kind": {
@@ -102,7 +98,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "origin_family": {
@@ -115,7 +111,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "origin_id": {
@@ -128,15 +124,13 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "origin_revision": {
                 "type": [
                   "int",
-                  [
-                    "11"
-                  ]
+                  []
                 ],
                 "nullable": true,
                 "default": null,
@@ -165,7 +159,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               }
             },
@@ -199,47 +193,17 @@
             "foreign_keys": [
               {
                 "columns": [
-                  "scope_id"
-                ],
-                "referred_schema": null,
-                "referred_table": "pc_artifacts",
-                "referred_columns": [
-                  "scope_id"
-                ],
-                "ondelete": "cascade",
-                "onupdate": "restrict"
-              },
-              {
-                "columns": [
-                  "family"
-                ],
-                "referred_schema": null,
-                "referred_table": "pc_artifacts",
-                "referred_columns": [
-                  "family"
-                ],
-                "ondelete": "cascade",
-                "onupdate": "restrict"
-              },
-              {
-                "columns": [
-                  "artifact_id"
-                ],
-                "referred_schema": null,
-                "referred_table": "pc_artifacts",
-                "referred_columns": [
-                  "artifact_id"
-                ],
-                "ondelete": "cascade",
-                "onupdate": "restrict"
-              },
-              {
-                "columns": [
+                  "scope_id",
+                  "family",
+                  "artifact_id",
                   "revision"
                 ],
                 "referred_schema": null,
                 "referred_table": "pc_artifacts",
                 "referred_columns": [
+                  "scope_id",
+                  "family",
+                  "artifact_id",
                   "revision"
                 ],
                 "ondelete": "cascade",
@@ -342,7 +306,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "rule_id": {
@@ -355,7 +319,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "current_version": {
@@ -379,7 +343,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "updated_at": {
@@ -473,7 +437,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "rule_id": {
@@ -486,7 +450,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "version": {
@@ -543,23 +507,13 @@
             "foreign_keys": [
               {
                 "columns": [
-                  "scope_id"
-                ],
-                "referred_schema": null,
-                "referred_table": "pc_share_rule_heads",
-                "referred_columns": [
-                  "scope_id"
-                ],
-                "ondelete": "cascade",
-                "onupdate": "restrict"
-              },
-              {
-                "columns": [
+                  "scope_id",
                   "rule_id"
                 ],
                 "referred_schema": null,
                 "referred_table": "pc_share_rule_heads",
                 "referred_columns": [
+                  "scope_id",
                   "rule_id"
                 ],
                 "ondelete": "cascade",
@@ -599,7 +553,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "run_id": {
@@ -612,7 +566,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "rule_id": {
@@ -625,7 +579,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "rule_version": {
@@ -649,7 +603,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "outcome": {
@@ -662,7 +616,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "notification_key": {
@@ -675,7 +629,7 @@
                 "nullable": true,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "manifest_digest": {
@@ -688,7 +642,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "created_at": {
@@ -809,7 +763,28 @@
                 "enforced": true
               }
             },
-            "indexes": {}
+            "indexes": {
+              "uq_pc_share_runs_notification": {
+                "columns": [
+                  [
+                    "scope_id",
+                    null,
+                    "asc"
+                  ],
+                  [
+                    "rule_id",
+                    null,
+                    "asc"
+                  ],
+                  [
+                    "notification_key",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": true
+              }
+            }
           }
         },
         {
@@ -825,7 +800,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "rule_id": {
@@ -838,7 +813,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "version": {
@@ -862,7 +837,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "side": {
@@ -875,7 +850,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "terms_digest": {
@@ -888,7 +863,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "covered_scope_ids": {
@@ -912,7 +887,7 @@
                 "nullable": false,
                 "default": null,
                 "charset": "utf8mb4",
-                "collation": null,
+                "collation": "utf8mb4_bin",
                 "extra": []
               },
               "accepted_at": {
@@ -957,35 +932,15 @@
             "foreign_keys": [
               {
                 "columns": [
-                  "scope_id"
-                ],
-                "referred_schema": null,
-                "referred_table": "pc_share_rule_versions",
-                "referred_columns": [
-                  "scope_id"
-                ],
-                "ondelete": "cascade",
-                "onupdate": "restrict"
-              },
-              {
-                "columns": [
-                  "rule_id"
-                ],
-                "referred_schema": null,
-                "referred_table": "pc_share_rule_versions",
-                "referred_columns": [
-                  "rule_id"
-                ],
-                "ondelete": "cascade",
-                "onupdate": "restrict"
-              },
-              {
-                "columns": [
+                  "scope_id",
+                  "rule_id",
                   "version"
                 ],
                 "referred_schema": null,
                 "referred_table": "pc_share_rule_versions",
                 "referred_columns": [
+                  "scope_id",
+                  "rule_id",
                   "version"
                 ],
                 "ondelete": "cascade",
@@ -1014,11 +969,184 @@
                 "enforced": true
               }
             },
-            "indexes": {}
+            "indexes": {
+              "uq_pc_share_acceptances_id": {
+                "columns": [
+                  [
+                    "acceptance_id",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": true
+              }
+            }
           }
         },
         {
-          "pc_scopes": null
+          "pc_scopes": {
+            "columns": {
+              "scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "title": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "summary": {
+                "type": [
+                  "varchar",
+                  [
+                    "2000"
+                  ]
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "scope_id_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "title_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "summary_search": {
+                "type": [
+                  "mediumtext",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": null,
+                "extra": []
+              },
+              "parent_scope_id": {
+                "type": [
+                  "varchar",
+                  [
+                    "256"
+                  ]
+                ],
+                "nullable": true,
+                "default": null,
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              },
+              "version": {
+                "type": [
+                  "int",
+                  []
+                ],
+                "nullable": false,
+                "default": null,
+                "charset": null,
+                "collation": null,
+                "extra": []
+              },
+              "lifecycle_state": {
+                "type": [
+                  "varchar",
+                  [
+                    "16"
+                  ]
+                ],
+                "nullable": false,
+                "default": "writable",
+                "charset": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "extra": []
+              }
+            },
+            "primary_key": [
+              [
+                "scope_id",
+                null,
+                "asc"
+              ]
+            ],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "parent_scope_id"
+                ],
+                "referred_schema": null,
+                "referred_table": "pc_scopes",
+                "referred_columns": [
+                  "scope_id"
+                ],
+                "ondelete": "restrict",
+                "onupdate": "restrict"
+              }
+            ],
+            "checks": {
+              "ck_pc_scopes_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              }
+            },
+            "indexes": {
+              "ix_pc_scopes_parent_scope_id": {
+                "columns": [
+                  [
+                    "parent_scope_id",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": false
+              }
+            }
+          }
         }
       ]
     }

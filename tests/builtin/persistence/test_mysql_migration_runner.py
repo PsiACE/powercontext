@@ -1528,3 +1528,48 @@ def test_full_server_upgrade_with_renamed_check(backend, interrupted):
     assert _apply(runner, policy="manual").changed
     assert runner.verify().state == "ready"
     assert not _apply(runner, policy="manual").changed
+
+
+def test_registered_state_equals_what_its_own_ddl_produces() -> None:
+    """A revision's declared state must be exactly what applying its statements produces.
+
+    This is the defect class a self-referential check misses: if both the expectation and the check come
+    from the same declared state, they agree even when the DDL says something else. Applying each
+    statement's real DDL to the previous state and comparing with the declared state catches that.
+    """
+
+    import copy
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.mysql_schema import MySQLSchema, _parse_table
+
+    for label, bundle in (("target", server_bundle()), ("1.4.0 overlay", server_bundle(source_release="1.4.0"))):
+        schema = MySQLSchema(bundle)
+        previous = "v1_5_0_008"
+        revision = bundle.head
+        inventory = copy.deepcopy(schema._schemas[previous])
+
+        for statement in schema._statements[revision]:
+            text = " ".join(statement.split())
+            if text.startswith("CREATE TABLE"):
+                name, table = _parse_table(text, database=None)
+                inventory["tables"][name] = copy.deepcopy(table)
+            elif text.startswith("CREATE INDEX"):
+                parts = text.split()
+                index, table = parts[2], parts[4]
+                # A table with an index of its own keeps that table: an index statement never removes it.
+                columns = [part.strip("(),") for part in parts[5:] if part.strip("(),")]
+                inventory["tables"][table]["indexes"][index] = {
+                    "columns": [[column, None, "asc"] for column in columns],
+                    "unique": False,
+                }
+            else:  # pragma: no cover - guards the test itself against an unrecognised form
+                assert not text, f"{label}: unhandled statement {text[:60]}"
+
+        # Every table the previous state had must still be present, plus exactly the created ones.
+        assert set(schema._schemas[previous]["tables"]) <= set(inventory["tables"]), label
+        assert inventory["tables"] == schema._schemas[revision]["tables"], label
+
+        # And the schema accepts the state its own DDL produced.
+        schema.verify(inventory, revision)
+        assert schema.identify(inventory) == revision, label
