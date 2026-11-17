@@ -776,6 +776,151 @@ def test_unreadable_legacy_consent_does_not_veto_a_valid_canonical_one(tmp_path:
     asyncio.run(scenario())
 
 
+async def _park_inside_contribution(park_run_id: str, parked, release):
+    """Park the parked run inside its first contribution read, before the reader runs.
+
+    Patches the authorizer class the test drives, exactly like the review gate, and
+    restores it afterwards. The underlying read is the real one.
+    """
+
+    from powercontext.builtin.authz.standing_use import StandingUseAuthorization
+
+    original = StandingUseAuthorization._contribution
+    armed = True
+
+    async def gate(self, service, rule, run, acceptance_id, *rest):
+        nonlocal armed
+        if armed and run.run_id == park_run_id:
+            armed = False
+            parked.set()
+            await release.wait()
+        return await original(self, service, rule, run, acceptance_id, *rest)
+
+    # The signature differs between the pre-fix and fixed readers; the test only
+    # observes scheduling, so the assignment is necessarily untyped here.
+    StandingUseAuthorization._contribution = gate  # ty: ignore[invalid-assignment]
+    return original
+
+
+def test_concurrent_admissions_on_one_authorizer_keep_their_own_memo(tmp_path: Path) -> None:
+    """Two in-flight admissions on the SAME authorizer must not share contributions.
+
+    A per-invocation memo belongs to its call. When the memo lived on the instance, a
+    second admission replaced it mid-flight and the first then read a contribution
+    computed for the other run, denying a lawfully admissible manifest.
+    """
+
+    async def scenario() -> None:
+        database = tmp_path / "concurrent.db"
+        async with composed(database) as (runtime, access, standing):
+            assert runtime.scopes is not None
+            root = (await runtime.scopes.create(ScopeDraft(title="Root", summary="W", idempotency_key="r"))).scope_id
+            children = [
+                (
+                    await runtime.scopes.create(
+                        ScopeDraft(title=f"C{i}", summary="W", parent_scope_id=root, idempotency_key=f"c{i}")
+                    )
+                ).scope_id
+                for i in range(2)
+            ]
+            orders = (
+                await runtime.scopes.create(ScopeDraft(title="Orders", summary="P", idempotency_key="o"))
+            ).scope_id
+            await _bind(access, ALICE, root, AccessRole.SCOPE_ADMIN, "alice-root")
+            for index, child in enumerate(children):
+                await _bind(access, ALICE, child, AccessRole.SCOPE_ADMIN, f"alice-child-{index}")
+                await _bind(access, RUNNER, child, AccessRole.SCOPE_VIEWER, f"runner-child-{index}")
+            await _bind(access, CAROL, orders, AccessRole.SCOPE_ADMIN, "carol")
+            await _bind(access, RUNNER, orders, AccessRole.SCOPE_CONTRIBUTOR, "runner")
+            sharing = _sharing(runtime, orders)
+            with run_as(CAROL):
+                rule = await sharing.create(
+                    ShareRuleDraft(
+                        selection=ScopeSelection(mode="subtree", root_scope_id=root),
+                        source_types=("content",),
+                        terms=ShareRuleTerms(
+                            use="project-conclusion",
+                            audience="project-members",
+                            audience_scope_ids=(orders,),
+                        ),
+                    )
+                )
+            await _accept(standing, runtime, rule, "origin", (root,), ALICE)
+            await _accept(standing, runtime, rule, "target", (orders,), CAROL)
+
+            # Small manifest first (one child), then a second pin reaching both.
+            await runtime.sources.for_scope(children[0]).capture(
+                CaptureSource(source_id="small", content="Small manifest fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                small = await sharing.resolve(rule.rule_id)
+            await runtime.sources.for_scope(children[1]).capture(
+                CaptureSource(source_id="large", content="Large manifest fact.", metadata={})
+            )
+            with run_as(RUNNER):
+                large = await sharing.resolve(rule.rule_id)
+            assert small.origin_scopes() == (children[0],)
+            assert sorted(large.origin_scopes()) == sorted(children)
+
+            service = _service(runtime)
+
+            async def admit(service_view, run_id):
+                with run_as(RUNNER):
+                    return await standing.require_run_use(
+                        service_view,
+                        scope_id=orders,
+                        rule_id=rule.rule_id,
+                        version=rule.version,
+                        run_id=run_id,
+                        use=rule.terms.use,
+                    )
+
+            # Serial control: both are lawfully admissible at this state.
+            small_grant = await admit(service, small.run_id)
+            large_grant = await admit(service, large.run_id)
+            assert small_grant.run_origin_scope_ids == (children[0],)
+            assert sorted(large_grant.run_origin_scope_ids) == sorted(children)
+
+            # Forced interleaving on the same authorizer: the large admission parks at
+            # its first contribution read, the small admission completes, then it resumes.
+            parked = asyncio.Event()
+            release = asyncio.Event()
+            original = await _park_inside_contribution(large.run_id, parked, release)
+            try:
+                big = asyncio.create_task(admit(service, large.run_id))
+                await asyncio.wait_for(parked.wait(), timeout=30)
+                concurrent_small = await admit(service, small.run_id)
+                release.set()
+                concurrent_large = await asyncio.wait_for(big, timeout=30)
+            finally:
+                from powercontext.builtin.authz.standing_use import StandingUseAuthorization
+
+                StandingUseAuthorization._contribution = original
+
+            assert concurrent_small.run_origin_scope_ids == (children[0],)
+            # The lawfully admissible large manifest stays admissible.
+            assert sorted(concurrent_large.run_origin_scope_ids) == sorted(children)
+            assert concurrent_large.terms_digest == large_grant.terms_digest
+
+            # Control: without the second child's authority the large manifest denies,
+            # while the small one is unaffected.
+            index = children.index(children[1])
+            bindings = await access.list_bindings(ADMIN, _binding_query(children[index]), context=AUDIT)
+            binding = next(item for item in bindings.items if item.subject == ALICE)
+            await access.revoke_binding(
+                ADMIN,
+                binding.binding_id,
+                expected_version=binding.version,
+                idempotency_key="revoke-second-child",
+                context=AUDIT,
+            )
+            assert (await admit(service, small.run_id)).run_origin_scope_ids == (children[0],)
+            with pytest.raises(AccessDeniedError):
+                await admit(service, large.run_id)
+
+    asyncio.run(scenario())
+
+
 def test_grant_reports_one_record_once_for_multiple_origins(tmp_path: Path) -> None:
     """A root record covering several origins is reported once, not once per origin."""
 
