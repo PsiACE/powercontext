@@ -101,11 +101,22 @@ def test_locators_survive_upgrade_reopen_http_and_mcp(tmp_path):
             "source_revision, content_digest, idempotency_key FROM pc_artifact_publications_008"
         )
         connection.execute("DROP TABLE pc_artifact_publications_008")
+        # v1_5_0_009 adds the Scope parent index and the F/D relations; undo those too so the file is
+        # really at the released 003 shape rather than only wearing the revision marker.
+        connection.execute("DROP INDEX IF EXISTS ix_pc_scopes_parent_scope_id")
+        for later in (
+            "pc_share_acceptances",
+            "pc_share_runs",
+            "pc_share_rule_versions",
+            "pc_share_rule_heads",
+            "pc_artifact_lineage_origins",
+        ):
+            connection.execute(f"DROP TABLE IF EXISTS {later}")
         connection.execute("UPDATE pc_schema_revision SET version_num = 'v1_5_0_003'")
 
     runner = deployment_runner(_settings(database))
     plan = runner.plan()
-    assert plan.revisions == ("v1_5_0_004", "v1_5_0_005", "v1_5_0_006", "v1_5_0_007", "v1_5_0_008")
+    assert plan.revisions == ("v1_5_0_004", "v1_5_0_005", "v1_5_0_006", "v1_5_0_007", "v1_5_0_008", "v1_5_0_009")
     runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
 
     locators = [

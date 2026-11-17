@@ -73,7 +73,7 @@ def dump(path):
 def test_complete_upgrade_preserves_history_backup_and_repeated_apply(source):
     before = dump(source.database)
     plan = source.plan()
-    assert plan.source_revision == "s1300" and plan.target_revision == "v1_5_0_008"
+    assert plan.source_revision == "s1300" and plan.target_revision == "v1_5_0_009"
     assert plan.revisions == (
         "s1400",
         "s1401",
@@ -89,6 +89,7 @@ def test_complete_upgrade_preserves_history_backup_and_repeated_apply(source):
         "v1_5_0_006",
         "v1_5_0_007",
         "v1_5_0_008",
+        "v1_5_0_009",
     )
     assert dump(source.database) == before
     result = apply(source)

@@ -662,7 +662,9 @@ def test_export_is_byte_deterministic_and_preserves_scope_relationships(tmp_path
                             "family": "experience",
                             "artifact_id": "published-experience",
                             "revision": 1,
-                            "content": b"published",
+                            # A publication copies the source body verbatim, which is also what ties the
+                            # stored digest to both sides of the copy.
+                            "content": b"source",
                         },
                     ],
                 )
@@ -676,7 +678,9 @@ def test_export_is_byte_deterministic_and_preserves_scope_relationships(tmp_path
                         source_family="experience",
                         source_artifact_id="source-experience",
                         source_revision=1,
-                        content_digest="d" * 64,
+                        # The digest must be the published copy's own bytes, which this fixture stores as
+                        # b"published"; a made-up value would let a real publication claim any content.
+                        content_digest=hashlib.sha256(b"source").hexdigest(),
                         idempotency_key="publish-experience",
                     )
                 )

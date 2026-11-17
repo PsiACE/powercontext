@@ -2456,10 +2456,14 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
             raise BundleFormatError("Artifact publication references missing revision")
         if not source_exists and not _publication_source_retained(payload):
             raise BundleFormatError("Artifact publication references missing revision")
-        if not source_exists and not _publication_digest_bound(identity, payload, document):
-            # The origin's own records are gone, so the strongest available check is that the retained
-            # digest really is the target revision's own content. Without that, an absent origin would
-            # let any internally consistent claim become a survivor's recorded provenance.
+        # Check the retained digest against archived bytes in BOTH cases. The writer digests the source
+        # revision's content, and a straight copy leaves the target revision's bytes equal to it, so:
+        #   - when the origin is archived, the digest must equal the archived source revision's bytes;
+        #   - the digest must always equal the retained copy's bytes.
+        # This is checkable archive integrity, not a claim to authenticate an external origin.
+        if source_exists and not _publication_digest_matches(identity, payload, document, "source"):
+            raise BundleFormatError("Artifact publication digest does not match its archived source")
+        if not _publication_digest_matches(identity, payload, document, "target"):
             raise BundleFormatError("Artifact publication digest does not match its retained copy")
     elif record.record_type == "memory_entry_version":
         if not contains(
@@ -2875,33 +2879,33 @@ def _validate_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
     return selected
 
 
-def _publication_digest_bound(
+def _publication_digest_matches(
     identity: Mapping[str, object],
     payload: Mapping[str, object],
     document: Callable[[str, Mapping[str, object]], object] | None,
+    side: Literal["source", "target"],
 ) -> bool:
-    """Say whether a retained digest really is the target revision's own content.
+    """Say whether the publication's digest equals the bytes archived for one side of the copy.
 
-    When the origin's records are gone, the archive still holds the copy the publication delivered, and
-    that copy's stored digest is the sha256 of its content bytes. So the two can be checked against each
-    other without the origin. This proves nothing about the outside world -- a self-consistent claim about
-    a vanished origin stays unprovable -- but it does stop one edited row from inventing an address,
-    because the digest must match content that is also archived.
+    The writer digests the source revision's content, and publication copies it unchanged, so the stored
+    digest must equal both the archived origin's bytes and the retained copy's bytes. Checking whichever
+    sides the archive actually holds makes a swapped body or an edited digest detectable from the file
+    alone -- this is archive integrity, not a claim to authenticate an external origin.
     """
 
     if document is None:
         return False
-    target = {
-        "scope_id": identity["target_scope_id"],
-        "family": identity["target_family"],
-        "artifact_id": identity["target_artifact_id"],
-        "revision": identity["target_revision"],
+    reference = {
+        "scope_id": payload["source_scope_id"] if side == "source" else identity["target_scope_id"],
+        "family": payload["source_family"] if side == "source" else identity["target_family"],
+        "artifact_id": payload["source_artifact_id"] if side == "source" else identity["target_artifact_id"],
+        "revision": payload["source_revision"] if side == "source" else identity["target_revision"],
     }
-    archived = document("artifact_revision", target)
+    archived = document("artifact_revision", reference)
     if not isinstance(archived, dict):
         return False
-    payload_body = archived.get("payload", archived)
-    body = payload_body.get("content") if isinstance(payload_body, dict) else None
+    archived_payload = archived.get("payload", archived)
+    body = archived_payload.get("content") if isinstance(archived_payload, dict) else None
     if not isinstance(body, dict):
         return False
     # Bytes are archived as base64; decoding them restores exactly the bytes the digest was taken over.

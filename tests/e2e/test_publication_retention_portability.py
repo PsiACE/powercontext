@@ -23,12 +23,16 @@ still refused.
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.portability.bundle import BundleFormatError
 from powercontext.builtin.publication import ArtifactPublicationRequest
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig
@@ -151,13 +155,12 @@ def test_retained_publication_requires_a_complete_address() -> None:
         assert _publication_source_retained(broken) is False, broken
 
 
-def _resign(bundle: Path, mutate: Callable[[dict[str, Any]], None]) -> Path:
-    """Rewrite one publication record and re-seal the archive so only its content is suspicious.
+def _resign(bundle: Path, mutate: Callable[[dict[str, Any], dict[str, Any]], None]) -> Path:
+    """Tamper one publication and its retained copy, then re-seal so only the claim is suspicious.
 
-    This is a deliberately tampered, correctly re-sealed archive: every container digest is recomputed,
-    so the bundle is structurally valid and only the retained provenance claim is wrong. That is exactly
-    the case a context-aware validator must catch, because a bundle checksum proves internal integrity,
-    never that an external origin really had this address.
+    Every container digest is recomputed, so the archive stays structurally valid and the only thing wrong
+    is what it claims about its own provenance or bytes. A bundle checksum proves internal integrity; it can
+    never prove that an external origin really had this address, so that is not what these cases test.
     """
 
     import hashlib
@@ -171,14 +174,30 @@ def _resign(bundle: Path, mutate: Callable[[dict[str, Any]], None]) -> Path:
         manifest = json.loads(archive.read("manifest.json"))
         records = [json.loads(line) for line in archive.read("records.ndjson").decode().splitlines() if line.strip()]
 
-    for record in records:
-        if record.get("record_type") == "artifact_publication":
-            mutate(record)
-            # A record digest covers exactly its identity, payload, type and schema version -- not
-            # itself -- so a tampered archive can be re-sealed into a structurally valid bundle.
-            sealed = {key: record[key] for key in ("record_type", "schema_version", "identity", "payload")}
-            record["digest"] = "sha256:" + hashlib.sha256(canonical(sealed)).hexdigest()
-            break
+    publication = next(record for record in records if record.get("record_type") == "artifact_publication")
+    target_key = (
+        publication["identity"]["target_scope_id"],
+        publication["identity"]["target_family"],
+        publication["identity"]["target_artifact_id"],
+        publication["identity"]["target_revision"],
+    )
+    retained = next(
+        record
+        for record in records
+        if record.get("record_type") == "artifact_revision"
+        and (
+            record["identity"]["scope_id"],
+            record["identity"]["family"],
+            record["identity"]["artifact_id"],
+            record["identity"]["revision"],
+        )
+        == target_key
+    )
+    mutate(publication, retained)
+    for record in (publication, retained):
+        # A record digest covers exactly its identity, payload, type and schema version -- not itself.
+        sealed = {key: record[key] for key in ("record_type", "schema_version", "identity", "payload")}
+        record["digest"] = "sha256:" + hashlib.sha256(canonical(sealed)).hexdigest()
 
     body = b"\n".join(canonical(record) for record in records) + b"\n"
     accumulator = hashlib.sha256()
@@ -231,41 +250,35 @@ def test_tampered_retained_addresses_are_refused(tmp_path: Path) -> None:
 
     asyncio.run(build())
 
-    def fabricated(record: dict[str, Any]) -> None:
+    def fabricated(record: dict[str, Any], _retained: dict[str, Any]) -> None:
         record["payload"]["source_scope_id"] = "scp_0000000000000000000000phantom"
         record["payload"]["source_revision"] = 7
 
-    def wrong_revision(record: dict[str, Any]) -> None:
+    def wrong_revision(record: dict[str, Any], _retained: dict[str, Any]) -> None:
         record["payload"]["source_revision"] = 5
 
-    def bad_digest(record: dict[str, Any]) -> None:
+    def live_wrong_digest(record: dict[str, Any], _retained: dict[str, Any]) -> None:
+        # A valid-looking digest that matches neither the origin's bytes nor the copy's.
+        record["payload"]["content_digest"] = "0" * 64
+
+    def swapped_body(_record: dict[str, Any], retained: dict[str, Any]) -> None:
+        # The row keeps a genuine digest, but the retained copy carries different bytes than it names.
+        body = retained["payload"]["content"]
+        raw = base64.b64decode(body["base64"])
+        retained["payload"]["content"] = {"base64": base64.b64encode(raw + b" swapped").decode("ascii")}
+
+    def bad_digest(record: dict[str, Any], _retained: dict[str, Any]) -> None:
         record["payload"]["content_digest"] = "not-a-digest"
 
-    # A publication whose origin Scope record is still archived must agree with it exactly.
-    for mutate in (wrong_revision,):
+    # A publication's digest must equal the bytes archived for the origin AND the retained copy, so each
+    # tampered archive below breaks one specific guarantee and must be refused by both public entry points.
+    for mutate in (wrong_revision, bad_digest, live_wrong_digest, swapped_body):
+        # Each mutator breaks one guarantee: a revision the archive lacks, a non-digest, a digest
+        # matching neither side, and a retained body that contradicts its digest.
         tampered = _resign(bundle, mutate)
         for entry in ("validate", "restore"):
-            try:
+            with pytest.raises(BundleFormatError):
                 asyncio.run(_attempt(tmp_path, tampered, entry))
-            except Exception:
-                continue
-            raise AssertionError(f"{mutate.__name__} slipped through {entry}")
-
-    # A junk digest is refused before any origin question arises, so an absent origin cannot launder it.
-    junk = _resign(bundle, bad_digest)
-    for entry in ("validate", "restore"):
-        try:
-            asyncio.run(_attempt(tmp_path, junk, entry))
-        except Exception:
-            continue
-        raise AssertionError(f"bad_digest slipped through {entry}")
-
-    # Honest limit: a publication's digest covers the delivered content, not its origin address, so a
-    # *fabricated* address that names no archived origin cannot be disproved from the archive alone. The
-    # bundle is internally consistent, so accepting it is not a regression this unit can detect, and the
-    # archive checksum authenticates the container, never an external claim. Recorded, not papered over.
-    laundered = _resign(bundle, fabricated)
-    asyncio.run(_attempt(tmp_path, laundered, "validate"))
 
 
 async def _attempt(root: Path, path: Path, step: str) -> None:
