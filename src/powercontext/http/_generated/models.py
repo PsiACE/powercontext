@@ -546,6 +546,7 @@ class DreamOperation(StrEnum):
     REFRESH_HANDOFF = "refresh_handoff"
     REVISE_PROMPT = "revise_prompt"
     REVISE_TAGS = "revise_tags"
+    INITIALIZE_PROFILE = "initialize_profile"
 
 
 class DreamStatus(StrEnum):

@@ -77,7 +77,18 @@ from powercontext.builtin.sharing import (
 from powercontext.builtin.sharing.service import ShareRuleService
 from powercontext.server.dream_access import DreamAccess
 from powercontext.server.standing_access import StandingAccess
+from powercontext.sources import SourceRef
 from tests.e2e.dream_support import open_dream_runtime, process_pending
+
+
+class NoGeneration:
+    """A refusal-path fixture: admission must fail before any generation is asked for."""
+
+    config_id = "no-generation"
+
+    async def generate(self, value):
+        raise AssertionError
+
 
 ADMIN = PrincipalRef(type="service", id="deployment-admin")
 ALICE = PrincipalRef(type="user", id="alice")
@@ -1663,11 +1674,6 @@ def test_foreign_dream_phases_fail_closed_after_revocation(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
-@pytest.mark.skip(
-    reason="known blocker: ReviewService._validate_evidence resolves Sources only in the run "
-    "Scope, so an admitted foreign Source is refused at Candidate persistence; the fix belongs in "
-    "Review's owning validation and is not part of this unit",
-)
 def test_foreign_sources_initialize_a_first_profile_under_its_pinned_run(tmp_path: Path) -> None:
     """A first Profile may be initialized from foreign Sources under a pinned run.
 
@@ -1756,7 +1762,120 @@ def test_foreign_sources_initialize_a_first_profile_under_its_pinned_run(tmp_pat
                     approved.result_artifact.artifact_id,
                     approved.result_artifact.revision,
                 ) == ("profile", "profile", 1)
-                committed = await runtime.profiles.get(orders)
+                async with runtime.profiles.database.transaction() as readback:
+                    committed = await runtime.profiles.artifacts.get(readback, orders, approved.result_artifact)
                 assert committed.content.generation.mode == "initialize_review_approved"
+                # The foreign origin is recorded as provenance, not as a local Source.
+                assert {
+                    (origin.scope_id, origin.source.source_id)
+                    for origin in committed.lineage.origins
+                    if origin.source is not None
+                } == {(alice, "move")}
+                assert committed.lineage.sources == ()
+
+    asyncio.run(scenario())
+
+
+def test_foreign_and_local_sources_with_the_same_key_do_not_masquerade(tmp_path: Path) -> None:
+    """A local Source row cannot stand in for the admitted foreign one, or the reverse.
+
+    The admitted origin is resolved by its own Scope and digest, so a matching local
+    ``SourceRef`` key neither supplies foreign provenance nor is read as foreign.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'collide.db'}")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=NoGeneration(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "collide-target-reader")
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+
+                # Same local Source identity in three Scopes, different bodies.
+                for scope in (alice, orders, bob):
+                    await runtime.sources.for_scope(scope).capture(
+                        CaptureSource(source_id="retry-trace", content=f"Body in {scope}.", metadata={})
+                    )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                # A local reference is never recorded as a foreign origin: the binding
+                # compares only references outside the run Scope, so adding one changes
+                # nothing about what the agreement admits.
+                from powercontext.builtin.dream.shared_use import (
+                    request_inputs,
+                    request_scoped_inputs,
+                )
+
+                local_only = (
+                    ScopedEvidence(
+                        scope_id=orders,
+                        source=SourceRef(source_type="content", source_id="retry-trace"),
+                    ),
+                )
+                assert request_scoped_inputs(local_only, scope_id=orders) == ()
+                assert "retry-trace" not in {
+                    (item.source_ref.source_id if item.source_ref else "")
+                    for item in pinned.inputs
+                    if item.origin_scope_id == orders
+                }
+                assert request_inputs(pinned, scope_id=orders)
+
+                # An unadmitted extra origin cannot ride along with the admitted one.
+                with run_as(RUNNER), pytest.raises(DreamError) as extra:
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=(
+                                ScopedEvidence(
+                                    scope_id=alice,
+                                    source=SourceRef(source_type="content", source_id="retry-trace"),
+                                ),
+                                ScopedEvidence(
+                                    scope_id=bob,
+                                    source=SourceRef(source_type="content", source_id="retry-trace"),
+                                ),
+                            ),
+                            share_run_id=pinned.run_id,
+                            idempotency_key="extra-origin",
+                        )
+                    )
+                assert extra.value.code == "shared_use_inputs"
+
+                # A wrong digest for the same reference is never accepted as provenance.
+                with run_as(RUNNER), pytest.raises(DreamError):
+                    await dream.create(
+                        CreateDreamRunRequest(
+                            operation="refine_experience",
+                            artifacts=(),
+                            scoped=(
+                                ScopedEvidence(
+                                    scope_id=alice,
+                                    source=SourceRef(source_type="content", source_id="other"),
+                                ),
+                            ),
+                            share_run_id=pinned.run_id,
+                            idempotency_key="wrong-reference",
+                        )
+                    )
 
     asyncio.run(scenario())

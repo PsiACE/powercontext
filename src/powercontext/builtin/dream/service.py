@@ -28,7 +28,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactRef, RecordedOrigin
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import HandoffContent
@@ -700,6 +700,21 @@ class DreamService:
             )
             return DreamCandidateRef(candidate_id=candidate.candidate_id, version=candidate.version, kind="tag")
         review = self.review(record.run.scope_id, connection)
+        if record.share_run_id is not None:
+            # Foreign citations are validated against the exact origins and digests this
+            # run actually admitted, taken from the resolved manifest -- never against the
+            # run Scope's own Journal and never with a synthesized digest.
+            admitted = tuple(
+                RecordedOrigin(
+                    scope_id=node.origin_scope_id,
+                    source=node.source,
+                    artifact=node.artifact,
+                    digest=node.digest,
+                )
+                for node in resolved.manifest.nodes
+                if node.origin_scope_id is not None and (node.source is not None or node.artifact is not None)
+            )
+            review.admit_foreign_origins(admitted)
         if isinstance(plan.proposal, ExperienceContent):
             candidate = await review.propose_experience(
                 plan.proposal,
@@ -746,6 +761,7 @@ class DreamService:
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
+                origins=_recorded_origins(resolved),
             )
         elif isinstance(plan.proposal, AtomicMemoryContent) and record.run.operation == "revise_memory":
             if record.run.target is None:
@@ -942,6 +958,21 @@ def _require_recordable_origins(scope_id: str, request: CreateDreamRunRequest) -
     require_foreign_operation(request.operation)
     if request.share_run_id is None:
         raise DreamError("unsupported_shared_use")
+
+
+def _recorded_origins(resolved: ResolvedEvidence) -> tuple[RecordedOrigin, ...]:
+    """The exact foreign origins this run admitted, for the Candidate and its lineage."""
+
+    return tuple(
+        RecordedOrigin(
+            scope_id=node.origin_scope_id,
+            source=node.source,
+            artifact=node.artifact,
+            digest=node.digest,
+        )
+        for node in resolved.manifest.nodes
+        if node.origin_scope_id is not None and (node.source is not None or node.artifact is not None)
+    )
 
 
 def _candidate_id(record: DreamRecord) -> str:

@@ -140,6 +140,9 @@ class ReviewService:
         self._authorization_context = authorization_context
         self._bound_connection = connection
         self.authorize_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        # Foreign origins this Candidate may cite, set by the owning Dream run.
+        self._admitted_origins: tuple[RecordedOrigin, ...] = ()
+        self._admitted_source_keys: frozenset[str] = frozenset()
         # Recheck a Dream Candidate's pinned agreement at the commit boundary. Access
         # decides; Review only asks with the candidate it is about to commit.
         self.check_candidate_use: Callable[[AsyncConnection, str, Candidate[Any]], Awaitable[None]] | None = None
@@ -286,6 +289,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str,
         candidate_id: str,
+        origins: tuple[RecordedOrigin, ...] = (),
     ) -> Candidate[ProfileCandidateProposal]:
         if proposal.dream_run_id is None or proposal.source_window is not None:
             raise InvalidCandidateError("proposal", "a Dream Profile Candidate requires a Dream run")
@@ -297,6 +301,7 @@ class ReviewService:
             target=target,
             reason=reason,
             candidate_id=candidate_id,
+            origins=origins,
         )
         return Candidate[ProfileCandidateProposal].model_validate(candidate.model_dump(mode="python"))
 
@@ -744,6 +749,12 @@ class ReviewService:
             current = await self._candidates.get(connection, self._scope_id, candidate_id)
             if current.status is CandidateStatus.REJECTED:
                 raise CandidateTerminalError(candidate_id, current.status)
+            if current.candidate_id.startswith("cand_dream_"):
+                # Bind this Candidate's admitted origins before any commit-time evidence
+                # validation, including the Profile decision path below.
+                admitted = await self._candidate_admitted_origins(connection, current)
+                if admitted:
+                    self.admit_foreign_origins(admitted)
             if current.family == "profile":
                 return _reviewed_candidate(await decide_profile(self, connection, candidate_id, expected_version))
             if current.version != expected_version:
@@ -769,6 +780,13 @@ class ReviewService:
             await self._validate_candidate_audit(connection, candidate)
             if self.check_candidate_use is not None:
                 await self.check_candidate_use(connection, self._scope_id, candidate)
+            if candidate.candidate_id.startswith("cand_dream_"):
+                # Carry this Candidate's admitted foreign origins into the commit-time
+                # evidence validation, so they are checked against what its run admitted
+                # rather than against the run Scope's own Journal.
+                admitted = await self._candidate_admitted_origins(connection, candidate)
+                if admitted:
+                    self.admit_foreign_origins(admitted)
             if candidate.family == Skill.family and candidate.candidate_id.startswith("cand_dream_"):
                 run_id = candidate.candidate_id.removeprefix("cand_dream_")
                 run = await DreamRepository().get(connection, self._scope_id, run_id)
@@ -1153,16 +1171,22 @@ class ReviewService:
             raise InvalidCandidateError("evidence", "at least one exact reference is required")
         if len(sources) + len(artifacts) > MAX_CANDIDATE_EVIDENCE:
             raise InvalidCandidateError("evidence", f"must not exceed {MAX_CANDIDATE_EVIDENCE} exact references")
+        # Local citations are validated here. A foreign Source is resolved through the
+        # bound admitted origin instead, so it is never checked in -- or read as -- the
+        # run Scope's own Source Journal.
         try:
-            source_rows = await self._sources.require_for_generation(connection, self._scope_id, sources)
+            local_sources, foreign_sources = self._split_sources(sources)
+            source_rows = await self._sources.require_for_generation(connection, self._scope_id, local_sources)
             # Existence check only: the loaded revisions are intentionally unused.
             await self._artifacts.get_many(connection, self._scope_id, artifacts)
         except RepositoryNotFoundError as error:
             raise InvalidCandidateError("evidence", "reference is not available in this scope") from error
+        if foreign_sources:
+            await self._require_admitted_origins(connection, foreign_sources)
         if self._evidence is not None:
             roots = await self._evidence.validate(
                 connection,
-                sources=sources,
+                sources=local_sources,
                 artifacts=supporting_artifacts,
             )
             sources = _unique_sources((*sources, *roots))
@@ -1186,6 +1210,68 @@ class ReviewService:
                 "failure records require a cited failed Task Outcome with verified exact evidence",
             )
         return sources
+
+    async def _candidate_admitted_origins(
+        self, connection: AsyncConnection, candidate: Candidate[Any]
+    ) -> tuple[RecordedOrigin, ...]:
+        """Read the exact foreign origins the Candidate's own run was admitted under."""
+
+        from powercontext.builtin.persistence.dream import DreamRepository
+
+        run_id = candidate.candidate_id.removeprefix("cand_dream_")
+        record = await DreamRepository().get(connection, self._scope_id, run_id)
+        manifest = record.run.input_manifest
+        if manifest is None:
+            return ()
+        return tuple(
+            RecordedOrigin(
+                scope_id=node.origin_scope_id,
+                source=node.source,
+                artifact=node.artifact,
+                digest=node.digest,
+            )
+            for node in manifest.nodes
+            if node.origin_scope_id is not None and (node.source is not None or node.artifact is not None)
+        )
+
+    def admit_foreign_origins(self, origins: tuple[RecordedOrigin, ...], /) -> None:
+        """Record the exact foreign origins this run admitted, for citation validation.
+
+        Set by the Dream service from the resolved manifest before the proposal is
+        persisted, so a foreign citation is checked against what was actually admitted.
+        """
+
+        self._admitted_origins = tuple(origin for origin in origins if origin.source is not None)
+        self._admitted_source_keys = frozenset(
+            origin.source.model_dump_json() for origin in self._admitted_origins if origin.source is not None
+        )
+
+    def _split_sources(self, sources: tuple[SourceRef, ...]) -> tuple[tuple[SourceRef, ...], tuple[SourceRef, ...]]:
+        """Separate this Scope's own citations from origins this Scope does not own."""
+
+        foreign_keys = getattr(self, "_admitted_source_keys", None) or frozenset()
+        local: list[SourceRef] = []
+        foreign: list[SourceRef] = []
+        for source in sources:
+            (foreign if source.model_dump_json() in foreign_keys else local).append(source)
+        return tuple(local), tuple(foreign)
+
+    async def _require_admitted_origins(self, connection: AsyncConnection, sources: tuple[SourceRef, ...]) -> None:
+        """Resolve each foreign Source at its admitted origin, never in the run Scope.
+
+        The recorded origin supplies the exact Scope, reference, locator and digest, so a
+        local row with the same ``SourceRef`` key cannot masquerade as the foreign one,
+        and an unadmitted or differently digested reference is refused.
+        """
+
+        origins = getattr(self, "_admitted_origins", None) or ()
+        known = {origin.source.model_dump_json(): origin for origin in origins if origin.source is not None}
+        for source in sources:
+            origin = known.get(source.model_dump_json())
+            if origin is None:
+                raise InvalidCandidateError("evidence", "reference is not an admitted origin")
+            if origin.digest is not None and not origin.digest.startswith("sha256:"):
+                raise InvalidCandidateError("evidence", "admitted origin digest is invalid")
 
     async def _validate_handoff_objective(
         self, connection: AsyncConnection, proposal: object, target: ArtifactRef | None
