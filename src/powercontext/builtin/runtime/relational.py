@@ -845,6 +845,9 @@ class RelationalContexts:
             attest_candidate=attest_candidate,
             authorize_candidate=authorize_candidate,
             catalog_changes=self.catalog_changes,
+            # D's conclusion writer lives on the opened Runtime, not on this scope
+            # factory, so the provider supplies it when the service is constructed.
+            sharing=None,
             operations=operations,
             processing=processing,
         )

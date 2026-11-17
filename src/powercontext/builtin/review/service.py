@@ -737,6 +737,11 @@ class ReviewService:
             if current.version != expected_version:
                 raise CandidateConflictError(candidate_id, expected_version, current.version)
             return _reviewed_candidate(current)
+        if self.check_candidate_use is not None:
+            # The agreed-use recheck opens its own transaction, so it runs before the commit
+            # transaction rather than nested inside it.
+            async with self._connection() as check_connection:
+                await self.check_candidate_use(check_connection, self._scope_id, current)
         if current.family == AtomicMemory.family:
             return await self._approve_memory_dream(candidate_id, expected_version)
         if current.family == TopicMemory.family:
@@ -778,8 +783,6 @@ class ReviewService:
                 raise CandidateConflictError(candidate_id, expected_version, candidate.version)
             await self._authorize_decision("approve", candidate)
             await self._validate_candidate_audit(connection, candidate)
-            if self.check_candidate_use is not None:
-                await self.check_candidate_use(connection, self._scope_id, candidate)
             if candidate.candidate_id.startswith("cand_dream_"):
                 # Carry this Candidate's admitted foreign origins into the commit-time
                 # evidence validation, so they are checked against what its run admitted

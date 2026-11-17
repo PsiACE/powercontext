@@ -65,6 +65,7 @@ from powercontext.builtin.dream.models import (
     ListDreamRunsRequest,
 )
 from powercontext.builtin.dream.provenance import candidate_audit, proposal_fingerprint
+from powercontext.builtin.dream.share_conclusion import conclusion_for, record_conclusion
 from powercontext.builtin.dream.shared_use import (
     binding_for,
     require_foreign_operation,
@@ -107,6 +108,7 @@ from powercontext.builtin.review.models import Candidate, CandidateStatus
 from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime.processing_contracts import processing_error_code
 from powercontext.builtin.runtime.processing_execution import InvocationAlreadyHandled, ScopeInvocation
+from powercontext.builtin.sharing.service import ShareRuleService
 from powercontext.builtin.tags import TagPreconditionError
 
 DreamPermission = Literal["read", "contribute", "write", "write_tags"]
@@ -140,6 +142,7 @@ class DreamService:
         authorize_candidate: CandidateAttester | None = None,
         authorize_use: ScopedUseAuthorizer | None = None,
         check_run_use: RunUseCheck | None = None,
+        sharing: Callable[[], ShareRuleService | None] | None = None,
         bind_executor: Callable[[str], object] | None = None,
         clear_executor: Callable[[object], None] | None = None,
         operations: tuple[DreamOperation, ...] = (),
@@ -163,6 +166,8 @@ class DreamService:
         self.authorize_use = authorize_use
         # Absent, a foreign run cannot be admitted at all: no hook means no agreement.
         self.check_run_use = check_run_use
+        # D's conclusion writer. F only decides when to call it; D owns the state.
+        self.sharing = sharing
         # Bind/clear the recorded executor around background work. Only a Server adapter
         # that owns the request principal may supply these.
         self.bind_executor = bind_executor
@@ -603,6 +608,46 @@ class DreamService:
             )
             await self.repository.finish(connection, record, completed)
             await self._complete_invocation(connection)
+        await self._record_share_conclusion(completed)
+
+    async def _record_share_conclusion(self, run: DreamRun) -> None:
+        """Link this finished run to the pinned evaluation it was admitted under.
+
+        Only outcomes D already defines are recorded: a proposal stays pending until
+        approval establishes the official revision, and a failure is not concluded.
+        Runs without a binding (local, legacy) are untouched.
+        """
+
+        if not run.scope_id or self.sharing is None:
+            return
+        async with self.database.connection() as connection:
+            record = await self.repository.get(connection, run.scope_id, run.run_id)
+        bound = record.share_run_id
+        if bound is None:
+            return
+        service = self.sharing()
+        if service is None:
+            return
+        token = None
+        if self.bind_executor is not None:
+            # Background work has no session; the recorded executor is the identity D's
+            # target check must see.
+            token = self.bind_executor(record.principal_id)
+        try:
+            # Audit is deferred so the decision's own writes never contend with an open
+            # business transaction.
+            async with self.authorization_context():
+                await record_conclusion(
+                    service,
+                    scope_id=run.scope_id,
+                    share_run_id=bound,
+                    dream_run_id=run.run_id,
+                    candidate_id=None if run.candidate is None else run.candidate.candidate_id,
+                    outcome=conclusion_for(run.outcome),
+                )
+        finally:
+            if token is not None and self.clear_executor is not None:
+                self.clear_executor(token)
 
     async def _require_shared_use(
         self,
