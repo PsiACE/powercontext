@@ -69,6 +69,7 @@ from powercontext.builtin.sharing.models import (
     ShareRuleStatus,
     ShareRuleVersionConflictError,
     ShareRun,
+    ShareRunAlreadyBoundError,
     ShareRunCoverage,
     ShareRunNotFoundError,
     ShareRunOriginCoverage,
@@ -425,6 +426,63 @@ class ShareRuleService:
                 ),
             )
 
+    async def claim(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        run_id: str,
+        /,
+        *,
+        dream_run_id: str,
+        candidate_id: str | None = None,
+    ) -> ShareRun:
+        """Bind this pinned run to one Dream execution inside the caller's transaction.
+
+        This is the admission-time claim: it joins the caller's transaction and performs
+        no nested transaction and no audit write, so a Dream admission that rolls back
+        rolls the claim back with it. Identity, not authority — the caller is trusted
+        Runtime composition and stays responsible for authorizing the acting principal.
+        """
+
+        return await self._claim(connection, scope_id, run_id, dream_run_id, candidate_id)
+
+    async def claim_run(
+        self, scope_id: str, run_id: str, /, *, dream_run_id: str, candidate_id: str | None = None
+    ) -> ShareRun:
+        """Bind this pinned run to one Dream execution in its own transaction.
+
+        Same contract as `claim`, for an embedded caller that does not already own a
+        transaction. It is not a public transport entry point.
+        """
+
+        async with self._database.transaction() as connection:
+            return await self._claim(connection, scope_id, run_id, dream_run_id, candidate_id)
+
+    async def _claim(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        run_id: str,
+        dream_run_id: str,
+        candidate_id: str | None,
+    ) -> ShareRun:
+        if not dream_run_id or dream_run_id != dream_run_id.strip():
+            raise ShareRunStateError(run_id, "unidentified")
+        run = await self._require_run(connection, scope_id, run_id)
+        # Head first, then the run: the same lock order every writer here uses.
+        head = await self._require_rule(connection, scope_id, run.rule_id, for_update=True)
+        run = await self._require_run(connection, scope_id, run_id)
+        if run.state == "invalidated" or head.status == "invalidated":
+            raise ShareRuleInvalidatedError(run.rule_id)
+        if run.outcome != "pending":
+            # A concluded evaluation's identity is part of its recorded conclusion.
+            if run.dream_run_id == dream_run_id:
+                return run
+            raise ShareRunAlreadyBoundError(run_id)
+        return await self.runs.claim_binding(
+            connection, scope_id, run_id, dream_run_id=dream_run_id, candidate_id=candidate_id
+        )
+
     async def get_run(self, scope_id: str, run_id: str, /) -> ShareRun:
         async with self._database.transaction() as connection:
             return await self._require_run(connection, scope_id, run_id)
@@ -452,6 +510,11 @@ class ShareRuleService:
         reassessment is a new run. A committed conclusion keeps its address and links
         when an optional argument is omitted, so history is never rewritten and never
         loses the revision it established.
+
+        The Dream execution binding is equally exclusive: naming a different
+        `dream_run_id` or `candidate_id` than the one already recorded raises
+        `ShareRunAlreadyBoundError` instead of overwriting it, so a losing execution
+        cannot adopt this run by finishing it. Admission should claim with `claim`.
         """
 
         await self._require_target(scope_id)
@@ -477,11 +540,12 @@ class ShareRuleService:
                 # replay of an already committed run may omit it.
                 if run.outcome != "committed" or run.committed is None:
                     raise ShareRunStateError(run_id, run.state)
+            bound_dream_run_id, bound_candidate_id = _bound_identity(run, dream_run_id, candidate_id)
             updated = run.model_copy(
                 update={
                     "outcome": resolved,
-                    "dream_run_id": dream_run_id if dream_run_id is not None else run.dream_run_id,
-                    "candidate_id": candidate_id if candidate_id is not None else run.candidate_id,
+                    "dream_run_id": bound_dream_run_id,
+                    "candidate_id": bound_candidate_id,
                     "committed": run.committed if address is None else address,
                 }
             )
@@ -952,6 +1016,24 @@ class ShareRuleService:
 
     def _now(self) -> datetime:
         return self._clock()
+
+
+def _bound_identity(run: ShareRun, dream_run_id: str | None, candidate_id: str | None) -> tuple[str | None, str | None]:
+    """Resolve the execution identity a finish may record, refusing any rebind.
+
+    The binding is exclusive and one-way: a different Dream run or candidate can never
+    take over this pinned run, even while it is pending. An omitted argument keeps the
+    recorded value.
+    """
+
+    if dream_run_id is not None and run.dream_run_id is not None and run.dream_run_id != dream_run_id:
+        raise ShareRunAlreadyBoundError(run.run_id)
+    if candidate_id is not None and run.candidate_id is not None and run.candidate_id != candidate_id:
+        raise ShareRunAlreadyBoundError(run.run_id)
+    return (
+        dream_run_id if dream_run_id is not None else run.dream_run_id,
+        candidate_id if candidate_id is not None else run.candidate_id,
+    )
 
 
 def _same_conclusion(recorded: ShareRun, proposed: ShareRun) -> bool:

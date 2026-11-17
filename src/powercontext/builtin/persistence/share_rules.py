@@ -45,6 +45,7 @@ from powercontext.builtin.sharing.models import (
     ShareRuleStatus,
     ShareRuleVersionConflictError,
     ShareRun,
+    ShareRunAlreadyBoundError,
     ShareRunNotFoundError,
     ShareRunStateError,
 )
@@ -238,6 +239,64 @@ class ShareRunRepository:
         )
         return None if stored is None else _run(stored)
 
+    async def claim_binding(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        run_id: str,
+        /,
+        *,
+        dream_run_id: str,
+        candidate_id: str | None = None,
+    ) -> ShareRun:
+        """Bind one pinned run to one execution, first writer wins.
+
+        The guard is a compare-and-swap on the stored payload bytes, so exclusivity does
+        not rely on an in-memory lock or a read-then-write sequence: the first writer
+        changes the payload, and a competing writer's predicate then matches no row. A
+        repeat of the same binding is idempotent; a different one raises. It joins the
+        caller's transaction and writes only the payload, so an admitted claim commits or
+        rolls back with the caller's own admission and never orphans separately.
+        """
+
+        expected = await connection.scalar(
+            select(SHARE_RUNS_TABLE.c.payload).where(
+                SHARE_RUNS_TABLE.c.scope_id == scope_id,
+                SHARE_RUNS_TABLE.c.run_id == run_id,
+            )
+        )
+        if expected is None:
+            raise ShareRunNotFoundError(scope_id, run_id)
+        current = _run(expected)
+        if current.dream_run_id is not None:
+            if _same_binding(current, dream_run_id, candidate_id):
+                return current
+            raise ShareRunAlreadyBoundError(run_id)
+        proposed = current.model_copy(
+            update={
+                "dream_run_id": dream_run_id,
+                "candidate_id": candidate_id if candidate_id is not None else current.candidate_id,
+            }
+        )
+        bound = await connection.execute(
+            update(SHARE_RUNS_TABLE)
+            .where(
+                SHARE_RUNS_TABLE.c.scope_id == scope_id,
+                SHARE_RUNS_TABLE.c.run_id == run_id,
+                SHARE_RUNS_TABLE.c.payload == stored_bytes(expected, column="share_run"),
+            )
+            .values(payload=_run_payload(proposed), manifest_digest=proposed.digest())
+        )
+        stored = await self.get(connection, scope_id, run_id)
+        if stored is None:
+            raise ShareRunNotFoundError(scope_id, run_id)
+        if bound.rowcount != 1:
+            # A competing writer changed the payload between our read and this update.
+            if _same_binding(stored, dream_run_id, candidate_id):
+                return stored
+            raise ShareRunAlreadyBoundError(run_id)
+        return stored
+
     async def list(
         self,
         connection: AsyncConnection,
@@ -332,6 +391,12 @@ def _rule_payload(rule: ShareRule) -> bytes:
 
 def _run(stored: object, /) -> ShareRun:
     return load_model(ShareRun, stored_bytes(stored, column="share_run"), kind="share", name="run")
+
+
+def _same_binding(run: ShareRun, dream_run_id: str, candidate_id: str | None) -> bool:
+    """Report whether a run is already bound to exactly this execution."""
+
+    return run.dream_run_id == dream_run_id and (candidate_id is None or run.candidate_id == candidate_id)
 
 
 def _run_payload(run: ShareRun) -> bytes:
