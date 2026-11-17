@@ -247,8 +247,84 @@
               }
             ],
             "checks": {
-              "ck_pc_artifact_lineage_origins_revision": "ck_pc_artifact_lineage_origins_revision",
-              "ck_pc_artifact_lineage_origins_kind": "ck_pc_artifact_lineage_origins_kind"
+              "ck_pc_artifact_lineage_origins_kind": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "origin_kind"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "source"
+                    ],
+                    [
+                      "literal",
+                      "artifact"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_artifact_lineage_origins_revision": {
+                "expression": [
+                  "binary",
+                  "or",
+                  [
+                    "binary",
+                    "and",
+                    [
+                      "binary",
+                      "=",
+                      [
+                        "column",
+                        "origin_kind"
+                      ],
+                      [
+                        "literal",
+                        "source"
+                      ]
+                    ],
+                    [
+                      "is_null",
+                      [
+                        "column",
+                        "origin_revision"
+                      ]
+                    ]
+                  ],
+                  [
+                    "binary",
+                    "and",
+                    [
+                      "binary",
+                      "=",
+                      [
+                        "column",
+                        "origin_kind"
+                      ],
+                      [
+                        "literal",
+                        "artifact"
+                      ]
+                    ],
+                    [
+                      "binary",
+                      ">",
+                      [
+                        "column",
+                        "origin_revision"
+                      ],
+                      [
+                        "number",
+                        0
+                      ]
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
             },
             "indexes": {}
           }
@@ -345,8 +421,41 @@
               }
             ],
             "checks": {
-              "ck_pc_share_rule_heads_status": "ck_pc_share_rule_heads_status",
-              "ck_pc_share_rule_heads_version_positive": "ck_pc_share_rule_heads_version_positive"
+              "ck_pc_share_rule_heads_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "current_version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_share_rule_heads_status": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "status"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "active"
+                    ],
+                    [
+                      "literal",
+                      "invalidated"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
             },
             "indexes": {}
           }
@@ -458,7 +567,21 @@
               }
             ],
             "checks": {
-              "ck_pc_share_rule_versions_version_positive": "ck_pc_share_rule_versions_version_positive"
+              "ck_pc_share_rule_versions_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              }
             },
             "indexes": {}
           }
@@ -618,9 +741,73 @@
               }
             ],
             "checks": {
-              "ck_pc_share_runs_outcome": "ck_pc_share_runs_outcome",
-              "ck_pc_share_runs_rule_version_positive": "ck_pc_share_runs_rule_version_positive",
-              "ck_pc_share_runs_state": "ck_pc_share_runs_state"
+              "ck_pc_share_runs_rule_version_positive": {
+                "expression": [
+                  "binary",
+                  ">",
+                  [
+                    "column",
+                    "rule_version"
+                  ],
+                  [
+                    "number",
+                    0
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_share_runs_state": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "state"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "pinned"
+                    ],
+                    [
+                      "literal",
+                      "invalidated"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              },
+              "ck_pc_share_runs_outcome": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "outcome"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "pending"
+                    ],
+                    [
+                      "literal",
+                      "no_change"
+                    ],
+                    [
+                      "literal",
+                      "needs_evidence"
+                    ],
+                    [
+                      "literal",
+                      "rejected"
+                    ],
+                    [
+                      "literal",
+                      "committed"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
             },
             "indexes": {}
           }
@@ -806,7 +993,26 @@
               }
             ],
             "checks": {
-              "ck_pc_share_acceptances_side": "ck_pc_share_acceptances_side"
+              "ck_pc_share_acceptances_side": {
+                "expression": [
+                  "in",
+                  [
+                    "column",
+                    "side"
+                  ],
+                  [
+                    [
+                      "literal",
+                      "origin"
+                    ],
+                    [
+                      "literal",
+                      "target"
+                    ]
+                  ]
+                ],
+                "enforced": true
+              }
             },
             "indexes": {}
           }

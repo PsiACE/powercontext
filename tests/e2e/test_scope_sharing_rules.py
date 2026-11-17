@@ -26,6 +26,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from sqlalchemy import inspect
 
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.persistence.sources import SourceRepository
@@ -49,7 +50,7 @@ from powercontext.builtin.sharing import (
     ShareRuleAcceptanceError,
     ShareRuleDraft,
     ShareRuleInvalidatedError,
-    ShareRuleServiceUnavailable,
+    ShareRuleNotFoundError,
     ShareRuleTerms,
     ShareRun,
     ShareRunLimits,
@@ -729,43 +730,33 @@ def test_a_run_cannot_be_completed_after_its_rule_is_invalidated(tmp_path: Path)
 
 
 def test_managed_database_does_not_advertise_standing_rules_it_cannot_serve(tmp_path: Path) -> None:
-    """A managed chain without the share tables must not expose a failing service.
+    """Storage without the standing-rule relations must not be treated as serving them.
 
-    An unmanaged profile creates these tables at bootstrap. A managed database takes
-    its schema from the frozen chain, so until that chain carries them the Runtime
-    must report sharing as unavailable instead of raising a raw driver error on the
-    first call.
+    The registered chain carries these relations from `v1_5_0_009`, so a managed database built from it
+    advertises the capability. This covers the opposite storage state: when the relations are genuinely
+    absent, nothing may claim the capability is served. The check is on storage, so it never has to look
+    at a Scope.
     """
 
-    from powercontext.builtin.persistence.migrations.deployment import server_bundle
-    from powercontext.builtin.persistence.migrations.sqlite import SQLiteMigrationRunner
-    from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
+    import asyncio
 
-    database = tmp_path / "managed.db"
-    runner = SQLiteMigrationRunner(
-        database,
-        server_bundle(),
-        configuration={
-            "processing_manifest": canonical_processing_manifest(BuiltinConfig()),
-            "embedding_enabled": False,
-        },
-    )
-    plan = runner.plan()
-    runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
+    from sqlalchemy import create_engine
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from powercontext.builtin.persistence.database import AsyncDatabase
+    from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE, SCOPES_TABLE, SHARE_TABLES
+
+    path = tmp_path / "storage.db"
+    engine = create_engine(f"sqlite:///{path}")
+    ARTIFACTS_TABLE.metadata.create_all(engine, tables=[ARTIFACTS_TABLE, SCOPES_TABLE])
+    engine.dispose()
 
     async def scenario() -> None:
-        async with open_builtin_runtime(
-            BuiltinConfig(
-                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
-                runtime=RuntimeConfig(),
-            )
-        ) as runtime:
-            assert runtime.share_rules is None
-            with pytest.raises(ShareRuleServiceUnavailable):
-                # The capability is absent, so no Scope existence is probed either.
-                await runtime.sharing.for_scope("scope").resolve("rule")
-
-    import asyncio
+        database = AsyncDatabase(create_async_engine(f"sqlite+aiosqlite:///{path}"), owns_engine=True)
+        async with database.transaction() as connection:
+            names = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
+        # The exact condition the Runtime gate decides on: absent relations mean absent capability.
+        assert not {table.name for table in SHARE_TABLES} <= names
 
     asyncio.run(scenario())
 
@@ -1505,3 +1496,50 @@ def test_both_readers_fail_closed_when_the_recorded_audience_consent_is_absent(
             assert per_run.origins_covered
 
     asyncio.run(second())
+
+
+def test_current_managed_revision_serves_standing_rules(tmp_path: Path) -> None:
+    """The current managed revision is a real target for the capability it advertises.
+
+    Positive counterpart to the absence check: the same gate advertises the service, and that service
+    answers a real read against its own storage.
+    """
+
+    import asyncio
+    import sqlite3
+
+    from powercontext.builtin.persistence.migrations.deployment import server_bundle
+    from powercontext.builtin.persistence.migrations.sqlite import SQLiteMigrationRunner
+    from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
+
+    database = tmp_path / "current.db"
+    runner = SQLiteMigrationRunner(
+        database,
+        server_bundle(),
+        configuration={
+            "processing_manifest": canonical_processing_manifest(BuiltinConfig()),
+            "embedding_enabled": False,
+        },
+    )
+    plan = runner.plan()
+    runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
+
+    with sqlite3.connect(database) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"pc_share_rule_heads", "pc_share_rule_versions", "pc_share_runs", "pc_share_acceptances"} <= tables
+    assert "pc_artifact_lineage_origins" in tables
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"), runtime=RuntimeConfig())
+        ) as runtime:
+            assert runtime.share_rules is not None
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Orders", summary="Project", idempotency_key="current")
+            )
+            # The service reads real storage: an unknown rule is a typed not-found, not a driver error.
+            with pytest.raises(ShareRuleNotFoundError):
+                await runtime.sharing.for_scope(scope.scope_id).resolve("rule_absent")
+
+    asyncio.run(scenario())

@@ -185,17 +185,24 @@
                 "onupdate": "restrict"
               }
             ],
-            "checks": [],
-            "indexes": [
-              {
-                "name": "uq_pc_artifact_publications_request",
-                "unique": true,
+            "checks": {},
+            "indexes": {
+              "uq_pc_artifact_publications_request": {
                 "columns": [
-                  "target_scope_id",
-                  "idempotency_key"
-                ]
+                  [
+                    "target_scope_id",
+                    null,
+                    "asc"
+                  ],
+                  [
+                    "idempotency_key",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": true
               }
-            ]
+            }
           }
         },
         {},
@@ -379,17 +386,24 @@
                 "onupdate": "restrict"
               }
             ],
-            "checks": [],
-            "indexes": [
-              {
-                "name": "uq_pc_artifact_publications_request",
-                "unique": true,
+            "checks": {},
+            "indexes": {
+              "uq_pc_artifact_publications_request": {
                 "columns": [
-                  "target_scope_id",
-                  "idempotency_key"
-                ]
+                  [
+                    "target_scope_id",
+                    null,
+                    "asc"
+                  ],
+                  [
+                    "idempotency_key",
+                    null,
+                    "asc"
+                  ]
+                ],
+                "unique": true
               }
-            ]
+            }
           }
         }
       ]

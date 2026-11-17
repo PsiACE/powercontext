@@ -170,6 +170,8 @@ def test_evidence_upgrade_accepts_upstream_history_and_preserves_data(tmp_path, 
         "v1_5_0_005",
         "v1_5_0_006",
         "v1_5_0_007",
+        "v1_5_0_008",
+        "v1_5_0_009",
     )
     assert plan.domain_steps == (
         "artifact_storage",
@@ -201,6 +203,8 @@ def test_evidence_upgrade_accepts_upstream_history_and_preserves_data(tmp_path, 
         "v1_5_0_005",
         "v1_5_0_006",
         "v1_5_0_007",
+        "v1_5_0_008",
+        "v1_5_0_009",
     }
     ready = reopened.plan()
     assert ready.state == "ready"
@@ -260,6 +264,8 @@ def test_evidence_projection_upgrade_preserves_registered_evidence_revision(tmp_
         "v1_5_0_005",
         "v1_5_0_006",
         "v1_5_0_007",
+        "v1_5_0_008",
+        "v1_5_0_009",
     )
     assert plan.domain_steps == ("atomic_memory_evidence_projection", "plugin_artifacts")
     assert old.evidence_path.read_bytes() == before

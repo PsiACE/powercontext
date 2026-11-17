@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -155,8 +156,13 @@ def test_retained_publication_requires_a_complete_address() -> None:
         assert _publication_source_retained(broken) is False, broken
 
 
-def _resign(bundle: Path, mutate: Callable[[dict[str, Any], dict[str, Any]], None]) -> Path:
-    """Tamper one publication and its retained copy, then re-seal so only the claim is suspicious.
+def _resign(
+    bundle: Path,
+    mutate: Callable[[dict[str, Any], dict[str, Any]], None],
+    *,
+    side: str = "target",
+) -> Path:
+    """Tamper one publication and one archived revision, then re-seal so only the claim is suspicious.
 
     Every container digest is recomputed, so the archive stays structurally valid and the only thing wrong
     is what it claims about its own provenance or bytes. A bundle checksum proves internal integrity; it can
@@ -175,11 +181,14 @@ def _resign(bundle: Path, mutate: Callable[[dict[str, Any], dict[str, Any]], Non
         records = [json.loads(line) for line in archive.read("records.ndjson").decode().splitlines() if line.strip()]
 
     publication = next(record for record in records if record.get("record_type") == "artifact_publication")
-    target_key = (
-        publication["identity"]["target_scope_id"],
-        publication["identity"]["target_family"],
-        publication["identity"]["target_artifact_id"],
-        publication["identity"]["target_revision"],
+    # The publication row names the source on its own keys; the target is named by its identity.
+    key = (
+        publication["identity"]["target_scope_id"] if side == "target" else publication["payload"]["source_scope_id"],
+        publication["identity"]["target_family"] if side == "target" else publication["payload"]["source_family"],
+        publication["identity"]["target_artifact_id"]
+        if side == "target"
+        else publication["payload"]["source_artifact_id"],
+        publication["identity"]["target_revision"] if side == "target" else publication["payload"]["source_revision"],
     )
     retained = next(
         record
@@ -191,7 +200,7 @@ def _resign(bundle: Path, mutate: Callable[[dict[str, Any], dict[str, Any]], Non
             record["identity"]["artifact_id"],
             record["identity"]["revision"],
         )
-        == target_key
+        == key
     )
     mutate(publication, retained)
     for record in (publication, retained):
@@ -250,35 +259,94 @@ def test_tampered_retained_addresses_are_refused(tmp_path: Path) -> None:
 
     asyncio.run(build())
 
-    def fabricated(record: dict[str, Any], _retained: dict[str, Any]) -> None:
-        record["payload"]["source_scope_id"] = "scp_0000000000000000000000phantom"
-        record["payload"]["source_revision"] = 7
+    def _edit_lesson(record: dict[str, Any], lesson: str) -> None:
+        """Change one field to another family-valid value, so only the digest can object."""
+
+        body = record["payload"]["content"]
+        decoded = json.loads(base64.b64decode(body["base64"]))
+        decoded["lesson"] = lesson
+        record["payload"]["content"] = {"base64": base64.b64encode(json.dumps(decoded).encode("utf-8")).decode("ascii")}
 
     def wrong_revision(record: dict[str, Any], _retained: dict[str, Any]) -> None:
         record["payload"]["source_revision"] = 5
 
-    def live_wrong_digest(record: dict[str, Any], _retained: dict[str, Any]) -> None:
-        # A valid-looking digest that matches neither the origin's bytes nor the copy's.
-        record["payload"]["content_digest"] = "0" * 64
-
-    def swapped_body(_record: dict[str, Any], retained: dict[str, Any]) -> None:
-        # The row keeps a genuine digest, but the retained copy carries different bytes than it names.
-        body = retained["payload"]["content"]
-        raw = base64.b64decode(body["base64"])
-        retained["payload"]["content"] = {"base64": base64.b64encode(raw + b" swapped").decode("ascii")}
-
     def bad_digest(record: dict[str, Any], _retained: dict[str, Any]) -> None:
         record["payload"]["content_digest"] = "not-a-digest"
 
-    # A publication's digest must equal the bytes archived for the origin AND the retained copy, so each
-    # tampered archive below breaks one specific guarantee and must be refused by both public entry points.
-    for mutate in (wrong_revision, bad_digest, live_wrong_digest, swapped_body):
-        # Each mutator breaks one guarantee: a revision the archive lacks, a non-digest, a digest
-        # matching neither side, and a retained body that contradicts its digest.
+    def live_wrong_digest(record: dict[str, Any], _retained: dict[str, Any]) -> None:
+        # A well-formed digest that matches neither the origin's bytes nor the copy's.
+        record["payload"]["content_digest"] = "0" * 64
+
+    def target_body_edited(_record: dict[str, Any], retained: dict[str, Any]) -> None:
+        # Only the retained copy changes, family-valid, so only the target-side check can notice.
+        _edit_lesson(retained, "A different but perfectly valid lesson.")
+
+    # A publication's digest must equal the bytes archived for the origin AND for the retained copy, so
+    # each tampered archive below breaks one specific guarantee and must be refused by both entry points.
+    cases = {
+        "an origin revision the archive lacks": wrong_revision,
+        "a value that is not a sha256 digest": bad_digest,
+        "a digest matching neither side": live_wrong_digest,
+        "a retained body that contradicts its digest": target_body_edited,
+    }
+    for mutate in cases.values():
         tampered = _resign(bundle, mutate)
         for entry in ("validate", "restore"):
             with pytest.raises(BundleFormatError):
                 asyncio.run(_attempt(tmp_path, tampered, entry))
+
+
+def test_a_family_valid_source_edit_is_refused_when_the_origin_is_archived(tmp_path: Path) -> None:
+    """Only the source-side check can catch this: the copy still matches the digest, the origin does not.
+
+    The origin's archived revision keeps a valid shape but different text. A guard that compared only
+    the retained copy would accept the archive, so this case isolates the source binding rather than
+    merely repeating the target one.
+    """
+
+    database = tmp_path / "source.db"
+    bundle = tmp_path / "source.pcbundle"
+
+    async def build() -> None:
+        await asyncio.to_thread(
+            prepare_server_database, ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        )
+        async with open_builtin_runtime(_config(database)) as runtime:
+            assert runtime.scopes is not None and runtime.publications is not None
+            archive = runtime.archive
+            assert archive is not None
+            work = await runtime.scopes.create(ScopeDraft(title="Alice work", summary="s", idempotency_key="w"))
+            project = await runtime.scopes.create(ScopeDraft(title="Orders", summary="s", idempotency_key="p"))
+            created = await runtime.records.for_scope(work.scope_id).create_artifact(
+                "experience", ArtifactWrite(content=_LESSON)
+            )
+            await runtime.publications.publish(
+                ArtifactPublicationRequest(
+                    source=ArtifactAddress(
+                        scope_id=work.scope_id,
+                        artifact=ArtifactRef(family="experience", artifact_id=created.artifact_id, revision=1),
+                    ),
+                    target_scope_id=project.scope_id,
+                    idempotency_key="orders-copy",
+                )
+            )
+            await archive.export((work.scope_id, project.scope_id), bundle, authorize=_allow)
+
+    asyncio.run(build())
+
+    def edit_source(_publication: dict[str, Any], revision: dict[str, Any]) -> None:
+        # The second record is the archived revision for the selected side; edit its family-valid body.
+        body = revision["payload"]["content"]
+        decoded = json.loads(base64.b64decode(body["base64"]))
+        decoded["lesson"] = "A different but perfectly valid lesson."
+        revision["payload"]["content"] = {
+            "base64": base64.b64encode(json.dumps(decoded).encode("utf-8")).decode("ascii")
+        }
+
+    tampered = _resign(bundle, edit_source, side="source")
+    for entry in ("validate", "restore"):
+        with pytest.raises(BundleFormatError):
+            asyncio.run(_attempt(tmp_path, tampered, entry))
 
 
 async def _attempt(root: Path, path: Path, step: str) -> None:
