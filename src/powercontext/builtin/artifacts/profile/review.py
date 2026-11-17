@@ -108,6 +108,13 @@ async def decide_profile(service, connection, candidate_id, expected_version, *,
     return result
 
 
+def local_artifacts(service, artifacts):
+    """Keep only references this Scope owns in the committed local Artifact lineage."""
+
+    admitted = getattr(service, "_admitted_artifact_keys", None) or frozenset()
+    return tuple(ref for ref in artifacts if ref.model_dump_json() not in admitted)
+
+
 def local_sources(service, sources):
     """Keep only references this Scope owns in the committed local lineage columns."""
 
@@ -154,7 +161,7 @@ async def _decide_initial_profile(service, connection, candidate, policy, *, rea
         # Foreign references are recorded as origins, never as this Scope's own Sources:
         # the local lineage columns hold only references that exist here.
         sources=local_sources(service, candidate.sources),
-        artifacts=candidate.artifacts,
+        artifacts=local_artifacts(service, candidate.artifacts),
         origins=candidate.origins,
     )
     artifact = await service._artifacts.create(connection, service._scope_id, PROFILE_ARTIFACT_ID, draft)
@@ -187,8 +194,11 @@ async def _decide_dream_profile(service, connection, candidate, policy, *, reaso
                 dream_run_id=proposal.dream_run_id,
             ),
         ),
-        sources=candidate.sources,
-        artifacts=candidate.artifacts,
+        # The same rule the initializer follows: another Scope's references are provenance,
+        # not rows in this Scope's lineage columns.
+        sources=local_sources(service, candidate.sources),
+        artifacts=local_artifacts(service, candidate.artifacts),
+        origins=candidate.origins,
     )
     artifact = await service._artifacts.revise(connection, service._scope_id, current, draft)
     return await service._candidates.mark_approved(

@@ -143,6 +143,7 @@ class ReviewService:
         # Foreign origins this Candidate may cite, set by the owning Dream run.
         self._admitted_origins: tuple[RecordedOrigin, ...] = ()
         self._admitted_source_keys: frozenset[str] = frozenset()
+        self._admitted_artifact_keys: frozenset[str] = frozenset()
         # Recheck a Dream Candidate's pinned agreement at the commit boundary. Access
         # decides; Review only asks with the candidate it is about to commit.
         self.check_candidate_use: Callable[[AsyncConnection, str, Candidate[Any]], Awaitable[None]] | None = None
@@ -1179,18 +1180,22 @@ class ReviewService:
         # run Scope's own Source Journal.
         try:
             local_sources, foreign_sources = self._split_sources(sources)
+            local_artifacts, foreign_artifacts = self._split_artifacts(artifacts)
             source_rows = await self._sources.require_for_generation(connection, self._scope_id, local_sources)
             # Existence check only: the loaded revisions are intentionally unused.
-            await self._artifacts.get_many(connection, self._scope_id, artifacts)
+            await self._artifacts.get_many(connection, self._scope_id, local_artifacts)
         except RepositoryNotFoundError as error:
             raise InvalidCandidateError("evidence", "reference is not available in this scope") from error
-        if foreign_sources:
-            await self._require_admitted_origins(connection, foreign_sources)
+        if foreign_sources or foreign_artifacts:
+            await self._require_admitted_origins(connection, foreign_sources, foreign_artifacts)
         if self._evidence is not None:
+            _, foreign_supporting = self._split_artifacts(supporting_artifacts)
             roots = await self._evidence.validate(
                 connection,
                 sources=local_sources,
-                artifacts=supporting_artifacts,
+                # A foreign revision was validated at its origin above; walking it here
+                # would look for another Scope's row in this Scope.
+                artifacts=tuple(ref for ref in supporting_artifacts if ref not in foreign_supporting),
             )
             sources = _unique_sources((*sources, *roots))
         if len(sources) + len(artifacts) > MAX_CANDIDATE_EVIDENCE:
@@ -1244,10 +1249,27 @@ class ReviewService:
         persisted, so a foreign citation is checked against what was actually admitted.
         """
 
-        self._admitted_origins = tuple(origin for origin in origins if origin.source is not None)
+        self._admitted_origins = origins
         self._admitted_source_keys = frozenset(
-            origin.source.model_dump_json() for origin in self._admitted_origins if origin.source is not None
+            origin.source.model_dump_json() for origin in origins if origin.source is not None
         )
+        # The same agreement may pin another Scope's exact Artifact revision, which a
+        # Profile or Skill operation legitimately cites.
+        self._admitted_artifact_keys = frozenset(
+            origin.artifact.model_dump_json() for origin in origins if origin.artifact is not None
+        )
+
+    def _split_artifacts(
+        self, artifacts: tuple[ArtifactRef, ...]
+    ) -> tuple[tuple[ArtifactRef, ...], tuple[ArtifactRef, ...]]:
+        """Separate this Scope's own Artifact citations from admitted foreign revisions."""
+
+        foreign_keys = self._admitted_artifact_keys
+        local: list[ArtifactRef] = []
+        foreign: list[ArtifactRef] = []
+        for ref in artifacts:
+            (foreign if ref.model_dump_json() in foreign_keys else local).append(ref)
+        return tuple(local), tuple(foreign)
 
     def _split_sources(self, sources: tuple[SourceRef, ...]) -> tuple[tuple[SourceRef, ...], tuple[SourceRef, ...]]:
         """Separate this Scope's own citations from origins this Scope does not own."""
@@ -1259,18 +1281,30 @@ class ReviewService:
             (foreign if source.model_dump_json() in foreign_keys else local).append(source)
         return tuple(local), tuple(foreign)
 
-    async def _require_admitted_origins(self, connection: AsyncConnection, sources: tuple[SourceRef, ...]) -> None:
-        """Resolve each foreign Source at its admitted origin, never in the run Scope.
+    async def _require_admitted_origins(
+        self,
+        connection: AsyncConnection,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...] = (),
+    ) -> None:
+        """Resolve each foreign citation at its admitted origin, never in the run Scope.
 
-        The recorded origin supplies the exact Scope, reference, locator and digest, so a
-        local row with the same ``SourceRef`` key cannot masquerade as the foreign one,
-        and an unadmitted or differently digested reference is refused.
+        The recorded origin supplies the exact Scope, reference, locator/revision and
+        digest, so a local row with the same key cannot masquerade as the foreign one, and
+        an unadmitted or differently digested reference is refused. Publication copies and
+        lineage-only Sources are not admitted origins, so they never become new facts here.
         """
 
         origins = getattr(self, "_admitted_origins", None) or ()
-        known = {origin.source.model_dump_json(): origin for origin in origins if origin.source is not None}
-        for source in sources:
-            origin = known.get(source.model_dump_json())
+        known_sources = {origin.source.model_dump_json(): origin for origin in origins if origin.source is not None}
+        known_artifacts = {
+            origin.artifact.model_dump_json(): origin for origin in origins if origin.artifact is not None
+        }
+        for citation, known in (
+            *((source, known_sources) for source in sources),
+            *((ref, known_artifacts) for ref in artifacts),
+        ):
+            origin = known.get(citation.model_dump_json())
             if origin is None:
                 raise InvalidCandidateError("evidence", "reference is not an admitted origin")
             if origin.digest is not None and not origin.digest.startswith("sha256:"):

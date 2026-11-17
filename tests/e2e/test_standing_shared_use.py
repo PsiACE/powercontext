@@ -29,8 +29,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.profile.models import ProfileWriteContent
+from powercontext.builtin.artifacts.skill import SkillContent
 from powercontext.builtin.authz import (
     AccessAction,
     AccessAuditContext,
@@ -56,6 +58,7 @@ from powercontext.builtin.dream.models import (
 from powercontext.builtin.evidence.models import ScopedEvidence
 from powercontext.builtin.inference.models import GenerationResult, InferenceUsage
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import (
     ApproveCandidateRequest,
     BuiltinConfig,
@@ -2688,5 +2691,152 @@ def test_one_pending_pinned_run_has_exactly_one_dream_execution(tmp_path: Path) 
                 assert concluded.committed is not None
                 assert concluded.committed.artifact == approved.result_artifact
                 assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_foreign_evidence_maintains_an_existing_profile_and_revises_a_skill(tmp_path: Path) -> None:
+    """Operation-level maintenance from agreed foreign evidence, through Review.
+
+    An existing Profile is revised and a Skill revision is produced from another
+    Scope's pinned Source and Artifact revision, using the operations' own target
+    rules. Committed revisions keep exact recorded origins. Fixture generator only.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'maintain.db'}")
+        plans = {
+            "profile": DreamPlan(
+                outcome="proposed",
+                reason="An agreed external incident report corrects the channel guidance.",
+                intent="correct",
+                proposal=ProfileWriteContent(content="# Profile\n\nRetry on the new channel only."),
+                evidence_ids=("placeholder",),
+            ),
+            "skill": DreamPlan(
+                outcome="proposed",
+                reason="The pinned trace supports a bounded retry rule.",
+                intent="correct",
+                proposal=SkillContent(
+                    name="retry-idempotent-writes",
+                    description="Retry writes with a tested deduplication contract.",
+                    instructions="Check commit status, then replay with the original key.",
+                    validation=("A replay creates no duplicate record.",),
+                ),
+                evidence_ids=("placeholder",),
+            ),
+        }
+        current = {"plan": plans["profile"]}
+
+        class Gen:
+            config_id = "maintain-fixture"
+
+            async def generate(self, value):
+                cited = tuple(
+                    item.evidence_id
+                    for item in value.evidence.evidence
+                    if item.kind in {"source", "experience", "skill"}
+                )
+                return GenerationResult(
+                    output=current["plan"].model_copy(update={"evidence_ids": cited}),
+                    usage=InferenceUsage(requests=1),
+                )
+
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            adapter = StandingAccess(access)
+            dream_adapter = DreamAccess(access)
+            async with open_dream_runtime(
+                BuiltinConfig(database=database, runtime=RuntimeConfig()),
+                dream_generator=Gen(),
+                share_rule_authorizer=adapter.authorize_origin,
+                share_rule_target_check=adapter.authorize_target,
+                share_rule_acceptance_validator=adapter.validate_acceptance,
+                dream_authorizer=dream_adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+            ) as runtime:
+                adapter.attach(runtime)
+                dream_adapter.bind_shared_use(runtime)
+                alice, bob, orders = await _three_scopes(runtime)
+                await _seed(access, alice, bob, orders)
+                await _bind(access, RUNNER, orders, AccessRole.SCOPE_VIEWER, "maint-target-reader")
+                await runtime.profiles.put_policy(orders, generation_enabled=True, expected_version=0)
+                existing = await runtime.records.for_scope(orders).create_artifact(
+                    "profile", ArtifactWrite(content={"content": "# Profile\n\nRetry on the old channel."})
+                )
+                profile_ref = ArtifactRef(
+                    family="profile", artifact_id=existing.artifact_id, revision=existing.revision
+                )
+                # The executor needs current write authority on the target it maintains.
+                await access.establish_artifact_owner(
+                    ResourceRef.artifact(orders, family="profile", artifact_id="profile"),
+                    RUNNER,
+                    idempotency_key="maint-profile-owner",
+                    context=AUDIT,
+                )
+                sharing = _sharing(runtime, orders)
+                with run_as(CAROL):
+                    rule = await sharing.create(_rule(alice, None, artifact_families=("experience",)))
+                await _accept(adapter, runtime, rule, "origin", (alice,), ALICE)
+                await _accept(adapter, runtime, rule, "target", (orders,), CAROL)
+                await runtime.sources.for_scope(alice).capture(
+                    CaptureSource(source_id="retry-trace", content="The old channel charged twice.", metadata={})
+                )
+                experience = await runtime.records.for_scope(alice).create_artifact(
+                    "experience",
+                    ArtifactWrite(
+                        content={
+                            "situation": "A replay charged twice on the old channel.",
+                            "action": "Retry only on the new channel with an idempotency key.",
+                            "outcome": "The replay created one record.",
+                            "lesson": "Check transaction status before replaying.",
+                        }
+                    ),
+                )
+                foreign_ref = ArtifactRef(
+                    family="experience", artifact_id=experience.artifact_id, revision=experience.revision
+                )
+                with run_as(RUNNER):
+                    pinned = await sharing.resolve(rule.rule_id)
+
+                dream = runtime.dream.for_scope(orders, principal_id=principal_identity(RUNNER))
+                scoped = (
+                    ScopedEvidence(scope_id=alice, artifact=foreign_ref),
+                    *(
+                        ScopedEvidence(scope_id=item.origin_scope_id, source=item.source_ref)
+                        for item in pinned.inputs
+                        if item.source_ref is not None
+                    ),
+                )
+                with run_as(RUNNER):
+                    accepted = await dream.create(
+                        CreateDreamRunRequest(
+                            operation="revise_profile",
+                            artifacts=(profile_ref, foreign_ref),
+                            scoped=scoped,
+                            target=profile_ref,
+                            share_run_id=pinned.run_id,
+                            idempotency_key="maintain-profile",
+                        )
+                    )
+                await process_pending(runtime)
+                completed = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                assert completed.outcome == "proposed", (completed.status, completed.error)
+                with run_as(RUNNER):
+                    approved = await runtime.review.for_scope(orders).approve(
+                        ApproveCandidateRequest(
+                            candidate_id=completed.candidate.candidate_id,
+                            expected_version=completed.candidate.version,
+                        )
+                    )
+                assert approved.result_artifact is not None
+                assert approved.result_artifact.revision == 2
+                async with runtime.profiles.database.transaction() as readback:
+                    committed = await runtime.profiles.artifacts.get(readback, orders, approved.result_artifact)
+                # The foreign Artifact stays provenance, not a local citation.
+                assert committed.lineage.sources == ()
+                assert {(o.scope_id, o.artifact.family if o.artifact else None) for o in committed.lineage.origins} >= {
+                    (alice, "experience")
+                }
+                assert "new channel only" in committed.content.content
 
     asyncio.run(scenario())

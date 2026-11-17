@@ -30,7 +30,16 @@ from powercontext.builtin.sharing.models import ShareRun
 
 # Operations that may carry another Scope's material at all. Every other operation
 # keeps refusing it, so agreement for one operation never admits a sibling.
-FOREIGN_EVIDENCE_OPERATIONS: frozenset[DreamOperation] = frozenset({"refine_experience", "initialize_profile"})
+FOREIGN_EVIDENCE_OPERATIONS: frozenset[DreamOperation] = frozenset({
+    "refine_experience",
+    "initialize_profile",
+    # Maintaining an existing Profile or Skill, and deriving a new Skill, admit the
+    # same agreement: each already declares its own target rule, Families and roles, so
+    # the only thing that refused them was this set.
+    "revise_profile",
+    "revise_skill",
+    "derive_skill",
+})
 
 
 class SharedUseBindingError(DreamError):
@@ -76,6 +85,13 @@ def binding_for(request: CreateDreamRunRequest, *, scope_id: str) -> SharedUseBi
     )
 
 
+def _input_key(item: tuple[str, str | None, str | None, int | None]) -> tuple[str, str, str, str]:
+    """Order one identity tuple without comparing ``None`` to a string."""
+
+    scope, source, artifact, revision = item
+    return (scope, source or "", artifact or "", "" if revision is None else str(revision))
+
+
 def request_inputs(run: ShareRun, *, scope_id: str) -> tuple[tuple[str, str | None, str | None, int | None], ...]:
     """Pinned inputs of one run, as comparable identity tuples.
 
@@ -96,7 +112,7 @@ def request_inputs(run: ShareRun, *, scope_id: str) -> tuple[tuple[str, str | No
                 item.artifact.artifact.model_dump_json(),
                 item.artifact.artifact.revision,
             ))
-    return tuple(sorted(pinned))
+    return tuple(sorted(pinned, key=_input_key))
 
 
 def request_scoped_inputs(
@@ -115,7 +131,7 @@ def request_scoped_inputs(
                 item.artifact.model_dump_json(),
                 item.artifact.revision,
             ))
-    return tuple(sorted(selected))
+    return tuple(sorted(selected, key=_input_key))
 
 
 async def require_matching_inputs(pinned: ShareRun, request: CreateDreamRunRequest, *, scope_id: str) -> None:

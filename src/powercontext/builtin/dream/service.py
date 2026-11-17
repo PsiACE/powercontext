@@ -73,6 +73,7 @@ from powercontext.builtin.dream.shared_use import (
 from powercontext.builtin.evidence.models import (
     EvidenceResolutionError,
     ResolvedEvidence,
+    ScopedEvidence,
     reference_key,
     unique_references,
 )
@@ -273,6 +274,7 @@ class DreamService:
             if request.tag_target is not None:
                 await self._check_tag_target(connection, scope_id, principal_id, request)
             artifacts, target = _resolve_references(request)
+            artifacts = _local_artifacts(artifacts, request.scoped)
             await resolver.resolve(
                 connection,
                 sources=request.sources,
@@ -626,6 +628,7 @@ class DreamService:
             resolver = self._resolver(record.run.scope_id, record.principal_id)
             resolver.limits = record.run.budget
             artifacts, target = _resolve_references(request)
+            artifacts = _local_artifacts(artifacts, request.scoped)
             return await resolver.resolve(
                 bound,
                 sources=request.sources,
@@ -1150,6 +1153,15 @@ def _candidate_matches_evidence(
         if node.artifact is not None:
             available.add(reference_key(node.artifact))
     return all(reference_key(reference) in available for reference in (*candidate.sources, *candidate.artifacts))
+
+
+def _local_artifacts(artifacts: tuple[ArtifactRef, ...], scoped: tuple[ScopedEvidence, ...]) -> tuple[ArtifactRef, ...]:
+    """Drop foreign Artifact selections, which `scoped` already resolves at their origin."""
+
+    if not scoped:
+        return artifacts
+    foreign = {item.artifact.model_dump_json() for item in scoped if item.artifact is not None}
+    return tuple(ref for ref in artifacts if ref.model_dump_json() not in foreign)
 
 
 def _resolve_references(request: CreateDreamRunRequest):
