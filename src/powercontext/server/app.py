@@ -426,6 +426,9 @@ from powercontext.builtin.scope import (
     ScopeSelection as DomainScopeSelection,
 )
 from powercontext.builtin.scope.errors import ScopeDeletionUnauthorizedError
+from powercontext.builtin.sharing import ShareRuleServiceUnavailable
+from powercontext.builtin.sharing.models import ShareError
+from powercontext.builtin.sharing.models import ShareRuleDraft as DomainShareRuleDraft
 from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.builtin.sources import (
     ObservedInvocation,
@@ -473,15 +476,7 @@ from powercontext.errors import (
     SourceDefinitionNotFoundError,
 )
 from powercontext.http import (
-    AccessAction as TransportAccessAction,
-)
-from powercontext.http import (
-    AccessArtifactIdentity as TransportAccessArtifactIdentity,
-)
-from powercontext.http import (
-    AccessAuditEvent as TransportAccessAuditEvent,
-)
-from powercontext.http import (
+    AcceptShareRuleRequest,
     AccessAuditPage,
     AccessBindingPage,
     AccessCheckRequest,
@@ -544,6 +539,7 @@ from powercontext.http import (
     CreatePromptArtifactRequest,
     CreateRemoteSkillTargetRequest,
     CreateScopeRequest,
+    CreateShareRunRequest,
     CreateSourceRequest,
     CreateSubjectSourceRequest,
     CreateSubjectSourceResponse,
@@ -577,6 +573,7 @@ from powercontext.http import (
     GetMemoryCapacityRequest,
     GetMemoryEntryRequest,
     GetMemoryEntryResponse,
+    GetShareRuleRequest,
     GetSkillPackageRequest,
     GetSkillRequest,
     GetStatsRequest,
@@ -587,6 +584,7 @@ from powercontext.http import (
     HandoffSelection,
     HealthResponse,
     ImportExternalSkillRequest,
+    InvalidateShareRuleRequest,
     ListAccessAuditRequest,
     ListAccessBindingsRequest,
     ListAccessResourcesRequest,
@@ -607,6 +605,7 @@ from powercontext.http import (
     ListRemoteSkillTargetsRequest,
     ListRemoteSkillTargetsResponse,
     ListScopesRequest,
+    ListShareRulesRequest,
     ListSourcesRequest,
     MemoryCapacity,
     MemoryEntryAccessSelector,
@@ -687,6 +686,12 @@ from powercontext.http import (
     ServerInfo,
     SetDefaultScopeRequest,
     SetScopeBindingRequest,
+    ShareAcceptance,
+    ShareRule,
+    ShareRuleDraft,
+    ShareRulePage,
+    ShareRun,
+    ShareRunPage,
     SkillArtifact,
     SkillGovernance,
     SkillPackageDownload,
@@ -701,8 +706,18 @@ from powercontext.http import (
     TopicMemoryArtifact,
     UnpublishRemoteSkillRequest,
     UpdateScopeRequest,
+    UpdateShareRuleRequest,
     UpdateSkillLifecycleRequest,
     WorkSourceReceipt,
+)
+from powercontext.http import (
+    AccessAction as TransportAccessAction,
+)
+from powercontext.http import (
+    AccessArtifactIdentity as TransportAccessArtifactIdentity,
+)
+from powercontext.http import (
+    AccessAuditEvent as TransportAccessAuditEvent,
 )
 from powercontext.http import (
     AccessBinding as TransportAccessBinding,
@@ -798,6 +813,7 @@ from powercontext.http._generated.models import (
 )
 from powercontext.http._generated.models import Type6 as TransportMemoryEntrySelectorType
 from powercontext.http._generated.operations import (
+    ACCEPT_SHARE_RULE,
     ACKNOWLEDGE_HANDOFF,
     ACTIVATE_HANDOFF,
     API_DESCRIPTION,
@@ -821,6 +837,8 @@ from powercontext.http._generated.operations import (
     CREATE_DREAM_RUN,
     CREATE_REMOTE_SKILL_TARGET,
     CREATE_SCOPE,
+    CREATE_SHARE_RULE,
+    CREATE_SHARE_RUN,
     CREATE_SOURCE,
     CREATE_SUBJECT_SOURCE,
     CREATE_WORK_CONTRACT,
@@ -861,6 +879,8 @@ from powercontext.http._generated.operations import (
     GET_SCOPE,
     GET_SCOPE_DELETION,
     GET_SERVER_INFO,
+    GET_SHARE_RULE,
+    GET_SHARE_RUN,
     GET_SKILL,
     GET_SKILL_PACKAGE_MANIFEST,
     GET_SOURCE,
@@ -870,6 +890,7 @@ from powercontext.http._generated.operations import (
     GET_TOPIC_MEMORY_PROCESSING_STATUS,
     HANDOFF_CURRENT_WORK,
     IMPORT_EXTERNAL_SKILL,
+    INVALIDATE_SHARE_RULE,
     LIST_ACCESS_AUDIT,
     LIST_ACCESS_BINDINGS,
     LIST_ACCESS_RESOURCES,
@@ -886,6 +907,8 @@ from powercontext.http._generated.operations import (
     LIST_PLUGINS,
     LIST_REMOTE_SKILL_TARGETS,
     LIST_SCOPES,
+    LIST_SHARE_RULES,
+    LIST_SHARE_RUNS,
     LIST_SOURCES,
     MERGE_ARTIFACTS,
     OPENAPI_VERSION,
@@ -925,6 +948,7 @@ from powercontext.http._generated.operations import (
     RESTORE_ARTIFACT,
     RESUME_SCOPE_DELETION_CLEANUP,
     RETIRE_MEMORY_ENTRY,
+    RETRY_SHARE_RUN,
     RETRY_TOPIC_MEMORY_PROCESSING,
     REVISE_CANDIDATE,
     REVISE_MEMORY_ENTRY,
@@ -940,6 +964,7 @@ from powercontext.http._generated.operations import (
     SUBMIT_SOURCE_OBSERVATION,
     UNPUBLISH_REMOTE_SKILL,
     UPDATE_SCOPE,
+    UPDATE_SHARE_RULE,
     UPDATE_SKILL_LIFECYCLE,
     AccessRequirement,
     Operation,
@@ -1570,6 +1595,7 @@ def create_app(
     @app.exception_handler(BaseAccessError)
     @app.exception_handler(PromptError)
     @app.exception_handler(SourceNotEligibleError)
+    @app.exception_handler(ShareError)
     @app.exception_handler(PluginCallError)
     @app.exception_handler(PowerContextError)
     @app.exception_handler(PersistenceError)
@@ -1633,6 +1659,16 @@ def create_app(
     _add_route(app, GET_SCOPE_DELETION, get_scope_deletion)
     _add_route(app, RESUME_SCOPE_DELETION_CLEANUP, resume_scope_deletion_cleanup)
     _add_route(app, REPAIR_SCOPE_DELETION_COVERAGE, repair_scope_deletion_coverage)
+    _add_route(app, CREATE_SHARE_RULE, create_share_rule)
+    _add_route(app, LIST_SHARE_RULES, list_share_rules)
+    _add_route(app, GET_SHARE_RULE, get_share_rule)
+    _add_route(app, UPDATE_SHARE_RULE, update_share_rule)
+    _add_route(app, INVALIDATE_SHARE_RULE, invalidate_share_rule)
+    _add_route(app, ACCEPT_SHARE_RULE, accept_share_rule)
+    _add_route(app, CREATE_SHARE_RUN, create_share_run)
+    _add_route(app, LIST_SHARE_RUNS, list_share_runs)
+    _add_route(app, GET_SHARE_RUN, get_share_run)
+    _add_route(app, RETRY_SHARE_RUN, retry_share_run)
     _add_route(app, RESOLVE_SCOPE_SELECTION, resolve_scope_selection)
     _add_route(app, RESOLVE_SCOPE_BINDING, resolve_scope_binding)
     _add_route(app, SET_SCOPE_BINDING, set_scope_binding)
@@ -2678,6 +2714,36 @@ async def _require_confirmed_management(http_request: Request, scope_ids: tuple[
         await access.require_all(principal, checks, context=_access_audit_context("scope_deletion_confirm"))
 
 
+def _dream_principal_text(principal) -> str:
+    """The canonical actor spelling one acceptance records.
+
+    D reserves ``type:id`` for a recorded actor, so this must not invent another
+    form; B's acceptance validator compares against exactly this key.
+    """
+
+    from powercontext.builtin.authz.standing_use import principal_key
+
+    return principal_key(principal)
+
+
+def _require_sharing(http_request: Request):
+    application = _require_application(http_request)
+    sharing = getattr(application, "sharing", None)
+    if sharing is None:
+        # The rule engine owns this capability; an absent instance is not a
+        # reason to build a second one at the transport boundary.
+        raise ShareRuleServiceUnavailable
+    return sharing
+
+
+def _require_shared_rule_service(http_request: Request):
+    application = _require_application(http_request)
+    service = getattr(application, "share_rules", None)
+    if service is None:
+        raise ShareRuleServiceUnavailable
+    return service
+
+
 def _require_scope_deletions(http_request: Request):
     application = _require_application(http_request)
     deletions = getattr(application, "scope_deletions", None)
@@ -2822,6 +2888,203 @@ async def repair_scope_deletion_coverage(
         raise ScopeNotFoundError(operation_id)
     receipt = await deletions.repair_coverage(operation_id, requester=requester, authorize=authorize)
     return _scope_deletion_receipt_response(receipt)
+
+
+def _share_rule_draft(value) -> DomainShareRuleDraft:
+    # The published draft keeps its selection as a discriminated union; the domain
+    # request is the same shape, so translate only the type, not the meaning.
+    return DomainShareRuleDraft.model_validate(value.model_dump(mode="json", exclude_none=True), by_alias=True)
+
+
+def _share_rule_response(value) -> ShareRule:
+    # The domain selection serializes to the same discriminated shape the wire uses.
+    return ShareRule.model_validate(value.model_dump(mode="json"), by_alias=True)
+
+
+def _share_acceptance_response(value) -> ShareAcceptance:
+    return ShareAcceptance.model_validate(value.model_dump(mode="json"))
+
+
+async def _share_run_response(http_request: Request, scope_id: str, run) -> ShareRun:
+    """Publish a run while withholding origin addresses the caller cannot read.
+
+    The run's identity, rule version, terms, budget and outcome are the target
+    Scope's own record. Each input names material in another Scope, so its
+    reference and digest are released only when the caller currently holds
+    authority at that origin: acceptance existing is not permission to read it.
+    """
+
+    payload = run.model_dump(mode="json")
+    access = access_control_for_mode(
+        http_request.app.state.access_control,
+        mode=http_request.app.state.access_mode,
+    )
+    if access is None:
+        return ShareRun.model_validate(payload)
+    principal = _require_principal()
+    reader = _share_run_reader(access)
+    visible: list[dict[str, Any]] = []
+    for item in payload.get("inputs", ()):
+        origin = item.get("origin_scope_id")
+        allowed = False
+        if isinstance(origin, str):
+            decision = await reader(principal, origin)
+            allowed = decision
+        if not allowed:
+            # Keep the count and role, drop the address, reference and digest.
+            item = {key: value for key, value in item.items() if key in {"kind", "origin_scope_id", "role", "paths"}}
+            item.pop("origin_scope_id", None)
+            item["withheld"] = True
+        visible.append(item)
+    payload["inputs"] = visible
+    # The run also lists the origins it reached and their watermarks. Those name
+    # the same Scopes, so they follow the same authority: a withheld origin is
+    # dropped from the list rather than replaced with a placeholder.
+    readable = {item["origin_scope_id"] for item in visible if not item.get("withheld") and item.get("origin_scope_id")}
+    payload["origins"] = [scope_id for scope_id in payload.get("origins", ()) if scope_id in readable]
+    payload["source_watermarks"] = [
+        mark for mark in payload.get("source_watermarks", ()) if mark.get("origin_scope_id") in readable
+    ]
+    return ShareRun.model_validate(payload)
+
+
+def _share_run_reader(access):
+    """Return a predicate for current read authority at one origin Scope."""
+
+    async def allowed(principal, origin_scope_id: str) -> bool:
+        try:
+            await access.require(
+                principal,
+                AccessAction.SCOPE_READ,
+                ResourceRef.scope(origin_scope_id),
+                context=_access_audit_context("share_run_origin_read"),
+            )
+        except Exception:
+            return False
+        return True
+
+    return allowed
+
+
+async def create_share_rule(
+    scope_id: _ScopePathId,
+    request: ShareRuleDraft,
+    http_request: Request,
+) -> Response:
+    service = _require_shared_rule_service(http_request)
+    rule = await service.create(scope_id, _share_rule_draft(request))
+    return JSONResponse(status_code=201, content=_share_rule_response(rule).model_dump(mode="json"))
+
+
+async def list_share_rules(
+    scope_id: _ScopePathId,
+    request: Annotated[ListShareRulesRequest, Query()],
+    http_request: Request,
+) -> ShareRulePage:
+    service = _require_shared_rule_service(http_request)
+    status = None if request.status is None else request.status.value
+    rules = await service.list(scope_id, status=status)
+    return ShareRulePage(items=[_share_rule_response(rule) for rule in rules])
+
+
+async def get_share_rule(
+    scope_id: _ScopePathId,
+    rule_id: Annotated[str, Path(min_length=1, max_length=64)],
+    request: Annotated[GetShareRuleRequest, Query()],
+    http_request: Request,
+) -> ShareRule:
+    service = _require_shared_rule_service(http_request)
+    return _share_rule_response(await service.get(scope_id, rule_id, version=request.version))
+
+
+async def update_share_rule(
+    scope_id: _ScopePathId,
+    rule_id: Annotated[str, Path(min_length=1, max_length=64)],
+    request: UpdateShareRuleRequest,
+    http_request: Request,
+) -> ShareRule:
+    service = _require_shared_rule_service(http_request)
+    rule = await service.update(scope_id, rule_id, request.expected_version, _share_rule_draft(request.draft))
+    return _share_rule_response(rule)
+
+
+async def invalidate_share_rule(
+    scope_id: _ScopePathId,
+    rule_id: Annotated[str, Path(min_length=1, max_length=64)],
+    request: InvalidateShareRuleRequest,
+    http_request: Request,
+) -> ShareRule:
+    service = _require_shared_rule_service(http_request)
+    return _share_rule_response(await service.invalidate(scope_id, rule_id, request.expected_version))
+
+
+async def accept_share_rule(
+    scope_id: _ScopePathId,
+    rule_id: Annotated[str, Path(min_length=1, max_length=64)],
+    version: Annotated[int, Path(ge=1)],
+    request: AcceptShareRuleRequest,
+    http_request: Request,
+) -> Response:
+    service = _require_shared_rule_service(http_request)
+    # The actor is the authenticated principal, and the access boundary decides
+    # which coverage that principal may actually claim. Neither is a request
+    # field, so a caller cannot name an approver or grant it does not hold.
+    principal = _require_principal()
+    acceptance = await service.accept(
+        scope_id,
+        rule_id,
+        version,
+        request.side.value,
+        actor=_dream_principal_text(principal),
+        covered_scope_ids=None
+        if request.covered_scope_ids is None
+        else tuple(item.root for item in request.covered_scope_ids),
+    )
+    return JSONResponse(status_code=201, content=_share_acceptance_response(acceptance).model_dump(mode="json"))
+
+
+async def create_share_run(
+    scope_id: _ScopePathId,
+    rule_id: Annotated[str, Path(min_length=1, max_length=64)],
+    request: CreateShareRunRequest,
+    http_request: Request,
+) -> Response:
+    service = _require_shared_rule_service(http_request)
+    run = await service.resolve(scope_id, rule_id, notification_key=request.notification_key)
+    return JSONResponse(
+        status_code=201,
+        content=(await _share_run_response(http_request, scope_id, run)).model_dump(mode="json"),
+    )
+
+
+async def list_share_runs(
+    scope_id: _ScopePathId,
+    rule_id: Annotated[str, Path(min_length=1, max_length=64)],
+    http_request: Request,
+) -> ShareRunPage:
+    service = _require_shared_rule_service(http_request)
+    runs = await service.list_runs(scope_id, rule_id=rule_id)
+    return ShareRunPage(items=[await _share_run_response(http_request, scope_id, run) for run in runs])
+
+
+async def get_share_run(
+    scope_id: _ScopePathId,
+    run_id: Annotated[str, Path(min_length=1, max_length=64)],
+    http_request: Request,
+) -> ShareRun:
+    service = _require_shared_rule_service(http_request)
+    run = await service.get_run(scope_id, run_id)
+    return await _share_run_response(http_request, scope_id, run)
+
+
+async def retry_share_run(
+    scope_id: _ScopePathId,
+    run_id: Annotated[str, Path(min_length=1, max_length=64)],
+    http_request: Request,
+) -> ShareRun:
+    service = _require_shared_rule_service(http_request)
+    run = await service.retry(scope_id, run_id)
+    return await _share_run_response(http_request, scope_id, run)
 
 
 async def update_scope(
@@ -6629,6 +6892,21 @@ def _scope_deletion_confirm_access(
     return tuple((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)) for scope_id in _selection_scope_ids(payload))
 
 
+def _share_acceptance_access(
+    _payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    """Require an authenticated caller; the owning boundary decides the acceptance.
+
+    An origin-side acceptor holds authority over the part it covers, not over the
+    target, so a fixed target check here would deny a lawful origin acceptance.
+    The decision belongs to the access boundary that B owns, which validates the
+    authenticated identity and its claimed coverage before any row is written.
+    """
+
+    return ()
+
+
 def _scope_deletion_operation_access(
     _payload: Mapping[str, Any],
     _deployment_id: str,
@@ -6714,6 +6992,7 @@ _NAMED_ACCESS_RESOLVERS: dict[
     "scope_selection_read_access": _scope_selection_read_access,
     "scope_deletion_preview_access": _scope_deletion_preview_access,
     "scope_deletion_operation_access": _scope_deletion_operation_access,
+    "share_acceptance_access": _share_acceptance_access,
     "scope_deletion_confirm_access": _scope_deletion_confirm_access,
     "skill_candidate_write_access": _skill_candidate_write_access,
     "skill_identity_write_access": _skill_identity_write_access,
@@ -7422,6 +7701,75 @@ def _map_base_access_error(error: Exception) -> tuple[int, str, str, dict[str, A
     return None
 
 
+def _map_share_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
+    """Map standing-agreement refusals to their stable public codes."""
+
+    from powercontext.builtin.sharing.models import (
+        ShareAcceptanceConflictError,
+        ShareBudgetExceededError,
+        ShareError,
+        ShareRuleAcceptanceError,
+        ShareRuleInvalidatedError,
+        ShareRuleNotFoundError,
+        ShareRuleServiceUnavailable,
+        ShareRuleVersionConflictError,
+        ShareRunNotFoundError,
+        ShareRunStateError,
+    )
+
+    table = (
+        (ShareRuleNotFoundError, status.HTTP_404_NOT_FOUND, "share_rule_not_found", "The standing rule was not found."),
+        (ShareRunNotFoundError, status.HTTP_404_NOT_FOUND, "share_run_not_found", "The share run was not found."),
+        (
+            ShareRuleVersionConflictError,
+            status.HTTP_409_CONFLICT,
+            "share_rule_version_conflict",
+            "The standing rule version is stale.",
+        ),
+        (
+            ShareRuleInvalidatedError,
+            status.HTTP_409_CONFLICT,
+            "share_rule_invalidated",
+            "The standing rule was invalidated.",
+        ),
+        (
+            ShareAcceptanceConflictError,
+            status.HTTP_409_CONFLICT,
+            "share_acceptance_conflict",
+            "That acceptance already exists.",
+        ),
+        (ShareRunStateError, status.HTTP_409_CONFLICT, "share_run_state", "The share run is not in a usable state."),
+        (
+            ShareRuleAcceptanceError,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "share_rule_acceptance",
+            "The requested acceptance is not permitted by the rule binding.",
+        ),
+        (
+            ShareBudgetExceededError,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "share_budget_exceeded",
+            "The range exceeds the rule budget and was refused rather than truncated.",
+        ),
+        (
+            ShareRuleServiceUnavailable,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "share_rules_unavailable",
+            "Standing rules are unavailable.",
+        ),
+        (
+            ShareError,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "share_rule_refused",
+            "The standing-rule request was refused.",
+        ),
+    )
+    for kind, code_status, code, message in table:
+        if isinstance(error, kind):
+            return code_status, code, message, None
+    return None
+
+
 def _map_scope_lifecycle_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
     """Map lifecycle and deletion refusals to their stable public codes."""
 
@@ -7519,6 +7867,9 @@ def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | 
             {"relationship": error.relationship, "issue": error.issue},
         )
     lifecycle = _map_scope_lifecycle_error(error)
+    sharing = _map_share_error(error)
+    if sharing is not None:
+        return sharing
     if lifecycle is not None:
         return lifecycle
     return None

@@ -30,6 +30,7 @@ from powercontext.client.tags import ArtifactTagSetResponse
 from powercontext.client.tracing import ClientSpan
 from powercontext.client.transport_policy import resolve_client_transport
 from powercontext.http import (
+    AcceptShareRuleRequest,
     AccessAuditPage,
     AccessBinding,
     AccessBindingPage,
@@ -77,6 +78,7 @@ from powercontext.http import (
     CreateDreamRunRequest,
     CreateRemoteSkillTargetRequest,
     CreateScopeRequest,
+    CreateShareRunRequest,
     CreateSourceRequest,
     CreateSubjectSourceRequest,
     CreateSubjectSourceResponse,
@@ -107,6 +109,7 @@ from powercontext.http import (
     GetHandoffReportRequest,
     GetMemoryCapacityRequest,
     GetMemoryEntryRequest,
+    GetShareRuleRequest,
     GetSkillPackageRequest,
     GetSkillRequest,
     GetStatsRequest,
@@ -119,6 +122,7 @@ from powercontext.http import (
     HandoffResolution,
     HealthResponse,
     ImportExternalSkillRequest,
+    InvalidateShareRuleRequest,
     ListAccessAuditRequest,
     ListAccessBindingsRequest,
     ListAccessResourcesRequest,
@@ -138,6 +142,7 @@ from powercontext.http import (
     ListRemoteSkillTargetsRequest,
     ListRemoteSkillTargetsResponse,
     ListScopesRequest,
+    ListShareRulesRequest,
     ListSourcesRequest,
     MemoryCapacity,
     MemoryMutationResponse,
@@ -203,6 +208,12 @@ from powercontext.http import (
     ServerInfo,
     SetDefaultScopeRequest,
     SetScopeBindingRequest,
+    ShareAcceptance,
+    ShareRule,
+    ShareRuleDraft,
+    ShareRulePage,
+    ShareRun,
+    ShareRunPage,
     SkillArtifact,
     SkillGovernance,
     SkillPackageDownload,
@@ -215,6 +226,7 @@ from powercontext.http import (
     TopicMemoryArtifact,
     UnpublishRemoteSkillRequest,
     UpdateScopeRequest,
+    UpdateShareRuleRequest,
     UpdateSkillLifecycleRequest,
     WorkSourceReceipt,
 )
@@ -233,6 +245,7 @@ from powercontext.http._generated.models import (
     TopicMemoryProcessingStatusRequest,
 )
 from powercontext.http._generated.operations import (
+    ACCEPT_SHARE_RULE,
     ACKNOWLEDGE_HANDOFF,
     ACTIVATE_HANDOFF,
     APPROVE_CANDIDATE,
@@ -252,6 +265,8 @@ from powercontext.http._generated.operations import (
     CREATE_DREAM_RUN,
     CREATE_REMOTE_SKILL_TARGET,
     CREATE_SCOPE,
+    CREATE_SHARE_RULE,
+    CREATE_SHARE_RUN,
     CREATE_SOURCE,
     CREATE_SUBJECT_SOURCE,
     CREATE_WORK_CONTRACT,
@@ -288,6 +303,8 @@ from powercontext.http._generated.operations import (
     GET_SCOPE,
     GET_SCOPE_DELETION,
     GET_SERVER_INFO,
+    GET_SHARE_RULE,
+    GET_SHARE_RUN,
     GET_SKILL,
     GET_SKILL_PACKAGE_MANIFEST,
     GET_SOURCE,
@@ -297,6 +314,7 @@ from powercontext.http._generated.operations import (
     GET_TOPIC_MEMORY_PROCESSING_STATUS,
     HANDOFF_CURRENT_WORK,
     IMPORT_EXTERNAL_SKILL,
+    INVALIDATE_SHARE_RULE,
     LIST_ACCESS_AUDIT,
     LIST_ACCESS_BINDINGS,
     LIST_ACCESS_RESOURCES,
@@ -311,6 +329,8 @@ from powercontext.http._generated.operations import (
     LIST_MEMORY_ENTRIES,
     LIST_REMOTE_SKILL_TARGETS,
     LIST_SCOPES,
+    LIST_SHARE_RULES,
+    LIST_SHARE_RUNS,
     LIST_SOURCES,
     PREPARE_BOOTSTRAP_CONTEXT,
     PREPARE_CONTEXT,
@@ -346,6 +366,7 @@ from powercontext.http._generated.operations import (
     RESOLVE_SCOPE_SELECTION,
     RESUME_SCOPE_DELETION_CLEANUP,
     RETIRE_MEMORY_ENTRY,
+    RETRY_SHARE_RUN,
     RETRY_TOPIC_MEMORY_PROCESSING,
     REVISE_CANDIDATE,
     REVISE_MEMORY_ENTRY,
@@ -361,6 +382,7 @@ from powercontext.http._generated.operations import (
     SUBMIT_SOURCE_OBSERVATION,
     UNPUBLISH_REMOTE_SKILL,
     UPDATE_SCOPE,
+    UPDATE_SHARE_RULE,
     UPDATE_SKILL_LIFECYCLE,
     Operation,
 )
@@ -541,6 +563,80 @@ class PowerContextClient:
         """Repair recorded coverage for one deletion operation."""
 
         return await self._request(REPAIR_SCOPE_DELETION_COVERAGE, path_parameters={"operation_id": operation_id})
+
+    async def create_share_rule(self, scope_id: str, draft: ShareRuleDraft) -> ShareRule:
+        """Record one standing sharing rule version for a target Scope."""
+
+        return await self._request(CREATE_SHARE_RULE, draft, path_parameters={"scope_id": scope_id})
+
+    async def list_share_rules(self, scope_id: str, request: ListShareRulesRequest | None = None) -> ShareRulePage:
+        """List the standing rules a target Scope owns."""
+
+        return await self._request(
+            LIST_SHARE_RULES,
+            ListShareRulesRequest() if request is None else request,
+            path_parameters={"scope_id": scope_id},
+        )
+
+    async def get_share_rule(
+        self, scope_id: str, rule_id: str, request: GetShareRuleRequest | None = None
+    ) -> ShareRule:
+        """Read one standing rule version."""
+
+        return await self._request(
+            GET_SHARE_RULE,
+            GetShareRuleRequest() if request is None else request,
+            path_parameters={"scope_id": scope_id, "rule_id": rule_id},
+        )
+
+    async def update_share_rule(self, scope_id: str, rule_id: str, request: UpdateShareRuleRequest) -> ShareRule:
+        """Replace one standing rule with a new version."""
+
+        return await self._request(
+            UPDATE_SHARE_RULE, request, path_parameters={"scope_id": scope_id, "rule_id": rule_id}
+        )
+
+    async def invalidate_share_rule(
+        self, scope_id: str, rule_id: str, request: InvalidateShareRuleRequest
+    ) -> ShareRule:
+        """Invalidate one standing rule."""
+
+        return await self._request(
+            INVALIDATE_SHARE_RULE, request, path_parameters={"scope_id": scope_id, "rule_id": rule_id}
+        )
+
+    async def accept_share_rule(
+        self, scope_id: str, rule_id: str, version: int, request: AcceptShareRuleRequest
+    ) -> ShareAcceptance:
+        """Accept one rule version for one side as the authenticated caller."""
+
+        return await self._request(
+            ACCEPT_SHARE_RULE,
+            request,
+            path_parameters={"scope_id": scope_id, "rule_id": rule_id, "version": version},
+        )
+
+    async def create_share_run(self, scope_id: str, rule_id: str, request: CreateShareRunRequest) -> ShareRun:
+        """Discover current material and pin one run."""
+
+        return await self._request(
+            CREATE_SHARE_RUN, request, path_parameters={"scope_id": scope_id, "rule_id": rule_id}
+        )
+
+    async def list_share_runs(self, scope_id: str, rule_id: str) -> ShareRunPage:
+        """List recorded runs for one rule."""
+
+        return await self._request(LIST_SHARE_RUNS, path_parameters={"scope_id": scope_id, "rule_id": rule_id})
+
+    async def get_share_run(self, scope_id: str, run_id: str) -> ShareRun:
+        """Read one pinned run."""
+
+        return await self._request(GET_SHARE_RUN, path_parameters={"scope_id": scope_id, "run_id": run_id})
+
+    async def retry_share_run(self, scope_id: str, run_id: str) -> ShareRun:
+        """Retry one run against its exact pinned manifest."""
+
+        return await self._request(RETRY_SHARE_RUN, path_parameters={"scope_id": scope_id, "run_id": run_id})
 
     async def get_default_scope(self) -> ScopeDescriptor:
         """Read the host's default Scope target."""

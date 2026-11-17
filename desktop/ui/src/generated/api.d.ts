@@ -421,6 +421,152 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/scopes/{scope_id}/share-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List standing sharing rules for one Scope
+         * @description Read the rule versions this target Scope owns. Rule metadata names the declared range and the terms it binds; it does not disclose any origin's body, address or digest.
+         */
+        get: operations["list_share_rules"];
+        put?: never;
+        /**
+         * Create one standing sharing rule version
+         * @description Record a target Scope's standing agreement about which material its processing may consult. The rule names a declared range, optional source-type and Artifact-family selectors, the terms an agreement binds, and the run budget. It grants no read authority: acceptance is a separate step by each authenticated actor this boundary records, and every run rechecks current authority at each origin it actually reached.
+         */
+        post: operations["create_share_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/share-rules/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one standing rule version */
+        get: operations["get_share_rule"];
+        /**
+         * Replace one standing rule with a new version
+         * @description Version conditional: a stale expected version conflicts instead of overwriting a newer one, and an invalidated rule is refused rather than revived.
+         */
+        put: operations["update_share_rule"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/share-rules/{rule_id}/invalidate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invalidate one standing rule
+         * @description Stop future runs from depending on this rule and refuse work that already relies on it. Process that a later request would start is refused rather than evaluated against a withdrawn agreement.
+         */
+        post: operations["invalidate_share_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/share-rules/{rule_id}/versions/{version}/acceptances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept one rule version for one side
+         * @description Record that the authenticated caller accepts this exact rule version, covering only the Scopes its current authority permits. The actor is the principal the access boundary resolved; it is never taken from the request, and a caller cannot claim coverage or an approver it does not hold. Acceptance binds the version's selector and terms, so a later request naming an approver cannot create or reuse one.
+         */
+        post: operations["accept_share_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/share-rules/{rule_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List recorded runs for one rule */
+        get: operations["list_share_runs"];
+        put?: never;
+        /**
+         * Discover current material and pin one run
+         * @description Evaluate the active rule against material that currently exists in its declared range and pin one run holding the exact rule version, inputs, digests and budget. A repeated notification key returns the evaluation already recorded for it, so a duplicate notification never starts a second run. A range that cannot be covered within the rule's budget is refused instead of pinning a partial conclusion, and this never advances the target Scope's own Source Journal cursor.
+         */
+        post: operations["create_share_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/share-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one pinned run
+         * @description Read the run's bound rule version, budget, state and outcome. Origin bodies, addresses and digests are withheld unless the caller currently holds authority at that origin, so acceptance existing is never by itself permission to read another Scope's material.
+         */
+        get: operations["get_share_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scopes/{scope_id}/share-runs/{run_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry one run against its exact pinned manifest
+         * @description Reuse the run's recorded manifest instead of discovering newer material, rechecking the rule version's acceptance and current authority at every recorded origin. A changed head is refused so a retry can never silently evaluate a different revision.
+         */
+        post: operations["retry_share_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/scope-deletions/preview": {
         parameters: {
             query?: never;
@@ -3385,6 +3531,146 @@ export interface components {
         ScopeExternalReference: {
             kind: string;
             value: string;
+        };
+        UpdateShareRuleRequest: {
+            /** @description The rule version the caller last observed; a stale value conflicts. */
+            expected_version: number;
+            draft: components["schemas"]["ShareRuleDraft"];
+        };
+        InvalidateShareRuleRequest: {
+            expected_version: number;
+        };
+        ListShareRulesRequest: {
+            /** @enum {string} */
+            status?: "active" | "invalidated";
+        };
+        GetShareRuleRequest: {
+            version?: number;
+        };
+        ListShareRunsRequest: Record<string, never>;
+        /** @description The labels an accepted agreement binds, carried for the authority check that enforces them. The rule itself grants no access. */
+        ShareRuleTerms: {
+            use: string;
+            audience: string;
+            audience_scope_ids?: string[];
+            /**
+             * @default reference
+             * @enum {string}
+             */
+            retention: "reference" | "independent";
+        };
+        /** @description Bound one run's work. Exceeding any bound refuses the whole run instead of pinning a partial conclusion. */
+        ShareRunLimits: {
+            /** @default 16 */
+            max_origins: number;
+            /** @default 32 */
+            max_inputs: number;
+            /** @default 16 */
+            max_artifact_revisions: number;
+            /** @default 512 */
+            max_scanned_sources: number;
+        };
+        ShareRuleDraft: {
+            selection: components["schemas"]["ScopeSelection"];
+            exact_scope_ids?: string[];
+            source_types?: string[];
+            artifact_families?: string[];
+            terms: components["schemas"]["ShareRuleTerms"];
+            limits?: components["schemas"]["ShareRunLimits"];
+        };
+        /** @description One immutable rule version a target Scope owns. It names the declared range and bound terms; it discloses no origin body, address or digest. */
+        ShareRule: {
+            scope_id: string;
+            rule_id: string;
+            version: number;
+            /** @enum {string} */
+            status: "active" | "invalidated";
+            selection: components["schemas"]["ScopeSelection"];
+            exact_scope_ids?: string[];
+            source_types?: string[];
+            artifact_families?: string[];
+            terms: components["schemas"]["ShareRuleTerms"];
+            limits?: components["schemas"]["ShareRunLimits"];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ShareRulePage: {
+            items: components["schemas"]["ShareRule"][];
+        };
+        /** @description The side this acceptance speaks for and, optionally, the Scopes the caller claims to cover. The actor is the authenticated principal and is never a request field; the access boundary decides which coverage the caller may actually claim. */
+        AcceptShareRuleRequest: {
+            /** @enum {string} */
+            side: "origin" | "target";
+            covered_scope_ids?: string[];
+        };
+        ShareAcceptance: {
+            acceptance_id: string;
+            scope_id: string;
+            rule_id: string;
+            version: number;
+            /** @enum {string} */
+            side: "origin" | "target";
+            /** @description The canonical identity the access boundary recorded for this acceptance. */
+            actor: string;
+            terms_digest: string;
+            covered_scope_ids: string[];
+            /** Format: date-time */
+            accepted_at: string;
+        };
+        /** @description One exact pinned origin. Origin identity, reference and digest are withheld together from a reader who holds no current authority there, so acceptance existing is never by itself permission to read another Scope's material. */
+        ShareInput: {
+            /** @enum {string} */
+            kind: "source" | "artifact";
+            /** @default evidence */
+            role: string;
+            paths: string[];
+            /**
+             * @description True when this input's address and digest were withheld from this reader because it holds no current authority at the origin. The count and role remain so a reader can still see that support existed without learning whose it is.
+             * @default false
+             */
+            withheld: boolean;
+            /** @description The owning Scope, present only when the reader may see it. */
+            origin_scope_id?: string | null;
+            /** @description The exact content digest, present only when the reader may open the origin. */
+            digest?: string | null;
+            source_ref?: components["schemas"]["DreamSourceReference"];
+            artifact?: components["schemas"]["ArtifactAddress"];
+        };
+        /** @description One recorded evaluation of a pinned rule version against pinned inputs. Reading it is not permission to open any origin it names. */
+        ShareRun: {
+            scope_id: string;
+            run_id: string;
+            rule_id: string;
+            rule_version: number;
+            /** @enum {string} */
+            state: "pinned" | "invalidated";
+            /** @enum {string} */
+            outcome: "pending" | "no_change" | "needs_evidence" | "rejected" | "committed";
+            terms: components["schemas"]["ShareRuleTerms"];
+            inputs?: components["schemas"]["ShareInput"][];
+            baseline?: components["schemas"]["ArtifactAddress"];
+            baseline_digest?: string | null;
+            /** @description The origin Scopes this run reached, withheld when the reader may not see them. */
+            origins?: string[];
+            /** @description Per-origin journal watermarks recorded when the run was pinned. */
+            source_watermarks?: {
+                [key: string]: unknown;
+            }[];
+            limits?: components["schemas"]["ShareRunLimits"];
+            notification_key?: string | null;
+            retry_of?: string | null;
+            dream_run_id?: string | null;
+            candidate_id?: string | null;
+            committed?: components["schemas"]["ArtifactAddress"];
+            /** Format: date-time */
+            created_at: string;
+        };
+        ShareRunPage: {
+            items: components["schemas"]["ShareRun"][];
+        };
+        CreateShareRunRequest: {
+            /** @description Deduplication key for one discovery notification. Repeating it returns the evaluation already recorded, so a duplicate notification never starts a second run. */
+            notification_key?: string | null;
         };
         ScopeLifecycleTransitionRequest: {
             /** @description The Scope version the caller last observed. A stale value conflicts instead of overwriting a newer lifecycle state or concurrent metadata change. */
@@ -7748,6 +8034,325 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["InvalidRequest"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    list_share_rules: {
+        parameters: {
+            query?: {
+                status?: "active" | "invalidated";
+            };
+            header?: never;
+            path: {
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rule versions in deterministic order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRulePage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    create_share_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareRuleDraft"];
+            };
+        };
+        responses: {
+            /** @description The created rule version. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRule"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    get_share_rule: {
+        parameters: {
+            query?: {
+                version?: number;
+            };
+            header?: never;
+            path: {
+                scope_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rule version. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRule"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    update_share_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateShareRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The new rule version. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRule"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    invalidate_share_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvalidateShareRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The invalidated rule. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRule"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    accept_share_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                rule_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptShareRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The recorded acceptance. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareAcceptance"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    list_share_runs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recorded runs in deterministic order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRunPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    create_share_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateShareRunRequest"];
+            };
+        };
+        responses: {
+            /** @description The pinned run. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    get_share_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pinned run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    retry_share_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The retried run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
     };

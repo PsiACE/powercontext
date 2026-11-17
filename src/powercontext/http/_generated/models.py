@@ -369,6 +369,153 @@ class ScopeExternalReference(BaseModel):
     value: Annotated[StrictStr, Field(max_length=2000, min_length=1, pattern=".*\\S.*")]
 
 
+class InvalidateShareRuleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    expected_version: Annotated[StrictInt, Field(ge=1)]
+
+
+class Status1(StrEnum):
+    ACTIVE = "active"
+    INVALIDATED = "invalidated"
+
+
+class ListShareRulesRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    status: Status1 | None = None
+
+
+class GetShareRuleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    version: Annotated[StrictInt | None, Field(ge=1)] = None
+
+
+class ListShareRunsRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
+
+class AudienceScopeId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+
+
+class Retention(StrEnum):
+    REFERENCE = "reference"
+    INDEPENDENT = "independent"
+
+
+class ShareRuleTerms(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    use: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    audience: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    audience_scope_ids: list[AudienceScopeId] | None = None
+    retention: Retention = Retention.REFERENCE
+
+
+class ShareRunLimits(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    max_origins: Annotated[StrictInt, Field(ge=1, le=64)] = 16
+    max_inputs: Annotated[StrictInt, Field(ge=1, le=128)] = 32
+    max_artifact_revisions: Annotated[StrictInt, Field(ge=1, le=128)] = 16
+    max_scanned_sources: Annotated[StrictInt, Field(ge=1, le=4096)] = 512
+
+
+class ExactScopeId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+
+
+class SourceType1(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+
+
+class ArtifactFamily(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+
+
+class Side(StrEnum):
+    ORIGIN = "origin"
+    TARGET = "target"
+
+
+class CoveredScopeId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+
+
+class AcceptShareRuleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    side: Side
+    covered_scope_ids: list[CoveredScopeId] | None = None
+
+
+class ShareAcceptance(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    acceptance_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+    rule_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    version: Annotated[StrictInt, Field(ge=1)]
+    side: Side
+    actor: Annotated[
+        StrictStr,
+        Field(
+            description="The canonical identity the access boundary recorded for this acceptance.",
+            max_length=256,
+            min_length=1,
+        ),
+    ]
+    terms_digest: Annotated[StrictStr, Field(max_length=71, min_length=1)]
+    covered_scope_ids: list[CoveredScopeId]
+    accepted_at: AwareDatetime
+
+
+class Kind(StrEnum):
+    SOURCE = "source"
+    ARTIFACT = "artifact"
+
+
+class State(StrEnum):
+    PINNED = "pinned"
+    INVALIDATED = "invalidated"
+
+
+class Outcome(StrEnum):
+    PENDING = "pending"
+    NO_CHANGE = "no_change"
+    NEEDS_EVIDENCE = "needs_evidence"
+    REJECTED = "rejected"
+    COMMITTED = "committed"
+
+
+class Origin(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+
+
+class CreateShareRunRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    notification_key: Annotated[
+        StrictStr | None,
+        Field(
+            description="Deduplication key for one discovery notification. Repeating it returns the evaluation already recorded, so a duplicate notification never starts a second run.",
+            max_length=128,
+        ),
+    ] = None
+
+
 class ScopeLifecycleTransitionRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -422,7 +569,7 @@ class ScopeDeletionPreview(BaseModel):
     ] = None
 
 
-class State(StrEnum):
+class State1(StrEnum):
     PENDING = "pending"
     DONE = "done"
     FAILED = "failed"
@@ -434,14 +581,14 @@ class ScopeResourceProgress(BaseModel):
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     handler: Annotated[StrictStr, Field(max_length=64, min_length=1)]
-    state: State
+    state: State1
     attempts: Annotated[StrictInt, Field(ge=0)]
     last_error_code: Annotated[
         StrictStr | None, Field(description="A stable code, never a payload or exception text.", max_length=64)
     ] = None
 
 
-class State1(StrEnum):
+class State2(StrEnum):
     CLEANUP_PENDING = "cleanup_pending"
     COMPLETE = "complete"
 
@@ -454,7 +601,7 @@ class ScopeDeletionReceipt(BaseModel):
     root_scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     membership_digest: Annotated[StrictStr, Field(pattern="^[0-9a-f]{64}$")]
     state: Annotated[
-        State1,
+        State2,
         Field(
             description="cleanup_pending keeps every member unavailable and the unfinished work retryable; complete means every required resource handler finished."
         ),
@@ -719,7 +866,7 @@ class DreamBudget(BaseModel):
     timeout_seconds: Annotated[StrictFloat, Field(gt=0.0, le=120.0)] = 120
 
 
-class Kind(StrEnum):
+class Kind1(StrEnum):
     ARTIFACT = "artifact"
     TAG = "tag"
 
@@ -728,7 +875,7 @@ class DreamCandidateRef(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    kind: Kind = Kind.ARTIFACT
+    kind: Kind1 = Kind1.ARTIFACT
     candidate_id: StrictStr
     version: Annotated[StrictInt, Field(ge=1)]
 
@@ -755,7 +902,7 @@ class CandidateKind(StrEnum):
     TAG = "tag"
 
 
-class Origin(StrEnum):
+class Origin1(StrEnum):
     DREAM = "dream"
     MANUAL = "manual"
 
@@ -966,7 +1113,7 @@ class Role(StrEnum):
     STANDBY = "standby"
 
 
-class State2(StrEnum):
+class State3(StrEnum):
     RUNNING = "running"
     DEGRADED = "degraded"
     STOPPED = "stopped"
@@ -990,7 +1137,7 @@ class ExtractionBackground(BaseModel):
         ),
     ] = None
     state: Annotated[
-        State2,
+        State3,
         Field(
             description="Local Supervisor lifecycle and control state, independent of individual worker outcomes. A running Supervisor may be retrying failed workers. External state is unknown."
         ),
@@ -1003,7 +1150,7 @@ class ExtractionBackground(BaseModel):
     ] = None
 
 
-class Status1(StrEnum):
+class Status3(StrEnum):
     UNVERIFIED = "unverified"
     OBSERVED = "observed"
 
@@ -1521,7 +1668,7 @@ class CommitConnectorCheckpointRequest(BaseModel):
     checkpoint: Annotated[Any | None, Field(...)]
 
 
-class Kind1(StrEnum):
+class Kind2(StrEnum):
     ARTIFACT = "artifact"
 
 
@@ -1537,7 +1684,7 @@ class Trust3(StrEnum):
     UNTRUSTED_HISTORY = "untrusted_history"
 
 
-class Kind2(StrEnum):
+class Kind3(StrEnum):
     SOURCE = "source"
 
 
@@ -1570,7 +1717,7 @@ class PolicyId(StrEnum):
     POWERCONTEXT_PREPARED_CONTEXT_RECEIPT_V1 = "powercontext.prepared-context-receipt.v1"
 
 
-class Outcome(StrEnum):
+class Outcome1(StrEnum):
     COMPLETED = "completed"
     EXPANSION_FAILED = "expansion_failed"
 
@@ -1580,7 +1727,7 @@ class PreparedContextRecallRound(BaseModel):
         extra="forbid",
     )
     round: Annotated[StrictInt, Field(ge=0, le=2)]
-    outcome: Outcome
+    outcome: Outcome1
     retained: StrictBool
 
 
@@ -1593,7 +1740,7 @@ class Mode3(StrEnum):
     NONE = "none"
 
 
-class Outcome1(StrEnum):
+class Outcome2(StrEnum):
     COMPLETED = "completed"
     NOT_RUN = "not_run"
     FAILED = "failed"
@@ -1621,7 +1768,7 @@ class PreparedContextSearchGroup(BaseModel):
         ),
     ]
     mode: Mode3
-    outcome: Outcome1
+    outcome: Outcome2
     fallback_reason: FallbackReason
     count: Annotated[StrictInt, Field(ge=1)]
 
@@ -1634,7 +1781,7 @@ class PreparedContextPromptArtifactAddress(BaseModel):
     artifact: ArtifactReference
 
 
-class Outcome2(StrEnum):
+class Outcome3(StrEnum):
     SELECTED = "selected"
     FALLBACK = "fallback"
     FAILED = "failed"
@@ -1654,7 +1801,7 @@ class PreparedContextRerankGroup(BaseModel):
     )
     round: Annotated[StrictInt, Field(ge=0, le=2)]
     config_id: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
-    outcome: Outcome2
+    outcome: Outcome3
     fallback_reason: FallbackReason1
     count: Annotated[StrictInt, Field(ge=1)]
 
@@ -2364,7 +2511,7 @@ class Validation(StrEnum):
     UNKNOWN = "unknown"
 
 
-class Outcome3(StrEnum):
+class Outcome4(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
     UNKNOWN = "unknown"
@@ -2610,7 +2757,7 @@ class ListExternalSkillsRequest(BaseModel):
     include_unavailable: StrictBool = False
 
 
-class Kind3(StrEnum):
+class Kind4(StrEnum):
     CHANGES = "changes"
 
 
@@ -2621,7 +2768,7 @@ class CodeChangesOperation(BaseModel):
     kind: Literal["changes"]
 
 
-class Kind4(StrEnum):
+class Kind5(StrEnum):
     MAP = "map"
 
 
@@ -2642,7 +2789,7 @@ class CodeMapOperation(BaseModel):
         return self
 
 
-class Kind5(StrEnum):
+class Kind6(StrEnum):
     READ = "read"
 
 
@@ -2664,7 +2811,7 @@ class CodeReadOperation(BaseModel):
         return self
 
 
-class Kind6(StrEnum):
+class Kind7(StrEnum):
     CALLERS = "callers"
     CALLEES = "callees"
     IMPACT = "impact"
@@ -2688,7 +2835,7 @@ class CodeRelationOperation(BaseModel):
         return self
 
 
-class Kind7(StrEnum):
+class Kind8(StrEnum):
     SYMBOLS = "symbols"
     EXPLORE = "explore"
 
@@ -2710,7 +2857,7 @@ class CodeSearchOperation(BaseModel):
         return self
 
 
-class Kind8(StrEnum):
+class Kind9(StrEnum):
     STATUS = "status"
 
 
@@ -2721,7 +2868,7 @@ class CodeStatusOperation(BaseModel):
     kind: Literal["status"]
 
 
-class Kind9(StrEnum):
+class Kind10(StrEnum):
     AFFECTED_TESTS = "affected_tests"
     IMPACT_CHANGES = "impact_changes"
 
@@ -2781,7 +2928,7 @@ class GitObjectFormat(StrEnum):
     SHA256 = "sha256"
 
 
-class Status2(StrEnum):
+class Status4(StrEnum):
     OK = "ok"
     PARTIAL = "partial"
 
@@ -2799,7 +2946,7 @@ class CodeQueryResult(BaseModel):
     dirty: StrictBool
     checked_at: StrictStr
     operation: StrictStr
-    status: Status2 = Status2.OK
+    status: Status4 = Status4.OK
     items: list[dict[str, Any]] | None = None
     coverage: dict[str, Any] | None = None
     limitations: list[StrictStr] | None = None
@@ -2809,7 +2956,7 @@ class Schema11(StrEnum):
     POWERCONTEXT_CODE_STATUS_V1 = "powercontext.code-status.v1"
 
 
-class Status3(StrEnum):
+class Status5(StrEnum):
     DISABLED = "disabled"
     MISSING = "missing"
     BUILDING = "building"
@@ -2830,7 +2977,7 @@ class CodeStatus(BaseModel):
     )
     schema_: Annotated[Schema11, Field(alias="schema")] = Schema11.POWERCONTEXT_CODE_STATUS_V1
     scope_id: StrictStr
-    status: Status3
+    status: Status5
     freshness: Freshness = Freshness.UNKNOWN
     fingerprint: Annotated[StrictStr | None, Field(pattern="^[0-9a-f]{64}$")] = None
     engine: StrictStr = "powercontext-native-v1"
@@ -2856,7 +3003,7 @@ class CodeQueryResponse(RootModel[CodeQueryResult | CodeStatus]):
     root: CodeQueryResult | CodeStatus
 
 
-class Outcome4(StrEnum):
+class Outcome5(StrEnum):
     INJECTED = "injected"
     FAILED = "failed"
 
@@ -2867,7 +3014,7 @@ class RecordBootstrapDeliveryRequest(BaseModel):
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     receipt_id: Annotated[StrictStr, Field(max_length=64, min_length=1, pattern="^[\\x21-\\x7E]+$")]
-    outcome: Outcome4
+    outcome: Outcome5
 
 
 class ContextAssemblySection(BaseModel):
@@ -3420,6 +3567,10 @@ class CreateMemoryArtifactEntry(BaseModel):
     ]
 
 
+class SourceType3(StrEnum):
+    CONTENT = "content"
+
+
 class CreateSourceRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -3665,7 +3816,7 @@ class PromptDemonstration(BaseModel):
     expected_output: Annotated[Any, Field(description="Desired JSON output matching the registered Prompt Definition.")]
 
 
-class Status4(StrEnum):
+class Status6(StrEnum):
     SUPPORTED = "supported"
     DISABLED = "disabled"
     UNSUPPORTED = "unsupported"
@@ -3694,7 +3845,7 @@ class PromptCapability(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    status: Status4
+    status: Status6
     reason: Annotated[Reason2 | None, Field(...)]
     definition_version: StrictStr
     builtin_version: StrictStr
@@ -3747,7 +3898,7 @@ class PromptConfiguration(BaseModel):
     )
     scope_id: StrictStr
     prompt_key: PromptKey
-    status: Status4
+    status: Status6
     reason: Annotated[Reason3 | None, Field(...)]
     mode: Mode4
     artifact: Annotated[ArtifactReference | None, Field(...)]
@@ -3800,7 +3951,7 @@ class ReplaceMemoryArtifactEntry(BaseModel):
     text: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
 
 
-class Kind10(StrEnum):
+class Kind11(StrEnum):
     SEQUENCE = "sequence"
 
 
@@ -3812,7 +3963,7 @@ class SourceSequenceLocator(BaseModel):
     sequence: Annotated[StrictInt, Field(ge=0)]
 
 
-class Kind11(StrEnum):
+class Kind12(StrEnum):
     LINE_RANGE = "line_range"
 
 
@@ -4305,10 +4456,6 @@ class ListAccessRolesRequest(BaseModel):
     family: Annotated[StrictStr | None, Field(max_length=128, min_length=1)] = None
 
 
-class ArtifactFamily(RootModel[StrictStr]):
-    root: Annotated[StrictStr, Field(max_length=128, min_length=1)]
-
-
 class AssignableSubjectType(StrEnum):
     USER = "user"
     SERVICE = "service"
@@ -4618,7 +4765,7 @@ class SourceInstancesResponse(BaseModel):
     management: Management | None = None
 
 
-class Outcome5(StrEnum):
+class Outcome6(StrEnum):
     SAVED = "saved"
     UNCHANGED = "unchanged"
 
@@ -4627,7 +4774,7 @@ class SourceCollectionResult(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    outcome: Outcome5
+    outcome: Outcome6
     source_refs: list[SourceTypeReference]
 
 
@@ -4643,7 +4790,7 @@ class Availability(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
-class Kind12(StrEnum):
+class Kind13(StrEnum):
     COLLECT = "collect"
     WRITE = "write"
 
@@ -4661,7 +4808,7 @@ class SourceManagementReceipt(BaseModel):
     capability_version: Annotated[StrictStr | None, Field(max_length=256, min_length=1)] = None
     availability: Availability | None = None
     updated_at: StrictStr | None = None
-    kind: Kind12 | None = None
+    kind: Kind13 | None = None
     enabled: StrictBool | None = None
     source_refs: Annotated[
         list[SourceTypeReference] | None,
@@ -4721,7 +4868,7 @@ class SourceChannelResponse(BaseModel):
     messages: list[dict[str, Any]] | None = None
 
 
-class Status6(StrEnum):
+class Status8(StrEnum):
     RUNNING = "running"
     COMPLETE = "complete"
     COMPLETED = "completed"
@@ -4746,7 +4893,7 @@ class SourceInstanceExchangeRequest(BaseModel):
     capabilities: Annotated[list[dict[str, Any]] | None, Field(max_length=64)] = None
     response: dict[str, Any] | None = None
     owner: dict[str, Any] | None = None
-    status: Status6 | None = None
+    status: Status8 | None = None
     source_refs: Annotated[
         list[SourceTypeReference] | None,
         Field(
@@ -5240,6 +5387,42 @@ class ArtifactRevision(BaseModel):
     reason: Annotated[StrictStr | None, Field(description="Reason recorded for a rollback.", max_length=1024)] = None
 
 
+class ShareRuleDraft(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    selection: ScopeSelection
+    exact_scope_ids: list[ExactScopeId] | None = None
+    source_types: list[SourceType1] | None = None
+    artifact_families: list[ArtifactFamily] | None = None
+    terms: ShareRuleTerms
+    limits: ShareRunLimits | None = None
+
+
+class ShareRule(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    rule_id: Annotated[StrictStr, Field(max_length=64, min_length=1, pattern=".*\\S.*")]
+    version: Annotated[StrictInt, Field(ge=1)]
+    status: Status1
+    selection: ScopeSelection
+    exact_scope_ids: list[ExactScopeId] | None = None
+    source_types: list[SourceType1] | None = None
+    artifact_families: list[ArtifactFamily] | None = None
+    terms: ShareRuleTerms
+    limits: ShareRunLimits | None = None
+    updated_at: AwareDatetime
+
+
+class ShareRulePage(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    items: list[ShareRule]
+
+
 class ScopeDeletionPreviewRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -5356,7 +5539,7 @@ class ExtractionObservation(BaseModel):
         extra="forbid",
     )
     status: Annotated[
-        Status1,
+        Status3,
         Field(
             description="Unverified means no execution outcome or control failure has been observed in this window. Observed means at least one success or failure is recorded; neither value is a health verdict."
         ),
@@ -5703,7 +5886,7 @@ class RecordSkillUsageRequest(BaseModel):
     selected: StrictBool
     invoked: Invoked
     validation: Validation
-    outcome: Outcome3
+    outcome: Outcome4
     task_source: SourceReference | None = None
     environment_fingerprint: Annotated[StrictStr | None, Field(pattern="^sha256:[0-9a-f]{64}$")] = None
 
@@ -6245,6 +6428,79 @@ class CreateSubjectSourceResponse(BaseModel):
     subject_type: SubjectType
     subject_scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     sources: Annotated[list[SourceRecord], Field(max_length=2, min_length=2)]
+
+
+class UpdateShareRuleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    expected_version: Annotated[
+        StrictInt, Field(description="The rule version the caller last observed; a stale value conflicts.", ge=1)
+    ]
+    draft: ShareRuleDraft
+
+
+class ShareInput(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    kind: Kind
+    role: Annotated[StrictStr, Field(max_length=64, min_length=1)] = "evidence"
+    paths: list[StrictStr]
+    withheld: Annotated[
+        StrictBool,
+        Field(
+            description="True when this input's address and digest were withheld from this reader because it holds no current authority at the origin. The count and role remain so a reader can still see that support existed without learning whose it is."
+        ),
+    ]
+    origin_scope_id: Annotated[
+        StrictStr | None,
+        Field(description="The owning Scope, present only when the reader may see it.", max_length=256, min_length=1),
+    ] = None
+    digest: Annotated[
+        StrictStr | None,
+        Field(description="The exact content digest, present only when the reader may open the origin.", max_length=71),
+    ] = None
+    source_ref: DreamSourceReference | None = None
+    artifact: ArtifactAddress | None = None
+
+
+class ShareRun(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+    run_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    rule_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    rule_version: Annotated[StrictInt, Field(ge=1)]
+    state: State
+    outcome: Outcome
+    terms: ShareRuleTerms
+    inputs: list[ShareInput] | None = None
+    baseline: ArtifactAddress | None = None
+    baseline_digest: Annotated[StrictStr | None, Field(max_length=71)] = None
+    origins: Annotated[
+        list[Origin] | None,
+        Field(description="The origin Scopes this run reached, withheld when the reader may not see them."),
+    ] = None
+    source_watermarks: Annotated[
+        list[dict[str, Any]] | None,
+        Field(description="Per-origin journal watermarks recorded when the run was pinned."),
+    ] = None
+    limits: ShareRunLimits | None = None
+    notification_key: Annotated[StrictStr | None, Field(max_length=128)] = None
+    retry_of: Annotated[StrictStr | None, Field(max_length=64)] = None
+    dream_run_id: Annotated[StrictStr | None, Field(max_length=64)] = None
+    candidate_id: Annotated[StrictStr | None, Field(max_length=64)] = None
+    committed: ArtifactAddress | None = None
+    created_at: AwareDatetime
+
+
+class ShareRunPage(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    items: list[ShareRun]
 
 
 class CreateDreamRunRequest(BaseModel):
@@ -6875,7 +7131,7 @@ class Candidate(BaseModel):
     candidate_kind: CandidateKind
     result: CatalogTagResult | None = None
     operation: StrictStr | None = None
-    origin: Origin | None = None
+    origin: Origin1 | None = None
     dream_run_id: StrictStr | None = None
 
     @model_validator(mode="after")

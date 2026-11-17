@@ -930,6 +930,612 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "x-powercontext-access": {"resolver": "scope_selection_read_access"},
             }
         },
+        "/v1/scopes/{scope_id}/share-rules": {
+            "post": {
+                "tags": ["sharing"],
+                "summary": "Create one standing sharing rule version",
+                "description": "Record a target Scope's "
+                "standing agreement about "
+                "which material its "
+                "processing may consult. "
+                "The rule names a "
+                "declared range, optional "
+                "source-type and "
+                "Artifact-family "
+                "selectors, the terms an "
+                "agreement binds, and the "
+                "run budget. It grants no "
+                "read authority: "
+                "acceptance is a separate "
+                "step by each "
+                "authenticated actor this "
+                "boundary records, and "
+                "every run rechecks "
+                "current authority at "
+                "each origin it actually "
+                "reached.",
+                "operationId": "create_share_rule",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRuleDraft"}}},
+                },
+                "responses": {
+                    "201": {
+                        "description": "The created rule version.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRule"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "get": {
+                "tags": ["sharing"],
+                "summary": "List standing sharing rules for one Scope",
+                "description": "Read the rule versions "
+                "this target Scope owns. "
+                "Rule metadata names the "
+                "declared range and the "
+                "terms it binds; it does "
+                "not disclose any origin's "
+                "body, address or digest.",
+                "operationId": "list_share_rules",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "string", "enum": ["active", "invalidated"]},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The rule versions in deterministic order.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRulePage"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
+        "/v1/scopes/{scope_id}/share-rules/{rule_id}": {
+            "get": {
+                "tags": ["sharing"],
+                "summary": "Read one standing rule version",
+                "operationId": "get_share_rule",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                    {"name": "version", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 1}},
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The rule version.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRule"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "put": {
+                "tags": ["sharing"],
+                "summary": "Replace one standing rule with a new version",
+                "description": "Version "
+                "conditional: a "
+                "stale expected "
+                "version "
+                "conflicts "
+                "instead of "
+                "overwriting a "
+                "newer one, and "
+                "an invalidated "
+                "rule is refused "
+                "rather than "
+                "revived.",
+                "operationId": "update_share_rule",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/UpdateShareRuleRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The new rule version.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRule"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
+        "/v1/scopes/{scope_id}/share-rules/{rule_id}/invalidate": {
+            "post": {
+                "tags": ["sharing"],
+                "summary": "Invalidate one standing rule",
+                "description": "Stop "
+                "future "
+                "runs "
+                "from "
+                "depending "
+                "on "
+                "this "
+                "rule "
+                "and "
+                "refuse "
+                "work "
+                "that "
+                "already "
+                "relies "
+                "on "
+                "it. "
+                "Process "
+                "that "
+                "a "
+                "later "
+                "request "
+                "would "
+                "start "
+                "is "
+                "refused "
+                "rather "
+                "than "
+                "evaluated "
+                "against "
+                "a "
+                "withdrawn "
+                "agreement.",
+                "operationId": "invalidate_share_rule",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/InvalidateShareRuleRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The invalidated rule.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRule"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/share-rules/{rule_id}/versions/{version}/acceptances": {
+            "post": {
+                "tags": ["sharing"],
+                "summary": "Accept one rule version for one side",
+                "description": "Record "
+                "that "
+                "the "
+                "authenticated "
+                "caller "
+                "accepts "
+                "this "
+                "exact "
+                "rule "
+                "version, "
+                "covering "
+                "only "
+                "the "
+                "Scopes "
+                "its "
+                "current "
+                "authority "
+                "permits. "
+                "The "
+                "actor "
+                "is "
+                "the "
+                "principal "
+                "the "
+                "access "
+                "boundary "
+                "resolved; "
+                "it "
+                "is "
+                "never "
+                "taken "
+                "from "
+                "the "
+                "request, "
+                "and "
+                "a "
+                "caller "
+                "cannot "
+                "claim "
+                "coverage "
+                "or "
+                "an "
+                "approver "
+                "it "
+                "does "
+                "not "
+                "hold. "
+                "Acceptance "
+                "binds "
+                "the "
+                "version's "
+                "selector "
+                "and "
+                "terms, "
+                "so "
+                "a "
+                "later "
+                "request "
+                "naming "
+                "an "
+                "approver "
+                "cannot "
+                "create "
+                "or "
+                "reuse "
+                "one.",
+                "operationId": "accept_share_rule",
+                "x-powercontext-access": {"resolver": "share_acceptance_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                    {"name": "version", "in": "path", "required": True, "schema": {"type": "integer", "minimum": 1}},
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/AcceptShareRuleRequest"}}
+                    },
+                },
+                "responses": {
+                    "201": {
+                        "description": "The recorded acceptance.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareAcceptance"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/share-rules/{rule_id}/runs": {
+            "post": {
+                "tags": ["sharing"],
+                "summary": "Discover current material and pin one run",
+                "description": "Evaluate "
+                "the "
+                "active "
+                "rule "
+                "against "
+                "material "
+                "that "
+                "currently "
+                "exists in "
+                "its "
+                "declared "
+                "range and "
+                "pin one "
+                "run "
+                "holding "
+                "the exact "
+                "rule "
+                "version, "
+                "inputs, "
+                "digests "
+                "and "
+                "budget. A "
+                "repeated "
+                "notification "
+                "key "
+                "returns "
+                "the "
+                "evaluation "
+                "already "
+                "recorded "
+                "for it, "
+                "so a "
+                "duplicate "
+                "notification "
+                "never "
+                "starts a "
+                "second "
+                "run. A "
+                "range "
+                "that "
+                "cannot be "
+                "covered "
+                "within "
+                "the "
+                "rule's "
+                "budget is "
+                "refused "
+                "instead "
+                "of "
+                "pinning a "
+                "partial "
+                "conclusion, "
+                "and this "
+                "never "
+                "advances "
+                "the "
+                "target "
+                "Scope's "
+                "own "
+                "Source "
+                "Journal "
+                "cursor.",
+                "operationId": "create_share_run",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateShareRunRequest"}}},
+                },
+                "responses": {
+                    "201": {
+                        "description": "The pinned run.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRun"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "get": {
+                "tags": ["sharing"],
+                "summary": "List recorded runs for one rule",
+                "operationId": "list_share_runs",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "rule_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The recorded runs in deterministic order.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRunPage"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
+        "/v1/scopes/{scope_id}/share-runs/{run_id}": {
+            "get": {
+                "tags": ["sharing"],
+                "summary": "Read one pinned run",
+                "description": "Read the run's "
+                "bound rule "
+                "version, budget, "
+                "state and "
+                "outcome. Origin "
+                "bodies, addresses "
+                "and digests are "
+                "withheld unless "
+                "the caller "
+                "currently holds "
+                "authority at that "
+                "origin, so "
+                "acceptance "
+                "existing is never "
+                "by itself "
+                "permission to "
+                "read another "
+                "Scope's material.",
+                "operationId": "get_share_run",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "run_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The pinned run.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRun"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/share-runs/{run_id}/retry": {
+            "post": {
+                "tags": ["sharing"],
+                "summary": "Retry one run against its exact pinned manifest",
+                "description": "Reuse the "
+                "run's "
+                "recorded "
+                "manifest "
+                "instead of "
+                "discovering "
+                "newer "
+                "material, "
+                "rechecking "
+                "the rule "
+                "version's "
+                "acceptance "
+                "and "
+                "current "
+                "authority "
+                "at every "
+                "recorded "
+                "origin. A "
+                "changed "
+                "head is "
+                "refused so "
+                "a retry "
+                "can never "
+                "silently "
+                "evaluate a "
+                "different "
+                "revision.",
+                "operationId": "retry_share_run",
+                "x-powercontext-access": {"resolver": "path_scope_admin_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "run_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": ".*\\S.*"},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The retried run.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRun"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
         "/v1/scope-deletions/preview": {
             "post": {
                 "tags": ["scopes"],
@@ -8363,6 +8969,330 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["kind", "value"],
+            },
+            "UpdateShareRuleRequest": {
+                "properties": {
+                    "expected_version": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "The rule version the caller last observed; a stale value conflicts.",
+                    },
+                    "draft": {"$ref": "#/components/schemas/ShareRuleDraft"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["expected_version", "draft"],
+            },
+            "InvalidateShareRuleRequest": {
+                "properties": {"expected_version": {"type": "integer", "minimum": 1.0}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["expected_version"],
+            },
+            "ListShareRulesRequest": {
+                "properties": {"status": {"type": "string", "enum": ["active", "invalidated"]}},
+                "additionalProperties": False,
+                "type": "object",
+            },
+            "GetShareRuleRequest": {
+                "properties": {"version": {"type": "integer", "minimum": 1.0}},
+                "additionalProperties": False,
+                "type": "object",
+            },
+            "ListShareRunsRequest": {"additionalProperties": False, "type": "object"},
+            "ShareRuleTerms": {
+                "properties": {
+                    "use": {"type": "string", "maxLength": 128, "minLength": 1},
+                    "audience": {"type": "string", "maxLength": 128, "minLength": 1},
+                    "audience_scope_ids": {
+                        "items": {"type": "string", "maxLength": 256, "minLength": 1},
+                        "type": "array",
+                    },
+                    "retention": {"type": "string", "enum": ["reference", "independent"], "default": "reference"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["use", "audience"],
+                "description": "The labels an accepted agreement "
+                "binds, carried for the authority "
+                "check that enforces them. The rule "
+                "itself grants no access.",
+            },
+            "ShareRunLimits": {
+                "properties": {
+                    "max_origins": {"type": "integer", "maximum": 64.0, "minimum": 1.0, "default": 16},
+                    "max_inputs": {"type": "integer", "maximum": 128.0, "minimum": 1.0, "default": 32},
+                    "max_artifact_revisions": {"type": "integer", "maximum": 128.0, "minimum": 1.0, "default": 16},
+                    "max_scanned_sources": {"type": "integer", "maximum": 4096.0, "minimum": 1.0, "default": 512},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "description": "Bound one run's work. Exceeding any "
+                "bound refuses the whole run instead "
+                "of pinning a partial conclusion.",
+            },
+            "ShareRuleDraft": {
+                "properties": {
+                    "selection": {"$ref": "#/components/schemas/ScopeSelection"},
+                    "exact_scope_ids": {
+                        "items": {"type": "string", "maxLength": 256, "minLength": 1},
+                        "type": "array",
+                        "uniqueItems": True,
+                    },
+                    "source_types": {
+                        "items": {"type": "string", "maxLength": 128, "minLength": 1},
+                        "type": "array",
+                        "uniqueItems": True,
+                    },
+                    "artifact_families": {
+                        "items": {"type": "string", "maxLength": 128, "minLength": 1},
+                        "type": "array",
+                        "uniqueItems": True,
+                    },
+                    "terms": {"$ref": "#/components/schemas/ShareRuleTerms"},
+                    "limits": {"$ref": "#/components/schemas/ShareRunLimits"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["selection", "terms"],
+            },
+            "ShareRule": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rule_id": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": ".*\\S.*"},
+                    "version": {"type": "integer", "minimum": 1.0},
+                    "status": {"type": "string", "enum": ["active", "invalidated"]},
+                    "selection": {"$ref": "#/components/schemas/ScopeSelection"},
+                    "exact_scope_ids": {"items": {"type": "string", "maxLength": 256, "minLength": 1}, "type": "array"},
+                    "source_types": {"items": {"type": "string", "maxLength": 128, "minLength": 1}, "type": "array"},
+                    "artifact_families": {
+                        "items": {"type": "string", "maxLength": 128, "minLength": 1},
+                        "type": "array",
+                    },
+                    "terms": {"$ref": "#/components/schemas/ShareRuleTerms"},
+                    "limits": {"$ref": "#/components/schemas/ShareRunLimits"},
+                    "updated_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "rule_id", "version", "status", "selection", "terms", "updated_at"],
+                "description": "One immutable rule version a target "
+                "Scope owns. It names the declared range "
+                "and bound terms; it discloses no origin "
+                "body, address or digest.",
+            },
+            "ShareRulePage": {
+                "properties": {"items": {"items": {"$ref": "#/components/schemas/ShareRule"}, "type": "array"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["items"],
+            },
+            "AcceptShareRuleRequest": {
+                "properties": {
+                    "side": {"type": "string", "enum": ["origin", "target"]},
+                    "covered_scope_ids": {
+                        "items": {"type": "string", "maxLength": 256, "minLength": 1},
+                        "type": "array",
+                        "uniqueItems": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["side"],
+                "description": "The side this acceptance "
+                "speaks for and, optionally, "
+                "the Scopes the caller "
+                "claims to cover. The actor "
+                "is the authenticated "
+                "principal and is never a "
+                "request field; the access "
+                "boundary decides which "
+                "coverage the caller may "
+                "actually claim.",
+            },
+            "ShareAcceptance": {
+                "properties": {
+                    "acceptance_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1},
+                    "rule_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "version": {"type": "integer", "minimum": 1.0},
+                    "side": {"type": "string", "enum": ["origin", "target"]},
+                    "actor": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "description": "The canonical identity the access boundary recorded for this acceptance.",
+                    },
+                    "terms_digest": {"type": "string", "maxLength": 71, "minLength": 1},
+                    "covered_scope_ids": {
+                        "items": {"type": "string", "maxLength": 256, "minLength": 1},
+                        "type": "array",
+                    },
+                    "accepted_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "acceptance_id",
+                    "scope_id",
+                    "rule_id",
+                    "version",
+                    "side",
+                    "actor",
+                    "terms_digest",
+                    "covered_scope_ids",
+                    "accepted_at",
+                ],
+            },
+            "ShareInput": {
+                "properties": {
+                    "kind": {"type": "string", "enum": ["source", "artifact"]},
+                    "role": {"type": "string", "maxLength": 64, "minLength": 1, "default": "evidence"},
+                    "paths": {"items": {"type": "string"}, "type": "array"},
+                    "withheld": {
+                        "type": "boolean",
+                        "description": "True when "
+                        "this "
+                        "input's "
+                        "address and "
+                        "digest were "
+                        "withheld "
+                        "from this "
+                        "reader "
+                        "because it "
+                        "holds no "
+                        "current "
+                        "authority "
+                        "at the "
+                        "origin. The "
+                        "count and "
+                        "role remain "
+                        "so a reader "
+                        "can still "
+                        "see that "
+                        "support "
+                        "existed "
+                        "without "
+                        "learning "
+                        "whose it "
+                        "is.",
+                        "default": False,
+                    },
+                    "origin_scope_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "description": "The owning Scope, present only when the reader may see it.",
+                        "nullable": True,
+                    },
+                    "digest": {
+                        "type": "string",
+                        "maxLength": 71,
+                        "description": "The exact content digest, present only when the reader may open the origin.",
+                        "nullable": True,
+                    },
+                    "source_ref": {"$ref": "#/components/schemas/DreamSourceReference"},
+                    "artifact": {"$ref": "#/components/schemas/ArtifactAddress"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["kind", "paths", "withheld"],
+                "description": "One exact pinned origin. Origin "
+                "identity, reference and digest are "
+                "withheld together from a reader who "
+                "holds no current authority there, so "
+                "acceptance existing is never by itself "
+                "permission to read another Scope's "
+                "material.",
+            },
+            "ShareRun": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1},
+                    "run_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "rule_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "rule_version": {"type": "integer", "minimum": 1.0},
+                    "state": {"type": "string", "enum": ["pinned", "invalidated"]},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["pending", "no_change", "needs_evidence", "rejected", "committed"],
+                    },
+                    "terms": {"$ref": "#/components/schemas/ShareRuleTerms"},
+                    "inputs": {"items": {"$ref": "#/components/schemas/ShareInput"}, "type": "array"},
+                    "baseline": {"$ref": "#/components/schemas/ArtifactAddress"},
+                    "baseline_digest": {"type": "string", "maxLength": 71, "nullable": True},
+                    "origins": {
+                        "items": {"type": "string", "maxLength": 256, "minLength": 1},
+                        "type": "array",
+                        "description": "The origin Scopes this run reached, withheld when the reader may not see them.",
+                    },
+                    "source_watermarks": {
+                        "items": {"additionalProperties": True, "type": "object"},
+                        "type": "array",
+                        "description": "Per-origin journal watermarks recorded when the run was pinned.",
+                    },
+                    "limits": {"$ref": "#/components/schemas/ShareRunLimits"},
+                    "notification_key": {"type": "string", "maxLength": 128, "nullable": True},
+                    "retry_of": {"type": "string", "maxLength": 64, "nullable": True},
+                    "dream_run_id": {"type": "string", "maxLength": 64, "nullable": True},
+                    "candidate_id": {"type": "string", "maxLength": 64, "nullable": True},
+                    "committed": {"$ref": "#/components/schemas/ArtifactAddress"},
+                    "created_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "scope_id",
+                    "run_id",
+                    "rule_id",
+                    "rule_version",
+                    "state",
+                    "outcome",
+                    "terms",
+                    "created_at",
+                ],
+                "description": "One recorded evaluation of a pinned rule "
+                "version against pinned inputs. Reading it "
+                "is not permission to open any origin it "
+                "names.",
+            },
+            "ShareRunPage": {
+                "properties": {"items": {"items": {"$ref": "#/components/schemas/ShareRun"}, "type": "array"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["items"],
+            },
+            "CreateShareRunRequest": {
+                "properties": {
+                    "notification_key": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "description": "Deduplication "
+                        "key "
+                        "for "
+                        "one "
+                        "discovery "
+                        "notification. "
+                        "Repeating "
+                        "it "
+                        "returns "
+                        "the "
+                        "evaluation "
+                        "already "
+                        "recorded, "
+                        "so "
+                        "a "
+                        "duplicate "
+                        "notification "
+                        "never "
+                        "starts "
+                        "a "
+                        "second "
+                        "run.",
+                        "nullable": True,
+                    }
+                },
+                "additionalProperties": False,
+                "type": "object",
             },
             "ScopeLifecycleTransitionRequest": {
                 "properties": {
