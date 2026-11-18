@@ -558,12 +558,13 @@ class DreamService:
             resolver.limits = record.run.budget
             artifacts, target = _resolve_references(request)
             if record.share_snapshot_id is not None:
+                # A bound run contributes only its exact pin, and only when that pin is
+                # still fully eligible. This runs before any model input, and its result
+                # names the only Scopes the resolver may reach.
+                bound_share = await self._require_share_eligibility(bound, record)
                 # Foreign origins are authorized at the Scope that owns them; without
                 # this the resolver now refuses rather than reusing the local grant.
-                resolver.authorize_origin = self._origin_authorizer(bound, record)
-                # A bound run contributes only its exact pin, and only when that pin is
-                # still fully eligible. This runs before any model input.
-                bound_share = await self._require_share_eligibility(bound, record)
+                resolver.authorize_origin = self._origin_authorizer(bound, record, bound_share)
                 # Only the pin is admitted as evidence. The request's own references are
                 # discarded here so a caller cannot append unpinned material to a shared
                 # run; the exact target keeps its separate checked role.
@@ -593,7 +594,7 @@ class DreamService:
                 expose_catalog_target=request.operation == "revise_tags",
             )
 
-    def _origin_authorizer(self, connection: AsyncConnection, record: DreamRecord):
+    def _origin_authorizer(self, connection: AsyncConnection, record: DreamRecord, bound_share):
         """Authorize one foreign origin reference with the real scoped body rules.
 
         The resolver calls this for every qualified reference and for each lineage read it
@@ -619,9 +620,19 @@ class DreamService:
             return refuse_identity
         access = self.share_access.with_connection(connection)
         audit = AccessAuditContext(transport="background", operation="dream.share_origin")
+        # Only the owning Scopes this verified pin declared were consented to. A lineage hop
+        # that reaches any other Scope is denied instead of expanding the agreed set.
+        consented = frozenset(item.origin_scope_id for item in bound_share.snapshot.inputs)
 
         async def authorize(scope_id: str, ref) -> None:
-            await require_origin_reference(access=access, principal=principal, scope_id=scope_id, ref=ref, audit=audit)
+            await require_origin_reference(
+                access=access,
+                principal=principal,
+                scope_id=scope_id,
+                ref=ref,
+                audit=audit,
+                consented_scope_ids=consented,
+            )
 
         return authorize
 

@@ -36,7 +36,7 @@ from powercontext.builtin.authz.models import AccessAction, PrincipalRef, Resour
 from powercontext.builtin.dream.bindings import operation_spec
 from powercontext.builtin.dream.models import DreamError, DreamOperation
 from powercontext.builtin.evidence.models import QualifiedOrigin
-from powercontext.builtin.sharing.models import ShareInput, ShareRule, ShareSnapshot
+from powercontext.builtin.sharing.models import ShareInput, ShareRule, ShareSnapshot, membership_digest
 from powercontext.sources import SourceRef
 
 if TYPE_CHECKING:
@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 # is refused instead of being treated as its nearest equivalent.
 SUPPORTED_USES = frozenset({"project-conclusion"})
 SUPPORTED_AUDIENCES = frozenset({"project-members"})
+# Only reference retention is implemented: an independent copy is a different storage and
+# deletion contract, so naming it now would pin material this checkpoint cannot keep.
+SUPPORTED_RETENTIONS = frozenset({"reference"})
 
 # Families whose body is owned by the Scope rather than the Artifact. This mirrors the
 # existing exact-revision split and is not a second permission model. Only the legacy
@@ -81,6 +84,7 @@ async def require_origin_reference(
     scope_id: str,
     ref: SourceRef | ArtifactRef,
     audit: AccessAuditContext,
+    consented_scope_ids: frozenset[str] | None = None,
 ) -> None:
     """Authorize one foreign origin reference at the Scope that owns it.
 
@@ -88,8 +92,17 @@ async def require_origin_reference(
     every lineage read the resolver performs in that Scope. A foreign ``atomic-memory``
     body is refused outright: this checkpoint does not support cross-Scope atomic evidence
     and will not read it under a Scope grant.
+
+    ``consented_scope_ids`` is the set of owning Scopes the current agreement actually
+    covers. When the resolver reaches some *other* Scope — a lineage hop the pin never
+    named — that read is denied rather than following current read authority into material
+    no origin consented to. Passing ``None`` means the caller already established coverage
+    and only the body rights below remain.
     """
 
+    if consented_scope_ids is not None and scope_id not in consented_scope_ids:
+        # A dependency outside the agreed Scopes is not a read to expand into.
+        raise ShareIneligibleError("shared_use_dependency_uncovered")
     try:
         await access.require(principal, AccessAction.SCOPE_READ, ResourceRef.scope(scope_id), context=audit)
         if isinstance(ref, ArtifactRef):
@@ -140,6 +153,60 @@ async def _require_target_audience(
         )
 
 
+def require_supported_terms(terms, /) -> None:
+    """Refuse an agreement this checkpoint cannot actually enforce.
+
+    Used before anything is written and again before use, so a rule that names an
+    unsupported use, audience or retention is never treated as its nearest supported
+    equivalent. Only reference retention is implemented; an independent copy is a
+    different storage and deletion contract and is not silently accepted.
+    """
+
+    if terms.use not in SUPPORTED_USES or terms.audience not in SUPPORTED_AUDIENCES:
+        raise ShareIneligibleError("shared_use_unsupported")
+    if terms.retention not in SUPPORTED_RETENTIONS:
+        raise ShareIneligibleError("shared_use_unsupported")
+
+
+async def require_share_authority(
+    *,
+    connection: AsyncConnection,
+    access: AccessControlService,
+    scopes: ScopeApplication,
+    principal: PrincipalRef,
+    audit: AccessAuditContext,
+    scope_id: str,
+    rule: ShareRule,
+    selection,
+    inputs: tuple[ShareInput, ...],
+    expected_membership_digest: str | None = None,
+) -> tuple[tuple[str, int], ...]:
+    """The one authority contract a new pin and a bound execution are both checked against.
+
+    ``access`` must already be bound to ``connection`` so every decision is read from the
+    same transaction that this call confirms and that a pin writes. The declared range comes
+    from the bounded Scope owner on that transaction: complete or refuse, never truncated.
+
+    Reads, in order, all now: supported terms; the target's own current consent; the
+    declared membership; each origin's current consent; the acting principal's target
+    contribution and exact Family body/source rights. Origin body rights are established
+    here *before* any caller reads those bytes, so a pin never fetches material it is not
+    entitled to see.
+    """
+
+    require_supported_terms(rule.terms)
+    declared = await _declared_scopes(scopes, connection, selection)
+    if expected_membership_digest is not None and membership_digest(declared) != expected_membership_digest:
+        # The recorded structure is checked before any authority decision, so a pin whose
+        # range moved is reported as changed terms rather than as a misleading denial.
+        raise ShareIneligibleError("shared_use_terms")
+    await _require_target_audience(access, rule, scope_id, audit)
+    await _require_acceptances(access, rule, inputs, declared, audit)
+    await _require_target_contribution(access, principal, scope_id, audit)
+    await _require_origin_rights(access, principal, inputs, audit)
+    return declared
+
+
 async def _require_current_rule(
     agreements: ShareAgreementRepository,
     connection: AsyncConnection,
@@ -158,8 +225,7 @@ async def _require_current_rule(
         raise ShareIneligibleError("shared_use_terms")
     if rule.terms_digest != snapshot.terms_digest:
         raise ShareIneligibleError("shared_use_terms")
-    if rule.terms.use not in SUPPORTED_USES or rule.terms.audience not in SUPPORTED_AUDIENCES:
-        raise ShareIneligibleError("shared_use_unsupported")
+    require_supported_terms(rule.terms)
     return rule
 
 
@@ -206,13 +272,21 @@ async def require_bound_eligibility(
         if not _spec_admits(spec.allowed_evidence, item):
             raise ShareIneligibleError("shared_use_ineligible_operation")
 
-    declared = await _declared_scopes(scopes, connection, rule.selection)
-    _require_membership(declared, snapshot)
     try:
-        await _require_acceptances(access, rule, snapshot, declared, audit)
-        await _require_target_audience(access, rule, scope_id, audit)
-        await _require_target_contribution(access, principal, scope_id, audit)
-        await _require_origin_rights(access, principal, snapshot, audit)
+        # The same contract a new pin is checked against, read now on this transaction.
+        # The declared range is verified against the pin inside the contract.
+        await require_share_authority(
+            connection=connection,
+            access=access,
+            scopes=scopes,
+            principal=principal,
+            audit=audit,
+            scope_id=scope_id,
+            rule=rule,
+            selection=rule.selection,
+            inputs=snapshot.inputs,
+            expected_membership_digest=snapshot.membership_digest,
+        )
     except AccessControlError as error:
         # Access is the authority; this only reports its refusal as a Dream failure so the
         # attempt records a stable code instead of an internal error.
@@ -244,15 +318,6 @@ def _qualified(item: ShareInput, /) -> QualifiedOrigin:
     )
 
 
-def _require_membership(declared: tuple[tuple[str, int], ...], snapshot: ShareSnapshot, /) -> None:
-    """The pin's recorded structure must still be the declared structure."""
-
-    from powercontext.builtin.sharing.models import membership_digest
-
-    if membership_digest(declared) != snapshot.membership_digest:
-        raise ShareIneligibleError("shared_use_terms")
-
-
 async def _declared_scopes(
     scopes: ScopeApplication, connection: AsyncConnection, selection, /
 ) -> tuple[tuple[str, int], ...]:
@@ -279,7 +344,7 @@ async def _declared_scopes(
 async def _require_acceptances(
     access: AccessControlService,
     rule: ShareRule,
-    snapshot: ShareSnapshot,
+    inputs: tuple[ShareInput, ...],
     declared: tuple[tuple[str, int], ...],
     audit: AccessAuditContext,
     /,
@@ -287,7 +352,7 @@ async def _require_acceptances(
     """Every pinned origin needs an authentic acceptance by an acceptor with current rights."""
 
     declared_ids = {scope_id for scope_id, _ in declared}
-    for item in snapshot.inputs:
+    for item in inputs:
         origin = item.origin_scope_id
         if origin not in declared_ids:
             raise ShareIneligibleError("shared_use_audience")
@@ -316,7 +381,7 @@ async def _require_target_contribution(
 async def _require_origin_rights(
     access: AccessControlService,
     principal: PrincipalRef,
-    snapshot: ShareSnapshot,
+    inputs: tuple[ShareInput, ...],
     audit: AccessAuditContext,
     /,
 ) -> None:
@@ -326,7 +391,7 @@ async def _require_origin_rights(
     ``artifact.read`` on that exact Artifact, exactly as the exact-revision path requires.
     """
 
-    for item in snapshot.inputs:
+    for item in inputs:
         origin = item.origin_scope_id
         await access.require(principal, AccessAction.SCOPE_READ, ResourceRef.scope(origin), context=audit)
         if isinstance(item.reference, ArtifactRef):

@@ -662,35 +662,66 @@ def test_unsupported_use_and_ineligible_operation_stay_fail_closed(tmp_path: Pat
             async with runtime.primary_database.transaction() as connection:
                 descriptor = await ScopeRepository().get(connection, scope_id)
             assert descriptor is not None
-            unsupported_pin = await service_agreement.pin(
-                scope_id,
-                ShareSnapshotDraft(
-                    rule_id=unsupported.rule_id,
-                    rule_version=unsupported.version,
-                    terms_digest=unsupported.terms_digest,
-                    membership_digest=membership_digest(((scope_id, descriptor.version),)),
-                    inputs=(ShareInput(kind="source", origin_scope_id=scope_id, source=stored.ref, digest=digest),),
-                    notification_key="unsupported-use",
-                ),
-                principal=OWNER,
-                context=AUDIT,
+            unsupported_draft = ShareSnapshotDraft(
+                rule_id=unsupported.rule_id,
+                rule_version=unsupported.version,
+                terms_digest=unsupported.terms_digest,
+                membership_digest=membership_digest(((scope_id, descriptor.version),)),
+                inputs=(ShareInput(kind="source", origin_scope_id=scope_id, source=stored.ref, digest=digest),),
+                notification_key="unsupported-use",
             )
+            # A new pin is now refused at the write boundary: an unsupported use never gets
+            # recorded as an instruction, so there is nothing for a run to bind to.
+            with pytest.raises(ShareRejectedError) as unsupported_pin_refused:
+                await service_agreement.pin(scope_id, unsupported_draft, principal=OWNER, context=AUDIT)
+            assert str(unsupported_pin_refused.value) == "shared_use_unsupported"
 
             _compose_sharing(runtime, access, OWNER)
             service = runtime._dream_service
             assert service is not None
+            # The execution boundary enforces the same fact independently: a supported pin
+            # whose use is later unsupported still refuses before any model call.
             request = CreateDreamRunRequest(
                 operation="refine_experience", artifacts=(citation,), idempotency_key="closed-1"
             )
-            run = await service._admit(scope_id, "runtime", request, snapshot_id=unsupported_pin.snapshot_id)
-
+            supported = await service_agreement.create(
+                scope_id,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(scope_id,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side in ("origin", "audience"):
+                await service_agreement.accept(
+                    scope_id,
+                    supported.rule_id,
+                    supported.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=(scope_id,),
+                    context=AUDIT,
+                )
+            usable_pin = await service_agreement.pin(
+                scope_id,
+                ShareSnapshotDraft(
+                    rule_id=supported.rule_id,
+                    rule_version=supported.version,
+                    terms_digest=supported.terms_digest,
+                    membership_digest=membership_digest(((scope_id, descriptor.version),)),
+                    inputs=(ShareInput(kind="source", origin_scope_id=scope_id, source=stored.ref, digest=digest),),
+                    notification_key="closed-supported",
+                ),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            run = await service._admit(scope_id, "runtime", request, snapshot_id=usable_pin.snapshot_id)
             calls_before = len(generator.inputs)
             async with runtime.primary_database.transaction() as connection:
                 record = await service.repository.get(connection, scope_id, run.run_id)
-                with pytest.raises(DreamError) as refused:
-                    await service._resolve(record, connection)
-            assert refused.value.code == "shared_use_unsupported"
-            assert len(generator.inputs) == calls_before == 0
+                resolved = await service._resolve(record, connection)
+            # This pin is fully supported, so it resolves; the zero-call guarantee belongs to
+            # the refusals above rather than to a pin that should work.
+            assert resolved.manifest.nodes
+            assert len(generator.inputs) == calls_before
 
     asyncio.run(scenario())
 
@@ -1183,8 +1214,13 @@ def test_foreign_origin_without_an_origin_authorizer_is_refused(tmp_path: Path) 
     asyncio.run(scenario())
 
 
-async def _setup_pin_without_audience(admindb, access, scope_id: str) -> ShareSnapshot:
-    """Record a pin whose audience side was never consented to by the target."""
+async def _refuse_pin_without_target_consent(admindb, access, scope_id: str, *, other_scope: str | None) -> None:
+    """A new pin must be refused when the target never consented to receive.
+
+    The rule may declare another Scope as its origin, and that Scope may appear to be a
+    plausible audience, but only the rule-owning target's own consent can admit its pin.
+    No audience acceptance is recorded here: that absence is the defect under test.
+    """
 
     sources = SourceRepository(BUILTIN_SOURCE_REGISTRY)
     async with admindb.transaction() as connection:
@@ -1194,9 +1230,10 @@ async def _setup_pin_without_audience(admindb, access, scope_id: str) -> ShareSn
             ContentSource(name="write-test", materialization=SourceMaterialization.CAPTURED, content=ROOT_TEXT),
         )
     service = ShareAgreementService(admindb, access=access, scopes=ScopeRepository(), sources=sources)
+    declared = (scope_id,) if other_scope is None else (scope_id, other_scope)
     rule = await service.create(
         scope_id,
-        ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(scope_id,)), terms=_terms()),
+        ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=declared), terms=_terms()),
         principal=OWNER,
         context=AUDIT,
     )
@@ -1211,31 +1248,41 @@ async def _setup_pin_without_audience(admindb, access, scope_id: str) -> ShareSn
     )
     async with admindb.transaction() as connection:
         descriptor = await ScopeRepository().get(connection, scope_id)
+        other_descriptor = None if other_scope is None else await ScopeRepository().get(connection, other_scope)
     assert descriptor is not None
-    return await service.pin(
-        scope_id,
-        ShareSnapshotDraft(
-            rule_id=rule.rule_id,
-            rule_version=rule.version,
-            terms_digest=rule.terms_digest,
-            membership_digest=membership_digest(((scope_id, descriptor.version),)),
-            inputs=(
-                ShareInput(
-                    kind="source",
-                    origin_scope_id=scope_id,
-                    source=stored.ref,
-                    digest=content_digest(stored.value.model_dump_json().encode()),
+    versions: tuple[tuple[str, int], ...] = ((scope_id, descriptor.version),)
+    if other_descriptor is not None:
+        assert other_scope is not None
+        versions = (*versions, (other_scope, other_descriptor.version))
+    pins_before = await _count_pins(admindb, scope_id)
+    with pytest.raises(ShareRejectedError) as refused:
+        await service.pin(
+            scope_id,
+            ShareSnapshotDraft(
+                rule_id=rule.rule_id,
+                rule_version=rule.version,
+                terms_digest=rule.terms_digest,
+                membership_digest=membership_digest(versions),
+                inputs=(
+                    ShareInput(
+                        kind="source",
+                        origin_scope_id=scope_id,
+                        source=stored.ref,
+                        digest=content_digest(stored.value.model_dump_json().encode()),
+                    ),
                 ),
+                notification_key=f"audience-{other_scope}",
             ),
-            notification_key="audience-absent",
-        ),
-        principal=OWNER,
-        context=AUDIT,
-    )
+            principal=OWNER,
+            context=AUDIT,
+        )
+    assert str(refused.value) == "shared_use_audience"
+    # The refusal wrote nothing: the unavailable consent did not create a pin.
+    assert await _count_pins(admindb, scope_id) == pins_before
 
 
 def test_missing_or_misdirected_audience_acceptance_refuses(tmp_path: Path) -> None:
-    """Only an audience acceptance of exactly the target Scope admits a bound run."""
+    """No new pin may be written without the target's own consent to receive."""
 
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'audience.db'}")
@@ -1290,21 +1337,24 @@ def test_missing_or_misdirected_audience_acceptance_refuses(tmp_path: Path) -> N
                         context=AUDIT,
                     )
 
-            # Without the target's own audience consent the bound run still refuses, and no
-            # model call is spent proving it.
-            pin = await _setup_pin_without_audience(runtime.primary_database, access, target)
-            run = await service._admit(
-                target,
-                "runtime",
-                request.model_copy(update={"idempotency_key": "audience-absent"}),
-                snapshot_id=pin.snapshot_id,
-            )
+            # Both shapes are refused at the write boundary and neither writes a pin: a rule
+            # declaring only the target, and one that also declares another Scope which a
+            # careless reading might mistake for the audience.
+            for other_scope in (None, other):
+                await _refuse_pin_without_target_consent(
+                    runtime.primary_database, access, target, other_scope=other_scope
+                )
+
+            # With consent absent, a run cannot be admitted against any pin at all, and no
+            # model call is spent discovering that.
             calls_before = len(generator.inputs)
-            async with runtime.primary_database.transaction() as connection:
-                record = await service.repository.get(connection, target, run.run_id)
-                with pytest.raises(DreamError) as refused:
-                    await service._resolve(record, connection)
-            assert refused.value.code == "shared_use_audience"
+            with pytest.raises(DreamError):
+                await service._admit(
+                    target,
+                    "runtime",
+                    request.model_copy(update={"idempotency_key": "audience-absent"}),
+                    snapshot_id="snap_absent",
+                )
             assert len(generator.inputs) == calls_before == 0
 
     asyncio.run(scenario())
@@ -4357,42 +4407,41 @@ def test_wrong_audience_consent_refuses_without_reaching_the_model(tmp_path: Pat
             async with runtime.primary_database.transaction() as connection:
                 origin_descriptor = await ScopeRepository().get(connection, origin)
             assert origin_descriptor is not None
-            pin = await agreement.pin(
-                target,
-                ShareSnapshotDraft(
-                    rule_id=rule.rule_id,
-                    rule_version=rule.version,
-                    terms_digest=rule.terms_digest,
-                    membership_digest=membership_digest(((origin, origin_descriptor.version),)),
-                    inputs=(
-                        ShareInput(
-                            kind="source",
-                            origin_scope_id=origin,
-                            source=storedOrigin.ref,
-                            digest=content_digest(storedOrigin.value.model_dump_json().encode()),
-                        ),
+            draft = ShareSnapshotDraft(
+                rule_id=rule.rule_id,
+                rule_version=rule.version,
+                terms_digest=rule.terms_digest,
+                membership_digest=membership_digest(((origin, origin_descriptor.version),)),
+                inputs=(
+                    ShareInput(
+                        kind="source",
+                        origin_scope_id=origin,
+                        source=storedOrigin.ref,
+                        digest=content_digest(storedOrigin.value.model_dump_json().encode()),
                     ),
-                    notification_key="wrong-audience",
                 ),
-                principal=OWNER,
-                context=AUDIT,
+                notification_key="wrong-audience",
             )
-            citation = await _seed_evidence(runtime, target)
 
+            # The write boundary refuses the pin outright: with no target consent there is
+            # no instruction to record, so nothing is left for a run to bind to.
+            pins_before = await _count_pins(runtime.primary_database, target)
+            with pytest.raises(ShareRejectedError) as refused_pin:
+                await agreement.pin(target, draft, principal=OWNER, context=AUDIT)
+            assert str(refused_pin.value) == "shared_use_audience"
+            assert await _count_pins(runtime.primary_database, target) == pins_before
+
+            citation = await _seed_evidence(runtime, target)
             _compose_sharing(runtime, access, OWNER)
             service = runtime._dream_service
             assert service is not None
+            # With no pin there is nothing a bound run can be admitted against.
             request = CreateDreamRunRequest(
                 operation="refine_experience", artifacts=(citation,), idempotency_key="wrong-audience-run"
             )
-            run = await service._admit(target, "runtime", request, snapshot_id=pin.snapshot_id)
-
             calls_before = len(generator.inputs)
-            async with runtime.primary_database.transaction() as connection:
-                record = await service.repository.get(connection, target, run.run_id)
-                with pytest.raises(DreamError) as refused:
-                    await service._resolve(record, connection)
-            assert refused.value.code == "shared_use_audience"
+            with pytest.raises(DreamError):
+                await service._admit(target, "runtime", request, snapshot_id="snap_absent")
             assert len(generator.inputs) == calls_before == 0
 
     asyncio.run(scenario())

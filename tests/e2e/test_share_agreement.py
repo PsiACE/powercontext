@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -52,6 +53,9 @@ from powercontext.builtin.sharing.models import (
 from powercontext.builtin.sharing.service import ShareAgreementService
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, ContentSource
 from powercontext.sources import SourceMaterialization
+
+if TYPE_CHECKING:
+    from powercontext.builtin.authz.service import AccessControlService
 
 ADMIN = PrincipalRef(type="service", id="share-admin")
 ALICE = PrincipalRef(type="user", id="alice")
@@ -283,6 +287,16 @@ def test_agreement_and_exact_pin_read_back_through_reopen(tmp_path: Path) -> Non
                 covered_scope_ids=(origin,),
                 context=AUDIT,
             )
+            # The target's own consent to receive, recorded under these same terms.
+            await service.accept(
+                origin,
+                rule.rule_id,
+                rule.version,
+                principal=ALICE,
+                side="audience",
+                covered_scope_ids=(origin,),
+                context=AUDIT,
+            )
 
             versions = ((origin, (await scopes.get(origin)).version),)
             pin_draft = ShareSnapshotDraft(
@@ -326,7 +340,12 @@ def test_agreement_and_exact_pin_read_back_through_reopen(tmp_path: Path) -> Non
             service = _service(reopened, access)
             rule = await service.get(origin, rule.rule_id)
             assert (rule.version, rule.status) == (1, "active")
-            assert [item.covered_scope_ids for item in rule.acceptances] == [(origin,)]
+            # Both sides survive the reopen: the origin consented, and the target consented
+            # to receive. Neither substitutes for the other.
+            assert sorted((item.side, item.covered_scope_ids) for item in rule.acceptances) == [
+                ("audience", (origin,)),
+                ("origin", (origin,)),
+            ]
             stored_pin = await service.snapshot(origin, pinned.snapshot_id)
             assert stored_pin.inputs == pin_draft.inputs
             assert (stored_pin.inputs_digest, stored_pin.membership_digest) == (
@@ -392,6 +411,16 @@ def test_pin_refuses_unverified_agreement_and_unauthorized_origins(tmp_path: Pat
                 rule.version,
                 principal=ALICE,
                 side="origin",
+                covered_scope_ids=(origin,),
+                context=AUDIT,
+            )
+            # The target's own consent to receive, recorded under these same terms.
+            await service.accept(
+                origin,
+                rule.rule_id,
+                rule.version,
+                principal=ALICE,
+                side="audience",
                 covered_scope_ids=(origin,),
                 context=AUDIT,
             )
@@ -566,6 +595,16 @@ def test_artifact_input_digest_is_verified_against_the_stored_revision(tmp_path:
                 covered_scope_ids=(origin,),
                 context=AUDIT,
             )
+            # The target's own consent to receive, recorded under these same terms.
+            await service.accept(
+                origin,
+                rule.rule_id,
+                rule.version,
+                principal=ALICE,
+                side="audience",
+                covered_scope_ids=(origin,),
+                context=AUDIT,
+            )
             versions = ((origin, (await scopes.get(origin)).version),)
 
             # The exact recorded Artifact digest is accepted.
@@ -642,6 +681,16 @@ def test_revoking_the_acceptor_authority_blocks_a_new_pin(tmp_path: Path) -> Non
                 covered_scope_ids=(origin,),
                 context=AUDIT,
             )
+            # The target's own consent to receive, recorded under these same terms.
+            await service.accept(
+                origin,
+                rule.rule_id,
+                rule.version,
+                principal=ALICE,
+                side="audience",
+                covered_scope_ids=(origin,),
+                context=AUDIT,
+            )
             versions = ((origin, (await scopes.get(origin)).version),)
             snapshot = ShareSnapshotDraft(
                 rule_id=rule.rule_id,
@@ -670,5 +719,300 @@ def test_revoking_the_acceptor_authority_blocks_a_new_pin(tmp_path: Path) -> Non
                     principal=BOB,
                     context=AUDIT,
                 )
+
+    asyncio.run(scenario())
+
+
+class _BodyDenyingAccess:
+    """The real Access service with ARTIFACT_READ denied, to isolate the body permission.
+
+    Only that one action is removed; every other decision is still the real provider's, so
+    a refusal here is about the body right and nothing else.
+    """
+
+    def __init__(self, access) -> None:
+        self._access = access
+
+    def __getattr__(self, name):
+        return getattr(self._access, name)
+
+    def with_connection(self, connection):
+        return _BodyDenyingAccess(self._access.with_connection(connection))
+
+    async def require(self, principal, action, resource, *, context):
+        from powercontext.builtin.authz.errors import AccessDeniedError
+        from powercontext.builtin.authz.models import AccessAction
+        from powercontext.builtin.authz.service import AccessDecision
+
+        if action is AccessAction.ARTIFACT_READ:
+            raise AccessDeniedError
+        await self._access.require(principal, action, resource, context=context)
+        return AccessDecision(allowed=True, reason_code="allowed", policy_revision=None)
+
+
+def test_new_pin_requires_supported_retention(tmp_path: Path) -> None:
+    """A rule naming a retention this checkpoint cannot keep never becomes a pin."""
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'retention.db'}")
+        tables = _tables()
+        async with (
+            SQLiteProfile.open(database, tables=tables) as profile,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            service = _service(profile, access)
+            scopes = ScopeApplication(profile.database)
+            origin = (
+                await scopes.create(ScopeDraft(title="Origin", summary="Shares", idempotency_key="origin"))
+            ).scope_id
+            await _grant(access, ALICE, origin, AccessRole.SCOPE_ADMIN)
+            await _grant(access, BOB, origin, AccessRole.SCOPE_CONTRIBUTOR)
+            source_ref, digest = await _store_source(profile, origin)
+
+            independent = ShareRuleTerms(use="project-conclusion", audience="project-members", retention="independent")
+            rule = await service.create(
+                origin,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=independent),
+                principal=ALICE,
+                context=AUDIT,
+            )
+            for side in ("origin", "audience"):
+                await service.accept(
+                    origin,
+                    rule.rule_id,
+                    rule.version,
+                    principal=ALICE,
+                    side=side,
+                    covered_scope_ids=(origin,),
+                    context=AUDIT,
+                )
+
+            # Both consent sides are authentic, so only the unsupported retention refuses.
+            with pytest.raises(ShareRejectedError) as refused:
+                await service.pin(
+                    origin,
+                    ShareSnapshotDraft(
+                        rule_id=rule.rule_id,
+                        rule_version=rule.version,
+                        terms_digest=rule.terms_digest,
+                        membership_digest=membership_digest(((origin, (await scopes.get(origin)).version),)),
+                        inputs=(ShareInput(kind="source", origin_scope_id=origin, source=source_ref, digest=digest),),
+                        notification_key="independent",
+                    ),
+                    principal=BOB,
+                    context=AUDIT,
+                )
+            assert str(refused.value) == "shared_use_unsupported"
+
+    asyncio.run(scenario())
+
+
+def test_new_pin_needs_the_artifact_body_right_it_reads(tmp_path: Path) -> None:
+    """Pin checks the exact Family body right before it reads the bytes it records.
+
+    The pinner may read the Scope and contribute to it, but that is not body access. The
+    refusal must happen at the pin boundary, so no unread material is ever recorded.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'pin-body.db'}")
+        tables = _tables()
+        async with (
+            SQLiteProfile.open(database, tables=tables) as profile,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            service = _service(profile, access)
+            artifacts = ArtifactRepository(BUILTIN_ARTIFACT_TYPES, sources=SourceRepository(BUILTIN_SOURCE_REGISTRY))
+            scopes = ScopeApplication(profile.database)
+            origin = (
+                await scopes.create(ScopeDraft(title="Origin", summary="Shares", idempotency_key="origin"))
+            ).scope_id
+            await _grant(access, ALICE, origin, AccessRole.SCOPE_ADMIN)
+            await _grant(access, BOB, origin, AccessRole.SCOPE_CONTRIBUTOR)
+
+            async with profile.database.transaction() as connection:
+                artifact = await artifacts.create(
+                    connection,
+                    origin,
+                    "exp-body",
+                    ExperienceDraft(content=ExperienceContent(situation="s", action="a", outcome="o", lesson="l")),
+                )
+            ref = ArtifactRef(family="experience", artifact_id="exp-body", revision=1)
+            digest = content_digest(artifact.model_dump_json().encode())
+
+            rule = await service.create(
+                origin,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=ALICE,
+                context=AUDIT,
+            )
+            for side in ("origin", "audience"):
+                await service.accept(
+                    origin,
+                    rule.rule_id,
+                    rule.version,
+                    principal=ALICE,
+                    side=side,
+                    covered_scope_ids=(origin,),
+                    context=AUDIT,
+                )
+            draft = ShareSnapshotDraft(
+                rule_id=rule.rule_id,
+                rule_version=rule.version,
+                terms_digest=rule.terms_digest,
+                membership_digest=membership_digest(((origin, (await scopes.get(origin)).version),)),
+                inputs=(ShareInput(kind="artifact", origin_scope_id=origin, artifact=ref, digest=digest),),
+                notification_key="pin-body",
+            )
+
+            # With the body right removed for this exact Artifact, the pin is refused even
+            # though every other fact (terms, consent, membership, contribution) holds.
+            denied = _BodyDenyingAccess(access)
+            strict = ShareAgreementService(
+                profile.database,
+                access=cast("AccessControlService", denied),
+                scopes=ScopeRepository(),
+                sources=SourceRepository(BUILTIN_SOURCE_REGISTRY),
+                artifacts=artifacts,
+            )
+            with pytest.raises((ShareRejectedError, AccessDeniedError)):
+                await strict.pin(origin, draft, principal=BOB, context=AUDIT)
+
+            # The same draft succeeds under the real service, so the body right is the
+            # discriminating fact rather than some unrelated refusal.
+            recorded = await service.pin(origin, draft, principal=BOB, context=AUDIT)
+            assert recorded.inputs[0].digest == digest
+
+    asyncio.run(scenario())
+
+
+def test_new_pin_accepts_an_origin_only_range_with_distinct_target_consent(tmp_path: Path) -> None:
+    """A positive pin: the declared range is the origin, and the target consents separately.
+
+    This is the shape the app discovery path needs. The rule-owning target is not a member
+    of the origin range, yet the pin is written because the target consented as itself.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'origin-only.db'}")
+        tables = _tables()
+        async with (
+            SQLiteProfile.open(database, tables=tables) as profile,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            service = _service(profile, access)
+            scopes = ScopeApplication(profile.database)
+            target = (
+                await scopes.create(ScopeDraft(title="Target", summary="Receives", idempotency_key="target"))
+            ).scope_id
+            origin = (
+                await scopes.create(ScopeDraft(title="Origin", summary="Shares", idempotency_key="origin"))
+            ).scope_id
+            assert target != origin
+            await _grant(access, ALICE, target, AccessRole.SCOPE_ADMIN)
+            await _grant(access, ALICE, origin, AccessRole.SCOPE_ADMIN)
+            await _grant(access, BOB, target, AccessRole.SCOPE_CONTRIBUTOR)
+            await _grant(access, BOB, origin, AccessRole.SCOPE_VIEWER)
+            source_ref, digest = await _store_source(profile, origin)
+
+            # The selector declares only the origin: the target is deliberately excluded.
+            rule = await service.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=ALICE,
+                context=AUDIT,
+            )
+            await service.accept(
+                target,
+                rule.rule_id,
+                rule.version,
+                principal=ALICE,
+                side="origin",
+                covered_scope_ids=(origin,),
+                context=AUDIT,
+            )
+            await service.accept(
+                target,
+                rule.rule_id,
+                rule.version,
+                principal=ALICE,
+                side="audience",
+                covered_scope_ids=(target,),
+                context=AUDIT,
+            )
+
+            versions = ((origin, (await scopes.get(origin)).version),)
+            assert versions[0][0] == origin != target
+            pinned = await service.pin(
+                target,
+                ShareSnapshotDraft(
+                    rule_id=rule.rule_id,
+                    rule_version=rule.version,
+                    terms_digest=rule.terms_digest,
+                    membership_digest=membership_digest(versions),
+                    inputs=(ShareInput(kind="source", origin_scope_id=origin, source=source_ref, digest=digest),),
+                    notification_key="origin-only",
+                ),
+                principal=BOB,
+                context=AUDIT,
+            )
+            # The pin records the origin's exact material and the target owns the pin.
+            assert pinned.scope_id == target
+            assert pinned.inputs[0].origin_scope_id == origin
+            assert pinned.inputs[0].digest == digest
+            assert pinned.membership_digest == membership_digest(versions)
+            assert pinned.claimed is False and pinned.dream_run_id is None
+            # The target is not smuggled into the recorded structure.
+            assert target not in {scope_id for scope_id, _ in versions}
+
+    asyncio.run(scenario())
+
+
+def test_origin_hook_denies_a_scope_the_agreement_never_covered() -> None:
+    """The resolver's origin hook refuses a Scope outside the consented set.
+
+    Pinning fixes exact material in the Scopes an agreement named. A later lineage hop that
+    reaches some other Scope is a dependency nobody consented to, so it must be denied
+    rather than followed on current read authority.
+    """
+
+    async def scenario() -> None:
+        from powercontext.builtin.authz.composition import open_builtin_access_control
+
+        database = SQLiteConfig(url="sqlite+aiosqlite://")
+        async with open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access:
+            agreed = "scope_agreed"
+            reached = "scope_elsewhere"
+            await _grant(access, BOB, agreed, AccessRole.SCOPE_VIEWER)
+            # Bob can genuinely read the other Scope too; the gate must not care.
+            await _grant(access, BOB, reached, AccessRole.SCOPE_VIEWER)
+
+            from powercontext.builtin.sharing.eligibility import require_origin_reference
+            from powercontext.sources import SourceRef
+
+            ref = SourceRef(source_type="content", source_id="s-1")
+            consented = frozenset({agreed})
+
+            # Inside the covered set the read is authorized by Access as usual.
+            await require_origin_reference(
+                access=access,
+                principal=BOB,
+                scope_id=agreed,
+                ref=ref,
+                audit=AUDIT,
+                consented_scope_ids=consented,
+            )
+
+            # Outside it, current read authority is not enough.
+            with pytest.raises(Exception) as refused:
+                await require_origin_reference(
+                    access=access,
+                    principal=BOB,
+                    scope_id=reached,
+                    ref=ref,
+                    audit=AUDIT,
+                    consented_scope_ids=consented,
+                )
+            assert getattr(refused.value, "code", None) == "shared_use_dependency_uncovered"
 
     asyncio.run(scenario())

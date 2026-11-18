@@ -291,9 +291,6 @@ class ShareAgreementService:
             raise ShareRejectedError("access_unavailable")
         if principal is None:
             raise ShareRejectedError("access_identity_required")
-        await self.access.require(
-            principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(scope_id), context=context
-        )
         async with self.database.transaction() as connection:
             if draft.notification_key is not None:
                 existing = await self.repository.snapshot_by_notification(
@@ -313,9 +310,9 @@ class ShareAgreementService:
                         raise ShareRejectedError("shared_use_notification_conflict")
                     return recorded
             rule = await self._require_current_rule(connection, scope_id, draft)
-            declared = await self._declared_scopes(connection, rule.selection)
-            self._require_declared_structure(draft, declared)
-            await self._require_pin_agreement(connection, rule, declared, draft, principal, context)
+            # One contract: terms, target consent, declared membership, origin consent,
+            # contribution and exact body rights, all before any origin bytes are read.
+            await self._require_pin_agreement(connection, rule, scope_id, draft, principal, context)
             snapshot = ShareSnapshot(
                 scope_id=scope_id,
                 snapshot_id=snapshot_id or self._new_id("snap"),
@@ -417,60 +414,56 @@ class ShareAgreementService:
             raise ShareTermsChangedError()
         return rule
 
-    def _require_declared_structure(self, draft: ShareSnapshotDraft, declared: tuple[ScopeDescriptor, ...], /) -> None:
+    def _require_declared_structure(self, draft: ShareSnapshotDraft, declared: tuple[tuple[str, int], ...], /) -> None:
         """The pinned membership must be the structure the owning store reports now."""
 
-        versions = tuple(sorted((scope.scope_id, int(scope.version)) for scope in declared))
-        if draft.membership_digest != membership_digest(versions):
+        if draft.membership_digest != membership_digest(tuple(sorted(declared))):
             raise ShareTermsChangedError()
 
     async def _require_pin_agreement(
         self,
         connection: AsyncConnection,
         rule: ShareRule,
-        declared: tuple[ScopeDescriptor, ...],
+        scope_id: str,
         draft: ShareSnapshotDraft,
         principal: PrincipalRef,
         context: AccessAuditContext,
         /,
     ) -> None:
-        """Every pinned origin is declared, agreed, still administered and unchanged.
+        """A new pin is checked against the same authority contract as a bound execution.
 
-        The origin-side acceptance is the recorded consent; its acceptor's ``scope.admin``
-        is rechecked now against the owning store, because a recorded acceptance is not a
-        perpetual grant. The pinning principal separately needs current read authority at
-        each origin it actually pins.
+        The order matters: supported terms, the target's own current consent, the declared
+        membership, each declared origin's current consent, the pinner's target
+        contribution and exact Family body rights are all established on this transaction
+        *before* any origin material is read. So a pin never fetches bytes it has no right
+        to see, and the facts it records are the facts that admitted it.
 
-        This checks the *origin* side only. Audience consent is the target's own agreement
-        to receive, and it is enforced where the target is actually the audience: at bound
-        execution and at approval. Requiring it here would also make writing a pin depend
-        on the target's relation to the origin range.
+        Access is bound to this transaction rather than the service's default, because the
+        decisions and the write they authorize must not come from another connection.
         """
 
         assert self.access is not None  # noqa: S101 - the public pin path rejects a missing service
-        declared_ids = {scope.scope_id for scope in declared}
+        from powercontext.builtin.sharing.eligibility import ShareIneligibleError, require_share_authority
+
+        try:
+            declared = await require_share_authority(
+                connection=connection,
+                access=self.access.with_connection(connection),
+                scopes=self._range_owner,
+                principal=principal,
+                audit=context,
+                scope_id=scope_id,
+                rule=rule,
+                selection=rule.selection,
+                inputs=draft.inputs,
+            )
+        except ShareIneligibleError as error:
+            # The contract reports Dream codes; a pin reports its own refusal vocabulary so
+            # the write boundary keeps one stable failure surface.
+            raise ShareRejectedError(error.code) from error
+        # The declared structure is compared against the owner's report, never the draft.
+        self._require_declared_structure(draft, declared)
         for item in draft.inputs:
-            origin = item.origin_scope_id
-            if origin not in declared_ids:
-                # A pin cannot widen the agreement to a Scope the rule never named.
-                raise ShareRejectedError("shared_use_audience")
-            acceptor = next(
-                (
-                    acceptance
-                    for acceptance in rule.acceptances
-                    if acceptance.side == "origin" and origin in acceptance.covered_scope_ids
-                ),
-                None,
-            )
-            if acceptor is None or acceptor.terms_digest != rule.terms_digest:
-                raise ShareRejectedError("shared_use_not_agreed")
-            await self.access.require(
-                _principal_from_actor(acceptor.actor),
-                AccessAction.SCOPE_ADMIN,
-                ResourceRef.scope(origin),
-                context=context,
-            )
-            await self.access.require(principal, AccessAction.SCOPE_READ, ResourceRef.scope(origin), context=context)
             await self._require_recorded_digest(connection, item)
 
     async def _require_recorded_digest(self, connection: AsyncConnection, item: ShareInput, /) -> None:

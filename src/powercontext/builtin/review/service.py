@@ -1115,7 +1115,7 @@ class ReviewService:
             ) not in declared:
                 # A directly cited input must be the material the pin fixed.
                 raise InvalidCandidateError("audit", "direct support is not the pinned material")
-        await self._authorize_reachable(connection, record, expected, direct)
+        await self._authorize_reachable(connection, record, expected, direct, snapshot)
         if self._evidence is None:
             raise InvalidCandidateError("approval", "shared_use_approval_unavailable")
         try:
@@ -1124,7 +1124,7 @@ class ReviewService:
             raise InvalidCandidateError("approval", "adopted support moved") from error
         return expected
 
-    async def _authorize_reachable(self, connection, record, origins, direct, /) -> None:
+    async def _authorize_reachable(self, connection, record, origins, direct, snapshot, /) -> None:
         """Authorize actual reachable foreign dependencies before reading their bytes."""
 
         from powercontext.builtin.sharing.eligibility import require_origin_reference
@@ -1136,6 +1136,10 @@ class ReviewService:
             raise InvalidCandidateError("approval", "shared_use_approval_unavailable")
         access = self._share_access.with_connection(connection)
         audit_context = AccessAuditContext(transport="background", operation="review.share_reachable")
+        # Only Scopes the current agreement covers may contribute reachable support. Anything
+        # else is a dependency the origins never consented to, so it is denied here rather
+        # than discovered later by a read.
+        consented = frozenset(item.origin_scope_id for item in snapshot.inputs)
         for origin in origins:
             reference = origin.reference
             if origin.scope_id == self._scope_id or (origin.scope_id, reference.model_dump_json()) in direct:
@@ -1147,6 +1151,7 @@ class ReviewService:
                     scope_id=origin.scope_id,
                     ref=reference,
                     audit=audit_context,
+                    consented_scope_ids=consented,
                 )
             except Exception as error:
                 raise InvalidCandidateError("approval", "reachable support is not authorized") from error
