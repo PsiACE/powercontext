@@ -34,6 +34,7 @@ from sqlalchemy import func, select, update
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.authz import AccessRole, PrincipalRef, ResourceRef
 from powercontext.builtin.authz.composition import open_builtin_access_control
+from powercontext.builtin.authz.errors import AccessDeniedError
 from powercontext.builtin.authz.service import AccessAuditContext, CreateBinding
 from powercontext.builtin.dream.bindings import binding_for_request, operation_spec
 from powercontext.builtin.dream.models import (
@@ -4443,5 +4444,544 @@ def test_wrong_audience_consent_refuses_without_reaching_the_model(tmp_path: Pat
             with pytest.raises(DreamError):
                 await service._admit(target, "runtime", request, snapshot_id="snap_absent")
             assert len(generator.inputs) == calls_before == 0
+
+    asyncio.run(scenario())
+
+
+async def _seed_discoverable_experience(runtime, scope_id: str, *, name: str, text: str):
+    """Persist one real Experience with a lineage Source, as discovery would find it."""
+
+    sources = SourceRepository(BUILTIN_SOURCE_REGISTRY)
+    artifacts = ArtifactRepository(BUILTIN_ARTIFACT_TYPES, sources=sources)
+    async with runtime.primary_database.transaction() as connection:
+        stored = await sources.add(
+            connection,
+            scope_id,
+            ContentSource(name=name, materialization=SourceMaterialization.CAPTURED, content=text),
+        )
+    async with runtime.primary_database.transaction() as connection:
+        created = await artifacts.create(connection, scope_id, f"exp-{name}", experience_draft_with_source(stored.ref))
+    return ArtifactRef(family="experience", artifact_id=f"exp-{name}", revision=created.revision)
+
+
+class _DiscoveryProfileGenerator:
+    """Proposes a first project Profile from the discovered pinned Source."""
+
+    config_id = "test-share-discovery-profile-v1"
+
+    def __init__(self) -> None:
+        self.inputs = []
+
+    async def generate(self, value):
+        self.inputs.append(value)
+        cited = next(item.evidence_id for item in value.evidence.evidence if item.kind == "source")
+        from powercontext.builtin.artifacts.profile.models import ProfileWriteContent
+
+        return GenerationResult(
+            output=DreamPlan(
+                outcome="proposed",
+                intent="create",
+                reason="A discovered Source supports this first project Profile.",
+                proposal=ProfileWriteContent(content="# Project\n\nDiscovered Profile."),
+                evidence_ids=(cited,),
+            ),
+            usage=InferenceUsage(requests=1, input_tokens=20, output_tokens=20),
+        )
+
+
+async def _discovery_application(runtime, access, principal):
+    """The fixture-only app surface. Production composes none of this."""
+
+    from powercontext.builtin.sharing.discovery import ShareDiscoveryApplication
+
+    sources = SourceRepository(BUILTIN_SOURCE_REGISTRY)
+    artifacts = ArtifactRepository(BUILTIN_ARTIFACT_TYPES, sources=sources)
+    agreement = ShareAgreementService(
+        runtime.primary_database,
+        access=access,
+        scopes=ScopeRepository(),
+        sources=sources,
+        artifacts=artifacts,
+    )
+    service = runtime._dream_service
+    assert service is not None
+    return (
+        ShareDiscoveryApplication(
+            runtime.primary_database,
+            access=access,
+            agreements=agreement,
+            sources=sources,
+            artifacts=artifacts,
+            dreams=service,
+        ),
+        agreement,
+    )
+
+
+def test_app_trigger_discovers_agreed_input_and_publishes_the_first_profile(tmp_path: Path) -> None:
+    """One app trigger discovers real input, pins it, and reaches an official Profile.
+
+    The caller supplies a rule and a notification key, never a reference list. Discovery
+    reads the agreed range from its owning store, the pin fixes exactly what was found,
+    the existing Worker generates, and ordinary Review publishes Profile @1.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'discover.db'}")
+        generator = _DiscoveryProfileGenerator()
+        async with (
+            open_dream_runtime(
+                _config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=generator,
+            ) as runtime,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            await _ensure_share_tables(runtime.primary_database)
+            target = (await runtime.scopes.create(ScopeDraft(title="T", summary="t", idempotency_key="t"))).scope_id
+            origin = (await runtime.scopes.create(ScopeDraft(title="O", summary="o", idempotency_key="o"))).scope_id
+            for scope_id in (target, origin):
+                for role in (AccessRole.SCOPE_ADMIN, AccessRole.SCOPE_CONTRIBUTOR, AccessRole.SCOPE_VIEWER):
+                    await _grant(access, OWNER, scope_id, role)
+
+            # One real Experience in the origin; nothing in the target.
+            seeded = await _seed_discoverable_experience(
+                runtime, origin, name="observed", text="Replayed the write with key K; exactly one row remained."
+            )
+            from powercontext.builtin.persistence.profile import ProfilePolicyRepository
+
+            async with runtime.primary_database.transaction() as connection:
+                await ProfilePolicyRepository().create(connection, target, enabled=True)
+
+            application, agreement = await _discovery_application(runtime, access, OWNER)
+            rule = await agreement.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side, covered in (("origin", (origin,)), ("audience", (target,))):
+                await agreement.accept(
+                    target,
+                    rule.rule_id,
+                    rule.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=covered,
+                    context=AUDIT,
+                )
+
+            _compose_sharing(runtime, access, OWNER)
+            result = await application.trigger(target, rule.rule_id, "discover-1", principal=OWNER, context=AUDIT)
+            # The caller gets a run reference only: no pin, no origin identity.
+            assert result.replayed is False
+            assert result.operation == "initialize_profile"
+            assert result.run_id
+            assert not hasattr(result, "inputs")
+            assert origin not in result.model_dump_json()
+
+            supervisor = runtime.artifact_processing_supervisor
+            assert supervisor is not None
+            supervisor.wake(
+                binding_for_request(
+                    CreateDreamRunRequest(
+                        operation="initialize_profile", artifacts=(seeded,), idempotency_key="discover-1"
+                    )
+                )
+            )
+            await process_pending(runtime)
+
+            finished = await runtime.dream.for_scope(target, principal_id="runtime").get(
+                GetDreamRunRequest(run_id=result.run_id)
+            )
+            assert finished.status == "succeeded", finished.error
+            assert finished.candidate is not None
+            # The model saw the discovered origin material, not a caller-supplied list.
+            assert len(generator.inputs) == 1
+            manifest = finished.input_manifest
+            assert manifest is not None
+            assert any(node.origin_scope_id == origin for node in manifest.nodes)
+
+            review = runtime.review.for_scope(target)
+            await review.approve(
+                ApproveCandidateRequest(candidate_id=finished.candidate.candidate_id, expected_version=1)
+            )
+            async with runtime.primary_database.transaction() as connection:
+                profile = await runtime.profiles.latest(connection, target)
+            assert profile is not None
+            assert profile.revision == 1
+
+    asyncio.run(scenario())
+
+
+def test_notification_retry_replays_the_recorded_evaluation_without_reevaluating(tmp_path: Path) -> None:
+    """A retried notification resolves its recorded run first, and never generates again.
+
+    After the first evaluation the agreed range gains new material. The retry must answer
+    the recorded evaluation, so today's material is never taken as input.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'replay.db'}")
+        generator = _DiscoveryProfileGenerator()
+        async with (
+            open_dream_runtime(
+                _config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=generator,
+            ) as runtime,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            await _ensure_share_tables(runtime.primary_database)
+            target = (await runtime.scopes.create(ScopeDraft(title="T", summary="t", idempotency_key="t"))).scope_id
+            origin = (await runtime.scopes.create(ScopeDraft(title="O", summary="o", idempotency_key="o"))).scope_id
+            for scope_id in (target, origin):
+                for role in (AccessRole.SCOPE_ADMIN, AccessRole.SCOPE_CONTRIBUTOR, AccessRole.SCOPE_VIEWER):
+                    await _grant(access, OWNER, scope_id, role)
+            await _seed_discoverable_experience(runtime, origin, name="first", text="First observed material.")
+            from powercontext.builtin.persistence.profile import ProfilePolicyRepository
+
+            async with runtime.primary_database.transaction() as connection:
+                await ProfilePolicyRepository().create(connection, target, enabled=True)
+
+            application, agreement = await _discovery_application(runtime, access, OWNER)
+            rule = await agreement.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side, covered in (("origin", (origin,)), ("audience", (target,))):
+                await agreement.accept(
+                    target,
+                    rule.rule_id,
+                    rule.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=covered,
+                    context=AUDIT,
+                )
+            _compose_sharing(runtime, access, OWNER)
+            first = await application.trigger(target, rule.rule_id, "notify-1", principal=OWNER, context=AUDIT)
+            assert first.replayed is False
+
+            # The agreement's range gains new material after the evaluation was recorded.
+            await _seed_discoverable_experience(runtime, origin, name="later", text="Later material.")
+
+            pins_before = await _count_pins(runtime.primary_database, target)
+            retried = await application.trigger(target, rule.rule_id, "notify-1", principal=OWNER, context=AUDIT)
+            # The recorded evaluation answers: same run, no second pin, no second run.
+            assert retried.replayed is True
+            assert retried.run_id == first.run_id
+            assert await _count_pins(runtime.primary_database, target) == pins_before
+            # Nothing was generated again, and the later material was never an input.
+            assert len(generator.inputs) == 0
+
+    asyncio.run(scenario())
+
+
+def test_later_eligible_input_discovers_a_new_notification_into_profile_two(tmp_path: Path) -> None:
+    """New eligible input under a new notification produces the next official revision."""
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'next.db'}")
+        generator = _DiscoveryProfileGenerator()
+        async with (
+            open_dream_runtime(
+                _config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=generator,
+            ) as runtime,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            await _ensure_share_tables(runtime.primary_database)
+            target = (await runtime.scopes.create(ScopeDraft(title="T", summary="t", idempotency_key="t"))).scope_id
+            origin = (await runtime.scopes.create(ScopeDraft(title="O", summary="o", idempotency_key="o"))).scope_id
+            for scope_id in (target, origin):
+                for role in (AccessRole.SCOPE_ADMIN, AccessRole.SCOPE_CONTRIBUTOR, AccessRole.SCOPE_VIEWER):
+                    await _grant(access, OWNER, scope_id, role)
+            seeded = await _seed_discoverable_experience(runtime, origin, name="seed", text="Seed material.")
+            from powercontext.builtin.persistence.profile import ProfilePolicyRepository
+
+            async with runtime.primary_database.transaction() as connection:
+                await ProfilePolicyRepository().create(connection, target, enabled=True)
+
+            application, agreement = await _discovery_application(runtime, access, OWNER)
+            rule = await agreement.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side, covered in (("origin", (origin,)), ("audience", (target,))):
+                await agreement.accept(
+                    target,
+                    rule.rule_id,
+                    rule.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=covered,
+                    context=AUDIT,
+                )
+            _compose_sharing(runtime, access, OWNER)
+            supervisor = runtime.artifact_processing_supervisor
+            assert supervisor is not None
+
+            async def evaluate(key: str):
+                result = await application.trigger(target, rule.rule_id, key, principal=OWNER, context=AUDIT)
+                supervisor.wake(
+                    binding_for_request(
+                        CreateDreamRunRequest(operation="initialize_profile", artifacts=(seeded,), idempotency_key=key)
+                    )
+                )
+                await process_pending(runtime)
+                finished = await runtime.dream.for_scope(target, principal_id="runtime").get(
+                    GetDreamRunRequest(run_id=result.run_id)
+                )
+                assert finished.status == "succeeded", finished.error
+                return finished
+
+            first = await evaluate("notify-a")
+            review = runtime.review.for_scope(target)
+            await review.approve(ApproveCandidateRequest(candidate_id=first.candidate.candidate_id, expected_version=1))
+
+            # A later eligible input arrives, and a new notification discovers it.
+            await _seed_discoverable_experience(runtime, origin, name="more", text="More material.")
+            second = await evaluate("notify-b")
+            assert second.candidate is not None
+            assert second.candidate.candidate_id != first.candidate.candidate_id
+            # The discovery re-read the range, so the newer Source is present in its pin.
+            manifest = second.input_manifest
+            assert manifest is not None
+            assert len([node for node in manifest.nodes if node.kind == "source"]) >= 2
+
+    asyncio.run(scenario())
+
+
+def test_orphan_pin_from_an_interrupted_evaluation_is_adopted_not_duplicated(tmp_path: Path) -> None:
+    """A pin recorded before its claim is resumed, never recorded twice.
+
+    An interruption after the pin and before admission leaves a pin whose key matches but
+    whose run is unclaimed. Resuming must adopt that exact pin.
+    """
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'orphan.db'}")
+        generator = _DiscoveryProfileGenerator()
+        async with (
+            open_dream_runtime(
+                _config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=generator,
+            ) as runtime,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            await _ensure_share_tables(runtime.primary_database)
+            target = (await runtime.scopes.create(ScopeDraft(title="T", summary="t", idempotency_key="t"))).scope_id
+            origin = (await runtime.scopes.create(ScopeDraft(title="O", summary="o", idempotency_key="o"))).scope_id
+            for scope_id in (target, origin):
+                for role in (AccessRole.SCOPE_ADMIN, AccessRole.SCOPE_CONTRIBUTOR, AccessRole.SCOPE_VIEWER):
+                    await _grant(access, OWNER, scope_id, role)
+            await _seed_discoverable_experience(runtime, origin, name="orphan", text="Orphan material.")
+            from powercontext.builtin.persistence.profile import ProfilePolicyRepository
+
+            async with runtime.primary_database.transaction() as connection:
+                await ProfilePolicyRepository().create(connection, target, enabled=True)
+
+            application, agreement = await _discovery_application(runtime, access, OWNER)
+            rule = await agreement.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side, covered in (("origin", (origin,)), ("audience", (target,))):
+                await agreement.accept(
+                    target,
+                    rule.rule_id,
+                    rule.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=covered,
+                    context=AUDIT,
+                )
+
+            # A pin exists for this key but has no run: the interrupted shape.
+            async with runtime.primary_database.transaction() as connection:
+                declared = await agreement.declared_scopes(connection, rule)
+            versions = tuple(sorted((m.scope_id, m.version) for m in declared))
+            orphan = await agreement.pin(
+                target,
+                ShareSnapshotDraft(
+                    rule_id=rule.rule_id,
+                    rule_version=rule.version,
+                    terms_digest=rule.terms_digest,
+                    membership_digest=membership_digest(versions),
+                    inputs=await _pinned_inputs_for(runtime, origin),
+                    notification_key="interrupted",
+                ),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            assert orphan.dream_run_id is None
+
+            _compose_sharing(runtime, access, OWNER)
+            resumed = await application.trigger(target, rule.rule_id, "interrupted", principal=OWNER, context=AUDIT)
+            # One pin still, now claimed by exactly one run.
+            assert await _count_pins(runtime.primary_database, target) == 1
+            assert resumed.replayed is False
+            owner = await _pin_owner(runtime.primary_database, target, orphan.snapshot_id)
+            assert owner == resumed.run_id
+
+    asyncio.run(scenario())
+
+
+async def _pinned_inputs_for(runtime, origin: str):
+    """The exact pinned inputs discovery would derive for this origin's Experience."""
+
+    sources = SourceRepository(BUILTIN_SOURCE_REGISTRY)
+    artifacts = ArtifactRepository(BUILTIN_ARTIFACT_TYPES, sources=sources)
+    async with runtime.primary_database.transaction() as connection:
+        heads = await artifacts.active_heads(connection, origin, families=("experience",), limit=8)
+    items = []
+    for head in heads:
+        async with runtime.primary_database.transaction() as connection:
+            artifact = await artifacts.get(connection, origin, head)
+        items.append(
+            ShareInput(
+                kind="artifact",
+                origin_scope_id=origin,
+                artifact=head,
+                digest=content_digest(artifact.model_dump_json().encode()),
+            )
+        )
+        for source_ref in artifact.lineage.sources:
+            async with runtime.primary_database.transaction() as connection:
+                stored = await sources.get_many(connection, origin, (source_ref,))
+            items.append(
+                ShareInput(
+                    kind="source",
+                    origin_scope_id=origin,
+                    source=source_ref,
+                    digest=content_digest(stored[0].value.model_dump_json().encode()),
+                )
+            )
+    return tuple(items)
+
+
+def test_trigger_authorizes_the_caller_before_any_lookup(tmp_path: Path) -> None:
+    """A caller without target contribution learns nothing, even about an existing key."""
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'authz.db'}")
+        generator = _DiscoveryProfileGenerator()
+        async with (
+            open_dream_runtime(
+                _config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=generator,
+            ) as runtime,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            await _ensure_share_tables(runtime.primary_database)
+            target = (await runtime.scopes.create(ScopeDraft(title="T", summary="t", idempotency_key="t"))).scope_id
+            origin = (await runtime.scopes.create(ScopeDraft(title="O", summary="o", idempotency_key="o"))).scope_id
+            for scope_id in (target, origin):
+                for role in (AccessRole.SCOPE_ADMIN, AccessRole.SCOPE_CONTRIBUTOR, AccessRole.SCOPE_VIEWER):
+                    await _grant(access, OWNER, scope_id, role)
+            await _seed_discoverable_experience(runtime, origin, name="authz", text="Authz material.")
+            from powercontext.builtin.persistence.profile import ProfilePolicyRepository
+
+            async with runtime.primary_database.transaction() as connection:
+                await ProfilePolicyRepository().create(connection, target, enabled=True)
+
+            application, agreement = await _discovery_application(runtime, access, OWNER)
+            rule = await agreement.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side, covered in (("origin", (origin,)), ("audience", (target,))):
+                await agreement.accept(
+                    target,
+                    rule.rule_id,
+                    rule.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=covered,
+                    context=AUDIT,
+                )
+            _compose_sharing(runtime, access, OWNER)
+            recorded = await application.trigger(target, rule.rule_id, "authz-key", principal=OWNER, context=AUDIT)
+            assert recorded.replayed is False
+
+            # A viewer may read the target but may not contribute to it.
+            stranger = PrincipalRef(type="user", id="not-a-contributor")
+            await _grant(access, stranger, target, AccessRole.SCOPE_VIEWER)
+            with pytest.raises(AccessDeniedError):
+                await application.trigger(target, rule.rule_id, "authz-key", principal=stranger, context=AUDIT)
+            # The key itself is never confirmed or denied to an unauthorized caller.
+
+    asyncio.run(scenario())
+
+
+def test_discovery_refuses_an_over_budget_range_instead_of_truncating(tmp_path: Path) -> None:
+    """Exceeding the item budget refuses; no partial pin is written."""
+
+    async def scenario() -> None:
+        from powercontext.builtin.sharing import discovery
+
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'budget.db'}")
+        generator = _DiscoveryProfileGenerator()
+        async with (
+            open_dream_runtime(
+                _config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=generator,
+            ) as runtime,
+            open_builtin_access_control(database, bootstrap_administrators=(ADMIN,)) as access,
+        ):
+            await _ensure_share_tables(runtime.primary_database)
+            target = (await runtime.scopes.create(ScopeDraft(title="T", summary="t", idempotency_key="t"))).scope_id
+            origin = (await runtime.scopes.create(ScopeDraft(title="O", summary="o", idempotency_key="o"))).scope_id
+            for scope_id in (target, origin):
+                for role in (AccessRole.SCOPE_ADMIN, AccessRole.SCOPE_CONTRIBUTOR, AccessRole.SCOPE_VIEWER):
+                    await _grant(access, OWNER, scope_id, role)
+            # One Experience plus its Source already uses two of the budgeted items.
+            await _seed_discoverable_experience(runtime, origin, name="budget", text="Budget material.")
+
+            application, agreement = await _discovery_application(runtime, access, OWNER)
+            rule = await agreement.create(
+                target,
+                ShareRuleDraft(selection=ScopeSelection(mode="exact", scope_ids=(origin,)), terms=_terms()),
+                principal=OWNER,
+                context=AUDIT,
+            )
+            for side, covered in (("origin", (origin,)), ("audience", (target,))):
+                await agreement.accept(
+                    target,
+                    rule.rule_id,
+                    rule.version,
+                    principal=OWNER,
+                    side=side,
+                    covered_scope_ids=covered,
+                    context=AUDIT,
+                )
+            _compose_sharing(runtime, access, OWNER)
+
+            # Shrink the budget so the real discovered set cannot fit.
+            original = discovery.MAX_DISCOVERY_ITEMS
+            discovery.MAX_DISCOVERY_ITEMS = 1
+            try:
+                pins_before = await _count_pins(runtime.primary_database, target)
+                with pytest.raises(ShareRejectedError) as refused:
+                    await application.trigger(target, rule.rule_id, "budget-1", principal=OWNER, context=AUDIT)
+                assert str(refused.value) == "shared_use_discovery_item_budget"
+                # Refused, not truncated: no pin and no run were created.
+                assert await _count_pins(runtime.primary_database, target) == pins_before
+                assert len(generator.inputs) == 0
+            finally:
+                discovery.MAX_DISCOVERY_ITEMS = original
 
     asyncio.run(scenario())

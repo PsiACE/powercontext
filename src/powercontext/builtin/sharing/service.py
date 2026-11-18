@@ -281,9 +281,13 @@ class ShareAgreementService:
         the caller may currently read each origin; and that each recorded input digest is
         the digest of the content read there now.
 
-        A caller-supplied digest is evidence to compare, never authorization. A repeated
-        notification key returns the pin already recorded for it, so a duplicate
-        notification never creates a second evaluation of the same material.
+        A caller-supplied digest is evidence to compare, never authorization.
+
+        The repeated-notification branch is an *internal* write-time guard, not a replay
+        contract: it needs a current draft to compare and returns the raw snapshot, so it
+        performs no caller authorization and no projection. An app-level retry resolves
+        the recorded evaluation through ``ShareDiscoveryApplication`` instead, which
+        authorizes the caller and returns only a target run reference.
         """
 
         scope_id = _require_scope(scope_id)
@@ -396,6 +400,16 @@ class ShareAgreementService:
         except ScopeRangeLimitError as error:
             raise ShareRejectedError("shared_use_scope_range") from error
         return tuple(resolved.scopes)
+
+    async def declared_scopes(self, connection: AsyncConnection, rule: ShareRule, /) -> tuple[ScopeDescriptor, ...]:
+        """The rule's own declared range, resolved on the caller's transaction.
+
+        Exposed so an app trigger enumerates exactly the range the agreement names, using
+        the same complete-or-refuse owner the pin checks. A truncated range would let
+        discovery miss an agreed origin and misstate the agreement.
+        """
+
+        return await self._declared_scopes(connection, rule.selection)
 
     async def _require_current_rule(
         self, connection: AsyncConnection, scope_id: str, draft: ShareSnapshotDraft, /

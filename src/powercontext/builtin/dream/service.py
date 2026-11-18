@@ -191,6 +191,24 @@ class DreamService:
     async def create(self, scope_id: str, principal_id: str, request: CreateDreamRunRequest) -> DreamRun:
         return await self._admit(scope_id, principal_id, request, snapshot_id=None)
 
+    async def admit_bound(
+        self,
+        scope_id: str,
+        principal_id: str,
+        request: CreateDreamRunRequest,
+        /,
+        *,
+        snapshot_id: str,
+    ) -> DreamRun:
+        """Admit one run against an existing pin, joining the claim to this admission.
+
+        The sharing application never reaches into admission itself; it asks for exactly
+        this, so the pin claim and the run insert remain one transaction and a failed
+        admission cannot leave a pin bound to a run that was never recorded.
+        """
+
+        return await self._admit(scope_id, principal_id, request, snapshot_id=snapshot_id)
+
     async def _admit(  # noqa: C901 - one admission transaction, ordinary and pinned
         self,
         scope_id: str,

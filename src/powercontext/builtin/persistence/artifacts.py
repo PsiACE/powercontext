@@ -712,6 +712,46 @@ class ArtifactRepository:
             for_update=for_update,
         )
 
+    async def active_heads(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        /,
+        *,
+        families: Sequence[str],
+        limit: int,
+    ) -> tuple[ArtifactRef, ...]:
+        """List the current revision of at most ``limit`` active artifacts by family.
+
+        This returns references only, so a caller can decide what to read before any body
+        is loaded. Ordering is stable so a bounded page is reproducible, and an exhausted
+        limit is reported by the caller rather than silently dropping rows.
+        """
+
+        _require_scope(scope_id)
+        if limit < 1:
+            raise InvalidRepositoryArgumentError("limit", "must be positive")
+        rows = (
+            await connection.execute(
+                select(
+                    ARTIFACT_HEADS_TABLE.c.family,
+                    ARTIFACT_HEADS_TABLE.c.artifact_id,
+                    ARTIFACT_HEADS_TABLE.c.revision,
+                )
+                .where(
+                    ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+                    ARTIFACT_HEADS_TABLE.c.family.in_(tuple(families)),
+                    ARTIFACT_HEADS_TABLE.c.lifecycle_state == "active",
+                )
+                .order_by(ARTIFACT_HEADS_TABLE.c.family, ARTIFACT_HEADS_TABLE.c.artifact_id)
+                .limit(limit)
+            )
+        ).mappings()
+        return tuple(
+            ArtifactRef(family=str(row["family"]), artifact_id=str(row["artifact_id"]), revision=int(row["revision"]))
+            for row in rows
+        )
+
     async def lock_heads(
         self,
         connection: AsyncConnection,
