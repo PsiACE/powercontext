@@ -59,6 +59,10 @@ class DreamOperationSpec:
     spec_version: str = "powercontext.dream.operation.v1"
     validator: Callable[[DreamPlan, CreateDreamRunRequest], None] = DreamPlan.validate_operation
     output_kind: Literal["candidate", "tag_candidate"] = "candidate"
+    # Whether this operation may ever run on a pinned cross-Scope input set. Default
+    # deny: a Family appearing in ``allowed_evidence`` is not authority to share, and a
+    # new operation is not shared until it is deliberately declared here.
+    shared_maintenance: bool = False
 
     @property
     def processing_family(self) -> str | None:
@@ -75,6 +79,7 @@ DREAM_OPERATIONS = (
         ExperienceContent,
         "approve",
         "experience.revise",
+        shared_maintenance=True,
     ),
     DreamOperationSpec(
         "derive_skill",
@@ -85,6 +90,7 @@ DREAM_OPERATIONS = (
         SkillContent,
         "approve",
         "skill.create",
+        shared_maintenance=True,
     ),
     DreamOperationSpec(
         "revise_skill",
@@ -95,6 +101,7 @@ DREAM_OPERATIONS = (
         SkillContent,
         "approve",
         "skill.revise",
+        shared_maintenance=True,
     ),
     DreamOperationSpec(
         "revise_profile",
@@ -105,6 +112,20 @@ DREAM_OPERATIONS = (
         ProfileWriteContent,
         "decide_profile",
         "profile.revise",
+        shared_maintenance=True,
+    ),
+    DreamOperationSpec(
+        # A first Profile has no prior revision: the same Family, evidence and approval
+        # path with an exact absence-to-create, on the existing Profile Worker binding.
+        "initialize_profile",
+        "profile",
+        PROFILE_SOURCE_WINDOW_BINDING,
+        "none",
+        ("experience", "atomic-memory", "source"),
+        ProfileWriteContent,
+        "decide_profile",
+        "profile.create",
+        shared_maintenance=True,
     ),
     DreamOperationSpec(
         "revise_memory",

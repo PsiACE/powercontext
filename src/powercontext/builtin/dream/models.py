@@ -46,6 +46,7 @@ DreamOperation = Literal[
     "derive_skill",
     "revise_skill",
     "revise_profile",
+    "initialize_profile",
     "revise_memory",
     "revise_topic_memory",
     "refresh_handoff",
@@ -132,6 +133,7 @@ class CreateDreamRunRequest(BaseModel):
             "derive_skill": {"experience"},
             "revise_skill": {"experience", "skill"},
             "revise_profile": {"experience", "profile"},
+            "initialize_profile": {"experience"},
             "revise_memory": {"experience", "atomic-memory"},
             "revise_topic_memory": {"experience", "topic-memory"},
             "refresh_handoff": {"experience", "handoff"},
@@ -161,6 +163,11 @@ class CreateDreamRunRequest(BaseModel):
             or self.target.family != "profile"
             or any(ref.family == "profile" and ref != self.target for ref in self.artifacts)
         ):
+            raise DreamError("invalid_dream_operation")
+        if self.operation == "initialize_profile" and (
+            self.target is not None or any(ref.family == "profile" for ref in self.artifacts)
+        ):
+            # A first Profile has no target and no prior revision to cite.
             raise DreamError("invalid_dream_operation")
         if self.operation == "revise_memory" and (self.target is None or self.target.family != "atomic-memory"):
             raise DreamError("invalid_dream_operation")
@@ -259,6 +266,11 @@ class DreamRecord(BaseModel):
 
     A terminal run migrated from the legacy Memory format has no executable
     request; its original request is kept only in ``run.historical_data``.
+
+    ``share_snapshot_id`` is the exact pin this execution claimed, if any. It is written
+    once at admission inside the same transaction as the run and the claimed snapshot, so
+    the two sides of the binding agree. It is absent for every ordinary run, and it does
+    not participate in request or proposal digests.
     """
 
     run: DreamRun
@@ -269,6 +281,11 @@ class DreamRecord(BaseModel):
     deadline_at: datetime | None = None
     profile_policy: ProfileDreamPolicy | None = None
     proposal_fingerprint: str | None = None
+    share_snapshot_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    # The evidence ids the model actually cited for a pinned shared run. Persisted in the
+    # same transaction as the proposal so approval can regenerate the exact same selection
+    # from durable state instead of trusting a stored summary. Absent for ordinary runs.
+    share_citations: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 class DreamPlan(BaseModel):
@@ -311,6 +328,12 @@ class DreamPlan(BaseModel):
         elif request.operation == "revise_skill":
             valid = (
                 isinstance(self.proposal, SkillContent) and self.intent == "correct" and self.proposal.package is None
+            )
+        elif request.operation == "initialize_profile":
+            valid = (
+                isinstance(self.proposal, ProfileWriteContent)
+                and self.proposal.restored_from_revision is None
+                and self.intent == "create"
             )
         elif request.operation == "revise_profile":
             valid = (

@@ -21,7 +21,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from sqlalchemy import update
@@ -40,6 +40,7 @@ from powercontext.builtin.artifacts.profile.models import (
 from powercontext.builtin.artifacts.prompt.models import PromptContent
 from powercontext.builtin.artifacts.skill import SkillContent
 from powercontext.builtin.artifacts.topic_memory.models import TopicMemoryContent
+from powercontext.builtin.authz.service import AccessAuditContext
 from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate, CatalogChangeProposal, TagChangeProposal
 from powercontext.builtin.catalog_changes.service import CatalogChangeService
 from powercontext.builtin.dream.bindings import (
@@ -63,7 +64,11 @@ from powercontext.builtin.dream.models import (
     DreamUsage,
     ListDreamRunsRequest,
 )
-from powercontext.builtin.dream.provenance import candidate_audit, proposal_fingerprint
+from powercontext.builtin.dream.provenance import (
+    bind_shared_adoption,
+    candidate_audit,
+    proposal_fingerprint,
+)
 from powercontext.builtin.evidence.models import (
     EvidenceResolutionError,
     ResolvedEvidence,
@@ -85,6 +90,7 @@ from powercontext.builtin.persistence.dream import DreamRepository, database_now
 from powercontext.builtin.persistence.errors import ArtifactProcessingLeadershipLostError
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.profile import ProfilePolicyRepository
+from powercontext.builtin.persistence.share_agreement import ShareAgreementRepository
 from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE, SCOPES_TABLE
 from powercontext.builtin.processing_diagnostics import safe_classify_processing_error, safe_log_fields
 from powercontext.builtin.review.errors import ArtifactTargetConflictError, InvalidCandidateError
@@ -94,6 +100,11 @@ from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime.processing_contracts import processing_error_code
 from powercontext.builtin.runtime.processing_execution import InvocationAlreadyHandled, ScopeInvocation
 from powercontext.builtin.tags import TagPreconditionError
+
+if TYPE_CHECKING:
+    from powercontext.builtin.authz.models import PrincipalRef
+    from powercontext.builtin.authz.service import AccessAuditContext, AccessControlService
+    from powercontext.builtin.scope.application import ScopeApplication
 
 DreamPermission = Literal["read", "contribute", "write", "write_tags"]
 DreamAuthorizer = Callable[[str, str, DreamPermission, EvidenceReference | None], Awaitable[None]]
@@ -122,6 +133,9 @@ class DreamService:
         operations: tuple[DreamOperation, ...] = (),
         processing: ScopeInvocation | None = None,
         catalog_changes: CatalogFactory | None = None,
+        share_access: AccessControlService | None = None,
+        share_scopes: ScopeApplication | None = None,
+        share_principal: Callable[[str], PrincipalRef | None] | None = None,
     ) -> None:
         self.database = database
         self.repository = DreamRepository()
@@ -139,6 +153,13 @@ class DreamService:
         self.processing = processing
         self.intents = ArtifactProcessingIntentRepository()
         self.catalog_changes = catalog_changes
+        # The owners a bound shared run needs to prove its pin. Absent these, a bound run
+        # refuses instead of falling back to unpinned local admission.
+        self.share_access = share_access
+        self.share_scopes = share_scopes
+        # Resolves the authenticated PrincipalRef for a recorded principal id. It is not an
+        # authorizer: Access remains the only authority.
+        self.share_principal = share_principal
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[AsyncConnection]:
@@ -168,14 +189,55 @@ class DreamService:
         return resolver
 
     async def create(self, scope_id: str, principal_id: str, request: CreateDreamRunRequest) -> DreamRun:
+        return await self._admit(scope_id, principal_id, request, snapshot_id=None)
+
+    async def admit_bound(
+        self,
+        scope_id: str,
+        principal_id: str,
+        request: CreateDreamRunRequest,
+        /,
+        *,
+        snapshot_id: str,
+    ) -> DreamRun:
+        """Admit one run against an existing pin, joining the claim to this admission.
+
+        The sharing application never reaches into admission itself; it asks for exactly
+        this, so the pin claim and the run insert remain one transaction and a failed
+        admission cannot leave a pin bound to a run that was never recorded.
+        """
+
+        return await self._admit(scope_id, principal_id, request, snapshot_id=snapshot_id)
+
+    async def _admit(  # noqa: C901 - one admission transaction, ordinary and pinned
+        self,
+        scope_id: str,
+        principal_id: str,
+        request: CreateDreamRunRequest,
+        *,
+        snapshot_id: str | None,
+    ) -> DreamRun:
+        """Admit one run, optionally claiming exactly one pinned input set.
+
+        ``snapshot_id`` is the private sharing seam. It is deliberately unreachable from
+        the HTTP Runtime and from every ordinary caller: nothing in production passes it,
+        and a bound run refuses to execute until generation-time enforcement exists. When
+        it is given, the claim joins this same transaction, so a failed admission cannot
+        leave a pin bound to a run that was never recorded.
+        """
+
         await self._authorize(scope_id, principal_id, "read")
         async with self._transaction() as connection:
             existing = await self.repository.find_request(connection, scope_id, principal_id, request)
             if existing is not None:
-                return existing.run
+                return self._replay(existing, snapshot_id)
         await self._authorize(scope_id, principal_id, "contribute")
         if request.operation not in self.operations:
             raise DreamError("capability_unavailable")
+        if request.operation == "initialize_profile" and snapshot_id is None:
+            # A first Profile is only admitted for a bound shared run. Refuse here, before
+            # any run write or model invocation, rather than after generation.
+            raise DreamError("shared_use_candidate_unavailable")
         if request.operation == "revise_prompt" and request.target is not None:
             await self.review(scope_id, None).require_prompt_target(request.target)
         resolver = self._resolver(scope_id, principal_id)
@@ -198,10 +260,10 @@ class DreamService:
                 raise DreamError("scope_not_found")
             existing = await self.repository.find_request(connection, scope_id, principal_id, request, current=True)
             if existing is not None:
-                return existing.run
+                return self._replay(existing, snapshot_id)
             profile_policy = (
                 await ProfilePolicyRepository().get(connection, scope_id, for_update=True)
-                if request.operation == "revise_profile"
+                if request.operation in {"revise_profile", "initialize_profile"}
                 else None
             )
             await self._check_target(connection, scope_id, principal_id, request.target)
@@ -209,22 +271,31 @@ class DreamService:
             if request.tag_target is not None:
                 await self._check_tag_target(connection, scope_id, principal_id, request)
             artifacts, target = _resolve_references(request)
-            await resolver.resolve(
-                connection,
-                sources=request.sources,
-                artifacts=artifacts,
-                target=target,
-                project=False,
-                lock_memory=True,
-                expose_catalog_target=request.operation == "revise_tags",
-            )
+            if snapshot_id is None:
+                # An ordinary run admits its request's references here. A bound run admits
+                # only its pin, and the pin may name an identity that does not exist in this
+                # Scope at all, so admission must not resolve the request's references.
+                await resolver.resolve(
+                    connection,
+                    sources=request.sources,
+                    artifacts=artifacts,
+                    target=target,
+                    project=False,
+                    lock_memory=True,
+                    expose_catalog_target=request.operation == "revise_tags",
+                )
             if await self.repository.pending_count(connection, scope_id) >= self.max_pending_per_scope:
                 raise DreamError("capacity_exceeded")
             intent = await self.intents.request(connection, scope_id, binding)
+            run_id = "dr_" + uuid4().hex
+            if snapshot_id is not None:
+                # Claim before inserting the run, in this transaction: the pin and the run
+                # become bound together or not at all.
+                await self._claim_pin(connection, scope_id, snapshot_id, run_id)
             record = DreamRecord(
                 run=DreamRun(
                     scope_id=scope_id,
-                    run_id="dr_" + uuid4().hex,
+                    run_id=run_id,
                     operation=request.operation,
                     target=request.target,
                     tag_target=request.tag_target,
@@ -235,8 +306,33 @@ class DreamService:
                 principal_id=principal_id,
                 request_generation=intent.requested_generation,
                 profile_policy=None if profile_policy is None else ProfileDreamPolicy.from_policy(profile_policy),
+                share_snapshot_id=snapshot_id,
             )
             return (await self.repository.create(connection, record)).run
+
+    def _replay(self, existing: DreamRecord, snapshot_id: str | None, /) -> DreamRun:
+        """Return a recorded run only when its pin binding is exactly the requested one.
+
+        The durable idempotency key already matched the request digest. The pin is the
+        second half of that identity: replaying a key that asked for no pin cannot answer
+        a request that now asks for one, and one pin cannot stand in for another.
+        """
+
+        if existing.share_snapshot_id != snapshot_id:
+            raise DreamError("idempotency_conflict")
+        return existing.run
+
+    async def _claim_pin(self, connection: AsyncConnection, scope_id: str, snapshot_id: str, run_id: str, /) -> None:
+        """Bind one unclaimed pin in this Scope to the run this admission is inserting."""
+
+        from powercontext.builtin.persistence.share_agreement import ShareAgreementRepository
+
+        owner = await ShareAgreementRepository().claim_snapshot(connection, scope_id, snapshot_id, run_id)
+        if owner is None:
+            raise DreamError("share_snapshot_not_found")
+        if owner != run_id:
+            # Another execution already holds this pin. A different request, not a replay.
+            raise DreamError("share_snapshot_claimed")
 
     async def get(self, scope_id: str, principal_id: str, run_id: str) -> DreamRun:
         await self._authorize(scope_id, principal_id, "read")
@@ -406,7 +502,7 @@ class DreamService:
         generated = await self.generator.generate(
             DreamGenerationInput(
                 operation=run.operation,
-                target_evidence_id=_target_evidence_id(record.request),
+                target_evidence_id=_target_evidence_id(record.run.scope_id, record.request),
                 evidence=resolved.projection,
                 profile_policy=record.profile_policy,
                 prompt_definition=prompt_definition,
@@ -431,6 +527,15 @@ class DreamService:
             raise DreamError("budget_exceeded")
         if record.request is None:
             raise DreamError("dream_request_unavailable")
+        if (
+            generated.output.outcome == "proposed"
+            and record.share_snapshot_id is not None
+            and record.run.operation
+            not in {"refine_experience", "derive_skill", "revise_skill", "initialize_profile", "revise_profile"}
+        ):
+            # Only Experience and a derived Skill propose a durable shared Candidate at this
+            # checkpoint; every other shared operation refuses before plan validation.
+            raise DreamError("shared_use_candidate_unavailable")
         operation_spec(run.operation).validator(generated.output, record.request)
         plan = _supported_plan(record, generated.output, resolved)
         if isinstance(plan.proposal, TagChangeProposal) and plan.proposal.after_tags == before_tags:
@@ -470,6 +575,31 @@ class DreamService:
             resolver = self._resolver(record.run.scope_id, record.principal_id)
             resolver.limits = record.run.budget
             artifacts, target = _resolve_references(request)
+            if record.share_snapshot_id is not None:
+                # A bound run contributes only its exact pin, and only when that pin is
+                # still fully eligible. This runs before any model input, and its result
+                # names the only Scopes the resolver may reach.
+                bound_share = await self._require_share_eligibility(bound, record)
+                # Foreign origins are authorized at the Scope that owns them; without
+                # this the resolver now refuses rather than reusing the local grant.
+                resolver.authorize_origin = self._origin_authorizer(bound, record, bound_share)
+                # Only the pin is admitted as evidence. The request's own references are
+                # discarded here so a caller cannot append unpinned material to a shared
+                # run; the exact target keeps its separate checked role.
+                return await resolver.resolve(
+                    bound,
+                    sources=(),
+                    # The separately checked exact target must still reach generation as a
+                    # distinct node; nothing else from the request is admitted.
+                    artifacts=() if target is None else (target,),
+                    qualified=bound_share.origins,
+                    target=target,
+                    include_memory_text=request.operation != "derive_skill",
+                    pinned=record.run.input_manifest,
+                    lock_memory=connection is not None,
+                    expose_prompt_target=request.operation == "revise_prompt",
+                    expose_catalog_target=request.operation == "revise_tags",
+                )
             return await resolver.resolve(
                 bound,
                 sources=request.sources,
@@ -482,6 +612,81 @@ class DreamService:
                 expose_catalog_target=request.operation == "revise_tags",
             )
 
+    def _origin_authorizer(self, connection: AsyncConnection, record: DreamRecord, bound_share):
+        """Authorize one foreign origin reference with the real scoped body rules.
+
+        The resolver calls this for every qualified reference and for each lineage read it
+        performs in that owning Scope, so a foreign body is never admitted on the target's
+        grant. Without the composed owners it refuses instead of falling back.
+        """
+
+        from powercontext.builtin.sharing.eligibility import ShareIneligibleError, require_origin_reference
+
+        if self.share_access is None or self.share_principal is None:
+
+            async def refuse(_scope_id: str, _ref) -> None:
+                raise ShareIneligibleError("shared_use_unenforced")
+
+            return refuse
+
+        principal = self.share_principal(record.principal_id)
+        if principal is None:
+
+            async def refuse_identity(_scope_id: str, _ref) -> None:
+                raise ShareIneligibleError("access_identity_required")
+
+            return refuse_identity
+        access = self.share_access.with_connection(connection)
+        audit = AccessAuditContext(transport="background", operation="dream.share_origin")
+        # Only the owning Scopes this verified pin declared were consented to. A lineage hop
+        # that reaches any other Scope is denied instead of expanding the agreed set.
+        consented = frozenset(item.origin_scope_id for item in bound_share.snapshot.inputs)
+
+        async def authorize(scope_id: str, ref) -> None:
+            await require_origin_reference(
+                access=access,
+                principal=principal,
+                scope_id=scope_id,
+                ref=ref,
+                audit=audit,
+                consented_scope_ids=consented,
+            )
+
+        return authorize
+
+    async def _require_share_eligibility(self, connection: AsyncConnection, record: DreamRecord):
+        """Enforce the run's exact stored pin before any model input is assembled.
+
+        Without the composed owners this refuses. It never falls back to the run's own
+        request references, which would be unpinned local admission.
+        """
+
+        from powercontext.builtin.sharing.eligibility import ShareIneligibleError, require_bound_eligibility
+
+        snapshot_id = record.share_snapshot_id
+        if snapshot_id is None:
+            raise ShareIneligibleError("share_snapshot_unclaimed")
+        if self.share_access is None or self.share_scopes is None or self.share_principal is None:
+            raise ShareIneligibleError("shared_use_unenforced")
+        principal = self.share_principal(record.principal_id)
+        if principal is None:
+            raise ShareIneligibleError("access_identity_required")
+        # Bind Access to this transaction: the checks run inside the admission/resolution
+        # transaction and must not open a second connection or write outside it.
+        bound_access = self.share_access.with_connection(connection)
+        return await require_bound_eligibility(
+            connection=connection,
+            access=bound_access,
+            scopes=self.share_scopes,
+            agreements=ShareAgreementRepository(),
+            principal=principal,
+            audit=AccessAuditContext(transport="background", operation="dream.share_eligibility"),
+            scope_id=record.run.scope_id,
+            operation=record.run.operation,
+            snapshot_id=snapshot_id,
+            run_id=record.run.run_id,
+        )
+
     async def _commit(self, record: DreamRecord, plan: DreamPlan) -> None:
         run = record.run
         async with self._transaction() as connection:
@@ -492,6 +697,11 @@ class DreamService:
             resolved = await self._resolve(record, connection)
             candidate = None
             if plan.outcome == "proposed":
+                if record.share_snapshot_id is not None:
+                    # Persist exactly what the model cited, in this transaction with the
+                    # proposal, so approval regenerates the same selection from durable
+                    # state instead of trusting a stored summary.
+                    record = record.model_copy(update={"share_citations": plan.evidence_ids})
                 if self.attest_candidate is not None and run.operation != "revise_tags":
                     family = {
                         "derive_skill": "skill",
@@ -539,6 +749,9 @@ class DreamService:
             skill=record.run.operation == "derive_skill",
             target=_resolve_references(record.request)[1],
             catalog=record.run.operation == "revise_tags",
+            # The run's own Scope decides what is local, so a foreign node never occupies a
+            # bare local slot even when it appears first in the manifest.
+            scope_id=record.run.scope_id,
         )
         if isinstance(plan.proposal, TagChangeProposal) and record.request.tag_target is not None:
             service = self._catalog(record.run.scope_id, connection)
@@ -560,26 +773,128 @@ class DreamService:
             return DreamCandidateRef(candidate_id=candidate.candidate_id, version=candidate.version, kind="tag")
         review = self.review(record.run.scope_id, connection)
         if isinstance(plan.proposal, ExperienceContent):
-            candidate = await review.propose_experience(
-                plan.proposal,
-                sources=selected.sources,
-                artifacts=selected.artifacts,
-                target=record.run.target,
-                reason=plan.reason,
-                candidate_id=_candidate_id(record),
-            )
+            if record.share_snapshot_id is not None:
+                if not selected.adopted:
+                    # A shared proposal must stand on identifiable support; refusing here
+                    # keeps a Candidate from existing without the audit that names it.
+                    raise DreamError("shared_use_candidate_unavailable")
+                # One server-owned adoption binding, derived here from the durable run, the
+                # persisted manifest and the citations. The review boundary receives only
+                # this value, so it cannot be handed provenance the run did not select.
+                adoption = bind_shared_adoption(
+                    record,
+                    cited=plan.evidence_ids,
+                    manifest=resolved.manifest,
+                )
+                candidate = await review.admit_dream_shared_experience(
+                    plan.proposal,
+                    adoption=adoption,
+                    reason=plan.reason,
+                    candidate_id=_candidate_id(record),
+                )
+
+            else:
+                candidate = await review.propose_experience(
+                    plan.proposal,
+                    sources=selected.sources,
+                    artifacts=selected.artifacts,
+                    target=record.run.target,
+                    reason=plan.reason,
+                    candidate_id=_candidate_id(record),
+                )
         elif isinstance(plan.proposal, SkillContent):
             if record.run.operation == "derive_skill":
-                validate_skill_lineage(SkillGenerationOrigin.EXPERIENCE, selected.sources, selected.artifacts, None)
-            candidate = await review.propose_skill(
-                plan.proposal,
-                sources=selected.sources,
-                artifacts=selected.artifacts,
-                target=record.run.target,
-                reason=plan.reason,
-                candidate_id=_candidate_id(record),
-            )
-        elif isinstance(plan.proposal, ProfileWriteContent) and record.run.operation == "revise_profile":
+                if record.share_snapshot_id is not None:
+                    if not selected.adopted:
+                        raise DreamError("shared_use_candidate_unavailable")
+                    # The same server-owned binding and trusted handoff as Experience; the
+                    # foreign Experience becomes the derived Skill's real lineage support.
+                    adoption = bind_shared_adoption(
+                        record,
+                        cited=plan.evidence_ids,
+                        manifest=resolved.manifest,
+                    )
+                    candidate = await review.admit_dream_shared_skill(
+                        plan.proposal,
+                        adoption=adoption,
+                        reason=plan.reason,
+                        candidate_id=_candidate_id(record),
+                    )
+                else:
+                    validate_skill_lineage(SkillGenerationOrigin.EXPERIENCE, selected.sources, selected.artifacts, None)
+                    candidate = await review.propose_skill(
+                        plan.proposal,
+                        sources=selected.sources,
+                        artifacts=selected.artifacts,
+                        target=record.run.target,
+                        reason=plan.reason,
+                        candidate_id=_candidate_id(record),
+                    )
+            elif record.share_snapshot_id is not None:
+                # A shared Skill revision uses the same trusted handoff. The exact current
+                # target stays in its local lineage slot; foreign support stays qualified.
+                if not selected.adopted:
+                    raise DreamError("shared_use_candidate_unavailable")
+                adoption = bind_shared_adoption(
+                    record,
+                    cited=plan.evidence_ids,
+                    manifest=resolved.manifest,
+                )
+                if record.run.target is None:
+                    raise DreamError("invalid_target")
+                # The prepared package is the real proposal; it preserves the target's
+                # protected metadata and is what the Family write must publish.
+                prepared = await review.prepare_skill_revision(record.run.target, plan.proposal)
+                candidate = await review.admit_dream_shared_skill(
+                    prepared,
+                    adoption=adoption,
+                    reason=plan.reason,
+                    candidate_id=_candidate_id(record),
+                )
+            else:
+                candidate = await review.propose_skill(
+                    plan.proposal,
+                    sources=selected.sources,
+                    artifacts=selected.artifacts,
+                    target=record.run.target,
+                    reason=plan.reason,
+                    candidate_id=_candidate_id(record),
+                )
+        elif isinstance(plan.proposal, ProfileWriteContent) and record.run.operation in {
+            "initialize_profile",
+            "revise_profile",
+        }:
+            if record.share_snapshot_id is not None:
+                # One bound Profile handoff serves both: a first Profile carries no target, a
+                # revision carries exactly its current head. No duplicated revision path.
+                await self._check_profile_policy(connection, record)
+                policy = record.profile_policy
+                if policy is None or self.generator is None or not selected.adopted:
+                    raise DreamError("shared_use_candidate_unavailable")
+                proposal = ProfileCandidateProposal(
+                    content=plan.proposal.content,
+                    dream_run_id=record.run.run_id,
+                    policy_snapshot=policy,
+                    policy_digest=policy.digest,
+                    generator_id=self.generator.config_id,
+                    generator_version=DREAM_PROMPT_VERSION,
+                    created_at=await database_now(connection),
+                )
+                adoption = bind_shared_adoption(
+                    record,
+                    cited=plan.evidence_ids,
+                    manifest=resolved.manifest,
+                )
+                candidate = await review.admit_dream_shared_profile(
+                    proposal,
+                    adoption=adoption,
+                    reason=plan.reason,
+                    candidate_id=_candidate_id(record),
+                )
+                return DreamCandidateRef(candidate_id=candidate.candidate_id, version=candidate.version)
+            if record.run.operation == "initialize_profile":
+                # A first Profile is bound-only; an ordinary one is not enabled here.
+                raise DreamError("shared_use_candidate_unavailable")
             await self._check_profile_policy(connection, record)
             policy = record.profile_policy
             if policy is None or record.run.target is None or self.generator is None:
@@ -648,9 +963,20 @@ class DreamService:
             )
         else:
             raise DreamError("invalid_generation_output")
-        await attach_candidate_audit(
-            connection, record.run.scope_id, candidate, candidate_audit(record, candidate.proposal)
-        )
+        if candidate.audit is None:
+            # Experience already wrote its audit with the proposal version, including the
+            # adopted set. Every other path completes the audit here, still inside the same
+            # transaction; a shared candidate never gains an audit that omits its support.
+            await attach_candidate_audit(
+                connection,
+                record.run.scope_id,
+                candidate,
+                candidate_audit(
+                    record,
+                    candidate.proposal,
+                    adopted_origins=() if record.share_snapshot_id is None else selected.adopted,
+                ),
+            )
         return DreamCandidateRef(candidate_id=candidate.candidate_id, version=candidate.version)
 
     async def _reuse_before_generation(self, record: DreamRecord) -> bool:
@@ -679,6 +1005,12 @@ class DreamService:
                         ref.candidate_id, current=True
                     )
                 audit = candidate.audit
+                if audit is not None and not _same_proposal_origin(audit, record):
+                    # Reuse never crosses the sharing boundary in either direction: an
+                    # ordinary run cannot adopt a shared proposal (whose support is a pin),
+                    # and a shared run cannot adopt an ordinary one. Same-key replay is
+                    # answered earlier by the idempotency key and is unaffected.
+                    continue
                 if (
                     audit is None
                     or audit.proposal_fingerprint != record.proposal_fingerprint
@@ -781,6 +1113,19 @@ def _candidate_id(record: DreamRecord) -> str:
     return "cand_dream_" + record.run.run_id
 
 
+def _same_proposal_origin(audit, record: DreamRecord, /) -> bool:
+    """Whether a prior proposal came from the same sharing origin as this run.
+
+    A shared proposal stands on one exact pin. Reusing it for a different run or pin would
+    let that run inherit support it never admitted, and reusing an ordinary proposal for a
+    shared run would bypass the pin entirely.
+    """
+
+    if record.share_snapshot_id is None:
+        return audit.share_snapshot_id is None
+    return audit.share_snapshot_id == record.share_snapshot_id
+
+
 def _candidate_matches_evidence(
     candidate: Candidate[Any] | CatalogChangeCandidate, record: DreamRecord, resolved: ResolvedEvidence
 ) -> bool:
@@ -812,11 +1157,13 @@ def _resolve_references(request: CreateDreamRunRequest):
     return unique_references((*request.artifacts, target.basis_ref)), target.basis_ref
 
 
-def _target_evidence_id(request: CreateDreamRunRequest) -> str | None:
+def _target_evidence_id(scope_id: str, request: CreateDreamRunRequest) -> str | None:
+    """The run Scope owns its maintained target, so the id is qualified by it."""
+
     target = request.target
     if request.tag_target is not None:
         target = request.tag_target.basis_ref
-    return None if target is None else evidence_id(target)
+    return None if target is None else evidence_id(target, scope_id)
 
 
 def _supported_plan(record: DreamRecord, plan: DreamPlan, resolved: ResolvedEvidence) -> DreamPlan:

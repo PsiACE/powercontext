@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -270,6 +270,8 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
+    from powercontext.builtin.authz.models import PrincipalRef
+    from powercontext.builtin.authz.service import AccessControlService
     from powercontext.builtin.runtime.processing_execution import ScopeInvocation
 
 
@@ -346,6 +348,7 @@ class _ScopedServices:
     atomic_memory_processor: AtomicMemorySourceWindowProcessor
     atomic_memory_service: AtomicMemoryService
     statistics_write_timeout_seconds: float
+    share_review_owners: tuple[Any, Any, Any] | None = None
 
     def generation_sources(self) -> GenerationSourceAccess:
         return GenerationSourceAccess(self.repositories.sources)
@@ -395,6 +398,9 @@ class _ScopedServices:
             topic_writer=self.topic_writer,
             handoff_writer=self.handoff_writer,
             prompt_registry=self.prompts.registry,
+            share_access=None if self.share_review_owners is None else self.share_review_owners[0],
+            share_scopes=None if self.share_review_owners is None else self.share_review_owners[1],
+            share_principal=None if self.share_review_owners is None else self.share_review_owners[2],
         )
 
     def recurrence_ledger(self) -> RelationalRecurrenceLedger:
@@ -537,6 +543,9 @@ class RelationalContexts:
         self.scopes = ScopeApplication(database, cursor_secret=cursor_secret)
         self.source_registry = source_registry or BUILTIN_SOURCE_REGISTRY
         self.topic_memory_index = NoTopicMemoryIndex() if topic_memory_index is None else topic_memory_index
+        # Sharing owners for a trusted shared approval. Unset in production: a shared
+        # approval then refuses rather than publishing under an unverified pin.
+        self._share_review_owners: tuple[Any, Any, Any] | None = None
         self.experience_index = NoExperienceIndex() if experience_index is None else experience_index
         source_repository = SourceRepository(self.source_registry)
         artifact_repository = ArtifactRepository(
@@ -811,6 +820,9 @@ class RelationalContexts:
         authorize_candidate: CandidateAttester | None = None,
         operations: tuple[DreamOperation, ...] = (),
         processing: ScopeInvocation | None = None,
+        share_access: AccessControlService | None = None,
+        share_scopes: ScopeApplication | None = None,
+        share_principal: Callable[[str], PrincipalRef | None] | None = None,
     ) -> DreamService:
         return DreamService(
             database=self.database,
@@ -827,6 +839,9 @@ class RelationalContexts:
             catalog_changes=self.catalog_changes,
             operations=operations,
             processing=processing,
+            share_access=share_access,
+            share_scopes=share_scopes,
+            share_principal=share_principal,
         )
 
     def generation(self, scope_id: str, /) -> ReviewedGenerationService:
@@ -1619,6 +1634,7 @@ class RelationalContexts:
             atomic_memory_processor=self.atomic_memory_processor,
             atomic_memory_service=self.atomic_memory.service,
             statistics_write_timeout_seconds=self._statistics_write_timeout_seconds,
+            share_review_owners=self._share_review_owners,
         )
 
 
